@@ -1,75 +1,81 @@
 const asyncHandler = require("express-async-handler");
 const VCRequest = require("../models/vcRequestModel");
-const Student = require("../models/studentModel");
 
-// @desc Student creates VC request
-// @route POST /api/vc-requests
-// @access Private (student)
+// ===============================
+// @desc    Student: Create a VC request
+// @route   POST /api/vc-requests
+// @access  Private (student)
+// ===============================
 const createVCRequest = asyncHandler(async (req, res) => {
-  const { studentId, type, course, yearGraduated, did } = req.body;
+  const { lrn, type, course, yearGraduated, did } = req.body;
 
-  if (!studentId || !type || !course) {
+  // Validate required fields
+  if (!lrn || !type || !course) {
     res.status(400);
-    throw new Error("Missing required fields (studentId, type, course)");
+    throw new Error("Required fields missing: lrn, type, or course");
   }
 
-  const student = await Student.findById(studentId);
-  if (!student) {
-    res.status(404);
-    throw new Error("Student not found");
-  }
-
-  const request = await VCRequest.create({
-    student: studentId,
+  const newRequest = await VCRequest.create({
+    lrn, // using LRN instead of student ObjectId
     type,
     course,
     yearGraduated: yearGraduated || null,
-    did: did || undefined, // will fallback to default random
+    did: did || null,
   });
 
-  res.status(201).json(request);
+  res.status(201).json(newRequest);
 });
 
-// @desc Student gets their VC requests
-// @route GET /api/vc-requests/mine
-// @access Private (student)
+// ===============================
+// @desc    Student: Get my VC requests
+// @route   GET /api/vc-requests/mine
+// @access  Private (student)
+// ===============================
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find({ student: req.user.studentId })
     .populate("student", "studentNumber fullName program");
-  res.json(requests);
+
+  res.status(200).json(requests);
 });
 
-// @desc Admin: Get all VC requests
-// @route GET /api/vc-requests
-// @access Private (admin)
+// ===============================
+// @desc    Admin: Get all VC requests
+// @route   GET /api/vc-requests
+// @access  Private (admin)
+// ===============================
 const getAllVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find()
     .populate("student", "studentNumber fullName program");
-  res.json(requests);
+
+  res.status(200).json(requests);
 });
 
-// @desc Admin: Approve/Reject/Issue VC request
-// @route PUT /api/vc-requests/:id
-// @access Private (admin)
+// ===============================
+// @desc    Admin: Review VC request (Approve/Reject/Issue)
+// @route   PUT /api/vc-requests/:id
+// @access  Private (admin)
+// ===============================
 const reviewVCRequest = asyncHandler(async (req, res) => {
   const { status } = req.body;
 
-  if (!["approved", "rejected", "issued"].includes(status)) {
+  // Validate status
+  const validStatuses = ["approved", "rejected", "issued"];
+  if (!validStatuses.includes(status)) {
     res.status(400);
-    throw new Error("Invalid status");
+    throw new Error(`Invalid status. Allowed: ${validStatuses.join(", ")}`);
   }
 
   const request = await VCRequest.findById(req.params.id);
   if (!request) {
     res.status(404);
-    throw new Error("VC Request not found");
+    throw new Error("VC request not found");
   }
 
   request.status = status;
   request.reviewedBy = req.user.id;
   await request.save();
 
-  res.json(request);
+  res.status(200).json(request);
 });
 
 module.exports = {
