@@ -7,13 +7,13 @@ const vcRequestSchema = new mongoose.Schema(
       ref: "Student",
       required: false,
     },
-    lrn: { 
+    lrn: {
       type: String,
-       required: true 
-    }, 
+      required: true,
+    },
     type: {
       type: String,
-      enum: ["Degree", "TOR"],
+      enum: ["DEGREE", "TOR"],
       required: true,
     },
     course: {
@@ -21,12 +21,26 @@ const vcRequestSchema = new mongoose.Schema(
       required: true,
     },
     yearGraduated: {
-      type: String, // optional since not all students know it
+      type: String,
     },
     did: {
       type: String,
-      default: () => "did:example:" + Math.random().toString(36).substring(2, 10), // random placeholder
+      default: () =>
+        "did:example:" + Math.random().toString(36).substring(2, 10),
     },
+
+    // Two image uploads
+    faceImage: {
+      filename: String,
+      data: Buffer,
+      contentType: String,
+    },
+    validIdImage: {
+      filename: String,
+      data: Buffer,
+      contentType: String,
+    },
+
     status: {
       type: String,
       enum: ["pending", "approved", "rejected", "issued"],

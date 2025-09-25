@@ -26,7 +26,6 @@ app.use(express.urlencoded({ extended: false }));
 // Routes
 app.use('/api/users', require('./routes/userRoutes'));
 app.use('/api/avatar', require('./routes/avatarRoutes'));
-app.use('/api/verifications', require('./routes/verificationRoutes'));
 app.use("/api/vc-requests", require("./routes/vcRequestRoutes"));
 // Error handling middleware
 app.use(errorHandler);

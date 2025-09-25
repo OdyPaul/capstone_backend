@@ -1,67 +1,73 @@
 const asyncHandler = require("express-async-handler");
 const VCRequest = require("../models/vcRequestModel");
+const fs = require("fs");
 
-// ===============================
-// @desc    Student: Create a VC request
-// @route   POST /api/vc-requests
-// @access  Private (student)
-// ===============================
+// @desc Student: Create VC Request with images
+// @route POST /api/vc-requests
+// @access Private (student)
 const createVCRequest = asyncHandler(async (req, res) => {
   const { lrn, type, course, yearGraduated, did } = req.body;
 
-  // Validate required fields
   if (!lrn || !type || !course) {
     res.status(400);
     throw new Error("Required fields missing: lrn, type, or course");
   }
 
+  // files from multer
+  const faceFile = req.files?.faceImage?.[0];
+  const idFile = req.files?.validIdImage?.[0];
+
+  if (!faceFile || !idFile) {
+    res.status(400);
+    throw new Error("Both faceImage and validIdImage are required");
+  }
+
   const newRequest = await VCRequest.create({
-    lrn, // using LRN instead of student ObjectId
+    lrn,
     type,
     course,
     yearGraduated: yearGraduated || null,
     did: did || null,
+    faceImage: {
+      filename: faceFile.filename,
+      data: fs.readFileSync(faceFile.path),
+      contentType: faceFile.mimetype,
+    },
+    validIdImage: {
+      filename: idFile.filename,
+      data: fs.readFileSync(idFile.path),
+      contentType: idFile.mimetype,
+    },
   });
+
+  // cleanup uploaded temp files
+  fs.unlinkSync(faceFile.path);
+  fs.unlinkSync(idFile.path);
 
   res.status(201).json(newRequest);
 });
 
 // Student: Get my VC requests
-// @route GET /api/vc-requests/mine
-// @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
-  const lrn = req.user.lrn; // make sure user object has LRN
-  console.log("Fetching VCRequests for LRN:", lrn);
-
-  const requests = await VCRequest.find({ lrn }); // use LRN
-  console.log("Found requests:", requests.length);
-
+  const lrn = req.user.lrn;
+  const requests = await VCRequest.find({ lrn });
   res.status(200).json(requests);
 });
 
-
-// ===============================
-// @desc    Admin: Get all VC requests
-// @route   GET /api/vc-requests
-// @access  Private (admin)
-// ===============================
+// Admin: Get all VC requests
 const getAllVCRequests = asyncHandler(async (req, res) => {
-  const requests = await VCRequest.find()
-    .populate("student", "studentNumber fullName program");
-
+  const requests = await VCRequest.find().populate(
+    "student",
+    "studentNumber fullName program"
+  );
   res.status(200).json(requests);
 });
 
-// ===============================
-// @desc    Admin: Review VC request (Approve/Reject/Issue)
-// @route   PUT /api/vc-requests/:id
-// @access  Private (admin)
-// ===============================
+// Admin: Review VC request
 const reviewVCRequest = asyncHandler(async (req, res) => {
   const { status } = req.body;
-
-  // Validate status
   const validStatuses = ["approved", "rejected", "issued"];
+
   if (!validStatuses.includes(status)) {
     res.status(400);
     throw new Error(`Invalid status. Allowed: ${validStatuses.join(", ")}`);
