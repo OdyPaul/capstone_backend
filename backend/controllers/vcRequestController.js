@@ -8,9 +8,9 @@ const fs = require("fs");
 const createVCRequest = asyncHandler(async (req, res) => {
   const { lrn, type, course, yearGraduated, did } = req.body;
 
-  if (!lrn || !type || !course) {
+  if (!type || !course) {
     res.status(400);
-    throw new Error("Required fields missing: lrn, type, or course");
+    throw new Error("Required fields missing: type or course");
   }
 
   // files from multer
@@ -23,8 +23,8 @@ const createVCRequest = asyncHandler(async (req, res) => {
   }
 
   const newRequest = await VCRequest.create({
-    student: req.user._id, // tie to logged-in account
-    lrn,
+    student: req.user._id, // tie to logged-in student
+    lrn: lrn || null, // optional now
     type,
     course,
     yearGraduated: yearGraduated || null,
@@ -41,20 +41,23 @@ const createVCRequest = asyncHandler(async (req, res) => {
     },
   });
 
-  // cleanup uploaded temp files
-  fs.unlinkSync(faceFile.path);
-  fs.unlinkSync(idFile.path);
+  // cleanup uploaded temp files (async so no crash risk)
+  fs.unlink(faceFile.path, () => {});
+  fs.unlink(idFile.path, () => {});
 
-  res.status(201).json(newRequest);
+  // exclude image buffers from response
+  const { faceImage, validIdImage, ...rest } = newRequest.toObject();
+
+  res.status(201).json(rest);
 });
 
 // @desc Student: Get my VC requests
 // @route GET /api/vc-requests/mine
 // @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
-  const requests = await VCRequest.find({ student: req.user._id }).sort({
-    createdAt: -1,
-  });
+  const requests = await VCRequest.find({ student: req.user._id })
+    .sort({ createdAt: -1 })
+    .select("-faceImage -validIdImage"); // exclude buffers
   res.status(200).json(requests);
 });
 
@@ -62,10 +65,9 @@ const getMyVCRequests = asyncHandler(async (req, res) => {
 // @route GET /api/vc-requests
 // @access Private (admin)
 const getAllVCRequests = asyncHandler(async (req, res) => {
-  const requests = await VCRequest.find().populate(
-    "student",
-    "email fullName" // adjust to your User fields
-  );
+  const requests = await VCRequest.find()
+    .populate("student", "email fullName") // adjust to your User fields
+    .select("-faceImage -validIdImage"); // exclude buffers
   res.status(200).json(requests);
 });
 
@@ -91,7 +93,10 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
   request.reviewedBy = req.user._id;
   await request.save();
 
-  res.status(200).json(request);
+  // exclude buffers in response
+  const { faceImage, validIdImage, ...rest } = request.toObject();
+
+  res.status(200).json(rest);
 });
 
 module.exports = {
