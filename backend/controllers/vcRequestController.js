@@ -23,8 +23,8 @@ const createVCRequest = asyncHandler(async (req, res) => {
   }
 
   const newRequest = await VCRequest.create({
-    student: req.user._id, // tie to logged-in student
-    lrn: lrn || null, // optional now
+    student: req.user._id, // always tie to logged-in student
+    lrn: lrn || null,
     type,
     course,
     yearGraduated: yearGraduated || null,
@@ -41,23 +41,23 @@ const createVCRequest = asyncHandler(async (req, res) => {
     },
   });
 
-  // cleanup uploaded temp files (async so no crash risk)
+  // cleanup temp files
   fs.unlink(faceFile.path, () => {});
   fs.unlink(idFile.path, () => {});
 
-  // exclude image buffers from response
+  // send back request without heavy image buffers
   const { faceImage, validIdImage, ...rest } = newRequest.toObject();
-
   res.status(201).json(rest);
 });
 
-// @desc Student: Get my VC requests (without heavy image data)
+// @desc Student: Get my VC requests (no image buffers)
 // @route GET /api/vc-requests/mine
 // @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find({ student: req.user._id })
-    .select("-faceImage -validIdImage") // exclude image buffers
+    .select("-faceImage -validIdImage") // exclude buffers
     .sort({ createdAt: -1 });
+
   res.status(200).json(requests);
 });
 
@@ -66,8 +66,9 @@ const getMyVCRequests = asyncHandler(async (req, res) => {
 // @access Private (admin)
 const getAllVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find()
-    .populate("student", "email fullName") // adjust to your User fields
-    .select("-faceImage -validIdImage"); // exclude buffers
+    .populate("student", "email name") // adjust to your User schema
+    .select("-faceImage -validIdImage");
+
   res.status(200).json(requests);
 });
 
@@ -93,9 +94,7 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
   request.reviewedBy = req.user._id;
   await request.save();
 
-  // exclude buffers in response
   const { faceImage, validIdImage, ...rest } = request.toObject();
-
   res.status(200).json(rest);
 });
 
