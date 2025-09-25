@@ -7,6 +7,10 @@ const vcRequestSchema = new mongoose.Schema(
       ref: "Student",
       required: true,
     },
+    lrn: { 
+      type: String,
+       required: true 
+    }, 
     type: {
       type: String,
       enum: ["Degree", "TOR"],
