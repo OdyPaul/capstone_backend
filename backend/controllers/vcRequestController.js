@@ -50,7 +50,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
 // Student: Get my VC requests
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const lrn = req.user.lrn;
-  const requests = await VCRequest.find({ lrn });
+  const requests = await VCRequest.find({ lrn }).sort({ createdAt: -1 });
   res.status(200).json(requests);
 });
 
