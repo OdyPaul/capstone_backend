@@ -51,13 +51,13 @@ const createVCRequest = asyncHandler(async (req, res) => {
   res.status(201).json(rest);
 });
 
-// @desc Student: Get my VC requests
+// @desc Student: Get my VC requests (without heavy image data)
 // @route GET /api/vc-requests/mine
 // @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find({ student: req.user._id })
-    .sort({ createdAt: -1 })
-    .select("-faceImage -validIdImage"); // exclude buffers
+    .select("-faceImage -validIdImage") // exclude image buffers
+    .sort({ createdAt: -1 });
   res.status(200).json(requests);
 });
 
