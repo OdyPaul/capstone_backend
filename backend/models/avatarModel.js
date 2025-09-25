@@ -1,11 +1,12 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
-const avatarSchema = mongoose.Schema(
+const avatarSchema = new mongoose.Schema(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
       required: true,
+      unique: true, // each user should only have one avatar
     },
     filename: {
       type: String,
@@ -23,4 +24,4 @@ const avatarSchema = mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model('Avatar', avatarSchema);
+module.exports = mongoose.model("Avatar", avatarSchema);
