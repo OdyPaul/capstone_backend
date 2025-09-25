@@ -30,7 +30,12 @@ const createVCRequest = asyncHandler(async (req, res) => {
 // @route GET /api/vc-requests/mine
 // @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
-  const requests = await VCRequest.find({ lrn: req.user.lrn }); // use LRN instead of student ObjectId
+  const lrn = req.user.lrn; // make sure user object has LRN
+  console.log("Fetching VCRequests for LRN:", lrn);
+
+  const requests = await VCRequest.find({ lrn }); // use LRN
+  console.log("Found requests:", requests.length);
+
   res.status(200).json(requests);
 });
 
