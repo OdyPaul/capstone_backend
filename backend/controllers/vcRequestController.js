@@ -26,17 +26,14 @@ const createVCRequest = asyncHandler(async (req, res) => {
   res.status(201).json(newRequest);
 });
 
-// ===============================
-// @desc    Student: Get my VC requests
-// @route   GET /api/vc-requests/mine
-// @access  Private (student)
-// ===============================
+// Student: Get my VC requests
+// @route GET /api/vc-requests/mine
+// @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
-  const requests = await VCRequest.find({ student: req.user.studentId })
-    .populate("student", "studentNumber fullName program");
-
+  const requests = await VCRequest.find({ lrn: req.user.lrn }); // use LRN instead of student ObjectId
   res.status(200).json(requests);
 });
+
 
 // ===============================
 // @desc    Admin: Get all VC requests
