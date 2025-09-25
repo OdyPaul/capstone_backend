@@ -23,6 +23,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
   }
 
   const newRequest = await VCRequest.create({
+    student: req.user._id, // tie to logged-in account
     lrn,
     type,
     course,
@@ -47,23 +48,30 @@ const createVCRequest = asyncHandler(async (req, res) => {
   res.status(201).json(newRequest);
 });
 
-// Student: Get my VC requests
+// @desc Student: Get my VC requests
+// @route GET /api/vc-requests/mine
+// @access Private (student)
 const getMyVCRequests = asyncHandler(async (req, res) => {
-  const lrn = req.user.lrn;
-  const requests = await VCRequest.find({ lrn }).sort({ createdAt: -1 });
+  const requests = await VCRequest.find({ student: req.user._id }).sort({
+    createdAt: -1,
+  });
   res.status(200).json(requests);
 });
 
-// Admin: Get all VC requests
+// @desc Admin: Get all VC requests
+// @route GET /api/vc-requests
+// @access Private (admin)
 const getAllVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find().populate(
     "student",
-    "studentNumber fullName program"
+    "email fullName" // adjust to your User fields
   );
   res.status(200).json(requests);
 });
 
-// Admin: Review VC request
+// @desc Admin: Review VC request
+// @route PATCH /api/vc-requests/:id
+// @access Private (admin)
 const reviewVCRequest = asyncHandler(async (req, res) => {
   const { status } = req.body;
   const validStatuses = ["approved", "rejected", "issued"];
@@ -80,7 +88,7 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
   }
 
   request.status = status;
-  request.reviewedBy = req.user.id;
+  request.reviewedBy = req.user._id;
   await request.save();
 
   res.status(200).json(request);

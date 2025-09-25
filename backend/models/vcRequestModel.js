@@ -2,15 +2,19 @@ const mongoose = require("mongoose");
 
 const vcRequestSchema = new mongoose.Schema(
   {
+    // Always tie requests to the account
     student: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Student",
-      required: false,
+      ref: "User", // reference to the logged-in user account
+      required: true,
     },
+
+    // The LRN typed by the student (not yet official)
     lrn: {
       type: String,
       required: true,
     },
+
     type: {
       type: String,
       enum: ["DEGREE", "TOR"],
