@@ -43,5 +43,9 @@ router.get("/", protect, getAllVCRequests);
 
 // Admin: review
 router.put("/:id", protect, admin, reviewVCRequest);
+// Serve images publicly (or protect if needed)
+router.get("/face/:id", getFaceImage);
+router.get("/valid-id/:id", getValidIdImage);
+
 
 module.exports = router;

@@ -66,10 +66,18 @@ const getMyVCRequests = asyncHandler(async (req, res) => {
 // @access Private (admin)
 const getAllVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find()
-    .populate("student", "email name") // adjust to your User schema
+    .populate("student", "email name")
     .select("-faceImage -validIdImage");
 
-  res.status(200).json(requests);
+  // Add URLs
+  const requestsWithUrls = requests.map((req) => {
+    const obj = req.toObject();
+    obj.faceImageUrl = `${BASE_URL}/api/vc-requests/face/${req._id}`;
+    obj.validIdImageUrl = `${BASE_URL}/api/vc-requests/valid-id/${req._id}`;
+    return obj;
+  });
+
+  res.status(200).json(requestsWithUrls);
 });
 
 // @desc Admin: Review VC request
@@ -98,9 +106,35 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
   res.status(200).json(rest);
 });
 
+// Get face image by VC request ID
+const getFaceImage = asyncHandler(async (req, res) => {
+  const request = await VCRequest.findById(req.params.id);
+  if (!request || !request.faceImage?.data) {
+    res.status(404);
+    throw new Error("Face image not found");
+  }
+
+  res.set("Content-Type", request.faceImage.contentType);
+  res.send(request.faceImage.data);
+});
+
+// Get valid ID image by VC request ID
+const getValidIdImage = asyncHandler(async (req, res) => {
+  const request = await VCRequest.findById(req.params.id);
+  if (!request || !request.validIdImage?.data) {
+    res.status(404);
+    throw new Error("Valid ID image not found");
+  }
+
+  res.set("Content-Type", request.validIdImage.contentType);
+  res.send(request.validIdImage.data);
+});
+
 module.exports = {
   createVCRequest,
   getMyVCRequests,
   getAllVCRequests,
   reviewVCRequest,
+  getFaceImage,
+  getValidIdImage,
 };
