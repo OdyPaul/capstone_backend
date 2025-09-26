@@ -1,6 +1,7 @@
 const asyncHandler = require("express-async-handler");
 const VCRequest = require("../models/vcRequestModel");
 const fs = require("fs");
+const BASE_URL = process.env.BASE_URL || process.env.API_URL || "http://127.0.0.1:5000";
 
 // @desc Student: Create VC Request with images
 // @route POST /api/vc-requests
