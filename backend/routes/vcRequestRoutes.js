@@ -1,28 +1,20 @@
 const express = require("express");
-const router = express.Router();
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-
 const {
   createVCRequest,
   getMyVCRequests,
   getAllVCRequests,
   reviewVCRequest,
+  getFaceImage,
+  getValidIdImage,
 } = require("../controllers/vcRequestController");
 const { protect, admin } = require("../middleware/authMiddleware");
 
-// uploads folder check
-const uploadDir = path.join(__dirname, "../uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir);
-}
+const router = express.Router();
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => cb(null, Date.now() + "-" + file.originalname),
-});
-const upload = multer({ storage });
+// ✅ Store uploads in memory (MongoDB will store buffers)
+const storage = multer.memoryStorage();
+const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB max
 
 // Student: create request with 2 images
 router.post(
@@ -35,17 +27,17 @@ router.post(
   createVCRequest
 );
 
-// Student: view requests
+// Student: view own requests
 router.get("/mine", protect, getMyVCRequests);
 
-// Admin: view all
+// Admin: view all requests
 router.get("/", protect, getAllVCRequests);
 
-// Admin: review
+// Admin: review a request
 router.put("/:id", protect, admin, reviewVCRequest);
-// Serve images publicly (or protect if needed)
+
+// Serve images
 router.get("/face/:id", getFaceImage);
 router.get("/valid-id/:id", getValidIdImage);
-
 
 module.exports = router;

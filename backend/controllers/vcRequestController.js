@@ -1,11 +1,8 @@
 const asyncHandler = require("express-async-handler");
 const VCRequest = require("../models/vcRequestModel");
-const fs = require("fs");
 const BASE_URL = process.env.BASE_URL || process.env.API_URL || "http://127.0.0.1:5000";
 
-// @desc Student: Create VC Request with images
-// @route POST /api/vc-requests
-// @access Private (student)
+// Create VC Request
 const createVCRequest = asyncHandler(async (req, res) => {
   const { lrn, type, course, yearGraduated, did } = req.body;
 
@@ -14,7 +11,6 @@ const createVCRequest = asyncHandler(async (req, res) => {
     throw new Error("Required fields missing: type or course");
   }
 
-  // files from multer
   const faceFile = req.files?.faceImage?.[0];
   const idFile = req.files?.validIdImage?.[0];
 
@@ -24,53 +20,43 @@ const createVCRequest = asyncHandler(async (req, res) => {
   }
 
   const newRequest = await VCRequest.create({
-    student: req.user._id, // always tie to logged-in student
+    student: req.user._id,
     lrn: lrn || null,
     type,
     course,
     yearGraduated: yearGraduated || null,
     did: did || null,
     faceImage: {
-      filename: faceFile.filename,
-      data: fs.readFileSync(faceFile.path),
+      filename: faceFile.originalname,
+      data: faceFile.buffer,
       contentType: faceFile.mimetype,
     },
     validIdImage: {
-      filename: idFile.filename,
-      data: fs.readFileSync(idFile.path),
+      filename: idFile.originalname,
+      data: idFile.buffer,
       contentType: idFile.mimetype,
     },
   });
 
-  // cleanup temp files
-  fs.unlink(faceFile.path, () => {});
-  fs.unlink(idFile.path, () => {});
-
-  // send back request without heavy image buffers
   const { faceImage, validIdImage, ...rest } = newRequest.toObject();
   res.status(201).json(rest);
 });
 
-// @desc Student: Get my VC requests (no image buffers)
-// @route GET /api/vc-requests/mine
-// @access Private (student)
+// Get current user's requests (without image buffers)
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find({ student: req.user._id })
-    .select("-faceImage -validIdImage") // exclude buffers
+    .select("-faceImage -validIdImage")
     .sort({ createdAt: -1 });
 
   res.status(200).json(requests);
 });
 
-// @desc Admin: Get all VC requests
-// @route GET /api/vc-requests
-// @access Private (admin)
+// Admin: get all requests
 const getAllVCRequests = asyncHandler(async (req, res) => {
   const requests = await VCRequest.find()
     .populate("student", "email name")
     .select("-faceImage -validIdImage");
 
-  // Add URLs
   const requestsWithUrls = requests.map((req) => {
     const obj = req.toObject();
     obj.faceImageUrl = `${BASE_URL}/api/vc-requests/face/${req._id}`;
@@ -81,9 +67,7 @@ const getAllVCRequests = asyncHandler(async (req, res) => {
   res.status(200).json(requestsWithUrls);
 });
 
-// @desc Admin: Review VC request
-// @route PATCH /api/vc-requests/:id
-// @access Private (admin)
+// Admin: review request
 const reviewVCRequest = asyncHandler(async (req, res) => {
   const { status } = req.body;
   const validStatuses = ["approved", "rejected", "issued"];
@@ -107,7 +91,7 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
   res.status(200).json(rest);
 });
 
-// Get face image by VC request ID
+// Serve face image
 const getFaceImage = asyncHandler(async (req, res) => {
   const request = await VCRequest.findById(req.params.id);
   if (!request || !request.faceImage?.data) {
@@ -119,7 +103,7 @@ const getFaceImage = asyncHandler(async (req, res) => {
   res.send(request.faceImage.data);
 });
 
-// Get valid ID image by VC request ID
+// Serve valid ID image
 const getValidIdImage = asyncHandler(async (req, res) => {
   const request = await VCRequest.findById(req.params.id);
   if (!request || !request.validIdImage?.data) {
