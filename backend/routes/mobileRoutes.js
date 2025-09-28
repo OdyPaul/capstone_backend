@@ -32,7 +32,7 @@ const {
 
 // ---------------- MULTER CONFIG ----------------
 
-// ✅ VC request (disk storage for images)
+// ✅ VC request (disk storage for images in /uploads)
 const uploadDir = path.join(__dirname, "../uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
@@ -44,7 +44,7 @@ const vcStorage = multer.diskStorage({
 });
 const vcUpload = multer({ storage: vcStorage });
 
-// ✅ Avatar (memory storage, save in MongoDB)
+// ✅ Avatar (memory storage, saved in MongoDB)
 const avatarStorage = multer.memoryStorage();
 const avatarUpload = multer({
   storage: avatarStorage,
@@ -54,13 +54,14 @@ const avatarUpload = multer({
 // ---------------- ROUTES ----------------
 
 // === USER ROUTES ===
-router.post("/users", registerMobileUser);          // Register
-router.post("/users/login", loginMobileUser);       // Login
-router.get("/users/me", protect, getMe);      // Get current user
+router.post("/users", registerMobileUser);           // Register
+router.post("/users/login", loginMobileUser);        // Login
+router.get("/users/me", protect, getMe);             // Get current user
 
 // === VC REQUEST ROUTES ===
+// POST /api/mobile/vc-requests       → Create new request
 router.post(
-  "/vc-request",
+  "/vc-requests",
   protect,
   vcUpload.fields([
     { name: "faceImage", maxCount: 1 },
@@ -68,9 +69,15 @@ router.post(
   ]),
   createVCRequest
 );
-router.get("/vc-request/mine", protect, getMyVCRequests);
-router.get("/vc-request", protect, admin, getAllVCRequests);
-router.put("/vc-request/:id", protect, admin, reviewVCRequest);
+
+// GET /api/mobile/vc-requests/mine   → Student’s own requests
+router.get("/vc-requests/mine", protect, getMyVCRequests);
+
+// GET /api/mobile/vc-requests        → Admin fetch all
+router.get("/vc-requests", protect, admin, getAllVCRequests);
+
+// PATCH /api/mobile/vc-requests/:id  → Admin review
+router.patch("/vc-requests/:id", protect, admin, reviewVCRequest);
 
 // === AVATAR ROUTES ===
 router.post("/avatar", protect, avatarUpload.single("photo"), uploadAvatar);
