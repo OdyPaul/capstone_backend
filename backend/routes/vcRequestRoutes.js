@@ -39,7 +39,7 @@ router.post(
 router.get("/mine", protect, getMyVCRequests);
 
 // Admin: view all
-router.get("/", protect, admin, getAllVCRequests);
+router.get("/", admin, getAllVCRequests);
 
 // Admin: review
 router.put("/:id", protect, admin, reviewVCRequest);
