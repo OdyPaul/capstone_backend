@@ -38,8 +38,8 @@ router.post(
 // Student: view requests
 router.get("/mine", protect, getMyVCRequests);
 
-// Admin: view all
-router.get("/", getAllVCRequests);
+// routes/vcRequestRoutes.js
+router.get("/", protect, admin, getAllVCRequests);
 
 // Admin: review
 router.put("/:id", protect, admin, reviewVCRequest);
