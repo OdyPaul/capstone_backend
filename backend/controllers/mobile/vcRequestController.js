@@ -1,5 +1,5 @@
 const asyncHandler = require("express-async-handler");
-const VCRequest = require("../models/vcRequestModel");
+const VCRequest = require("../../models/mobile/vcRequestModel");
 const fs = require("fs");
 
 // @desc Student: Create VC Request with images

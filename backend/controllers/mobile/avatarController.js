@@ -1,5 +1,5 @@
 const asyncHandler = require("express-async-handler");
-const Avatar = require("../models/avatarModel");
+const Avatar = require("../../models/mobile/avatarModel");
 
 const BASE_URL = process.env.BASE_URL || process.env.API_URL || "http://127.0.0.1:5000";
 

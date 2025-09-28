@@ -1,37 +1,39 @@
-const jwt = require('jsonwebtoken');
-const asyncHandler = require('express-async-handler');
-// const User = require('../models/userModel'); // not needed for test
+const jwt = require("jsonwebtoken");
+const asyncHandler = require("express-async-handler");
+const User = require("../models/common/userModel"); // ✅ adjust path if needed
 
+// Protect routes (any logged-in user)
 const protect = asyncHandler(async (req, res, next) => {
   let token;
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    try {
-      token = req.headers.authorization.split(' ')[1];
 
-      // Decode token without DB check
+  if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
+    try {
+      token = req.headers.authorization.split(" ")[1];
+
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-      // For testing: assume user is admin
-      req.user = {
-        id: decoded.id,
-        isAdmin: true, // force admin for testing
-        name: decoded.name || "Test Admin",
-        email: decoded.email || "admin@test.com",
-      };
+      req.user = await User.findById(decoded.id).select("-password");
 
-      console.log("Test protect user:", req.user);
+      if (!req.user) {
+        res.status(401);
+        throw new Error("User not found");
+      }
+
       next();
     } catch (error) {
-      console.log(error);
+      console.error(error);
       res.status(401);
-      throw new Error('Not authorized');
+      throw new Error("Not authorized, token failed");
     }
-  } else {
+  }
+
+  if (!token) {
     res.status(401);
-    throw new Error('Not authorized, no token');
+    throw new Error("Not authorized, no token");
   }
 });
 
+// Admin-only
 const admin = (req, res, next) => {
   if (req.user && req.user.role === "admin") {
     next();
@@ -41,17 +43,18 @@ const admin = (req, res, next) => {
   }
 };
 
-const errorHandler = (err, req, res, next) => {
-  const statusCode = res.statusCode ? res.statusCode : 500;
-  res.status(statusCode);
-  res.json({
-    message: err.message,
-    stack: process.env.NODE_ENV === 'production' ? null : err.stack,
-  });
+// Mobile student-only
+const mobileUser = (req, res, next) => {
+  if (req.user && req.user.role === "student") {
+    next();
+  } else {
+    res.status(403);
+    throw new Error("Not authorized (students only)");
+  }
 };
 
 module.exports = {
   protect,
   admin,
-  errorHandler,
+  mobileUser,
 };
