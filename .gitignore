@@ -24,4 +24,8 @@ Thumbs.db
 dist/
 build/
 
+<<<<<<< HEAD
+=======
+scripts/
+>>>>>>> e067ab74b4f37d7ad2bcd432dd0f944549f65ddc
 Curriculums/
