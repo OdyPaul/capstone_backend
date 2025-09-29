@@ -18,7 +18,15 @@ const userSchema = mongoose.Schema(
     role: {
       type: String,
       enum: ["student", "staff", "admin", "developer"],
-      default: "student",  // mobile app users default to student
+      default: "student", // mobile app users default to student
+    },
+    verified: {
+      type: String,
+      enum: ["unverified", "verified"],
+      default: "unverified",
+      required: function () {
+        return this.role === "student"; // ✅ only required for students
+      },
     },
   },
   { timestamps: true }
