@@ -27,6 +27,8 @@ exports.createVCRequest = async (req, res) => {
 };
 
 // Admin verifies request; set status verified and mark images to expire in 30 days
+const User = require('../../models/common/userModel'); // ✅ import user model
+
 exports.verifyRequest = async (req, res) => {
   try {
     const { id } = req.params; // vc request id
@@ -37,6 +39,9 @@ exports.verifyRequest = async (req, res) => {
     vc.verifiedAt = new Date();
     await vc.save();
 
+    // ✅ Also update the student's user account
+    await User.findByIdAndUpdate(vc.user, { verified: 'verified' });
+
     // Set image expiration 30 days from now
     const expireDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const updates = [];
@@ -44,12 +49,13 @@ exports.verifyRequest = async (req, res) => {
     if (vc.idImage) updates.push(Image.findByIdAndUpdate(vc.idImage, { expiresAt: expireDate }));
     await Promise.all(updates);
 
-    return res.json({ message: 'Verified and images scheduled to expire in 30 days' });
+    return res.json({ message: 'Verified: user account and request updated, images scheduled to expire in 30 days' });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ message: err.message });
   }
 };
+
 
 
 // Get all VC Requests (with populated images)
