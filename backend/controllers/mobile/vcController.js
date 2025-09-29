@@ -7,6 +7,7 @@ exports.createVCRequest = async (req, res) => {
     const { personal, education, selfieImageId, idImageId } = req.body;
 
     const vc = await VCRequest.create({
+      user: userId,
       personal,
       education,
       selfieImage: selfieImageId,

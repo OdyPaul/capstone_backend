@@ -2,6 +2,11 @@ const mongoose = require("mongoose");
 
 const vcRequestSchema = mongoose.Schema(
   {
+    user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true, // ✅ so every request is tied to the account who submitted it
+    },
     personal: {
       fullName: {
         type: String,
