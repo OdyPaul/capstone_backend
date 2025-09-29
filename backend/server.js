@@ -19,10 +19,18 @@ app.use(express.urlencoded({ extended: false }));
 
 // ---------- Routes ----------
 app.use('/api/web', require('./routes/userRoutes'));      // Web users (admin/staff/dev)
-app.use('/api/mobile', require('./routes/mobileRoutes')); // Mobile app routes (students, avatars, vcRequests)
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+// app.use('/api/mobile', require('./routes/mobileRoutes')); // Mobile app routes (students, avatars, vcRequests)
+
+//mobile
+app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
+app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
+// app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ---------- Error handler (must be last) ----------
 app.use(errorHandler);
+
+app.get("/", (req, res) => {
+  res.send("✅ API is running...");
+});
 
 // ---------- Start server ----------
 const port = process.env.PORT || 5000;
