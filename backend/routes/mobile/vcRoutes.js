@@ -6,4 +6,7 @@ router.post('/', vcCtrl.createVCRequest);
 router.post('/:id/verify', vcCtrl.verifyRequest); // admin verifies
 // add GET list, GET single, etc. as needed
 
+router.get('/', vcCtrl.getVCRequests);       // list all
+router.get('/:id', vcCtrl.getVCRequestById); // single request
+
 module.exports = router;

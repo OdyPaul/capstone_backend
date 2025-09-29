@@ -49,3 +49,34 @@ exports.verifyRequest = async (req, res) => {
     return res.status(500).json({ message: err.message });
   }
 };
+
+
+// Get all VC Requests (with populated images)
+exports.getVCRequests = async (req, res) => {
+  try {
+    const requests = await VCRequest.find()
+      .populate("selfieImage", "url")
+      .populate("idImage", "url")
+      .sort({ createdAt: -1 });
+
+    res.json(requests);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch VC requests" });
+  }
+};
+
+// Get single VC Request by ID
+exports.getVCRequestById = async (req, res) => {
+  try {
+    const request = await VCRequest.findById(req.params.id)
+      .populate("selfieImage", "url")
+      .populate("idImage", "url");
+
+    if (!request) return res.status(404).json({ message: "Request not found" });
+    res.json(request);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch request" });
+  }
+};
