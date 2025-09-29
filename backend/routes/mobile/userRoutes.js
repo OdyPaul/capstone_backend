@@ -6,7 +6,7 @@ const {
   registerMobileUser,
   loginMobileUser,
   getMe,
-} = require("../controllers/common/userController");
+} = require("../../controllers/common/userController");
 
 const { protect, admin } = require("../middleware/authMiddleware");
 
