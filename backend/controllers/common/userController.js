@@ -65,6 +65,7 @@ const loginMobileUser = asyncHandler(async (req, res) => {
       _id: user.id,
       name: user.name,
       email: user.email,
+      verified: user.role === "student" ? user.verified : undefined, // ✅ only for students
       token: generateToken(user._id),
     });
   } else {

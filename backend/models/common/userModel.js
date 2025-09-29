@@ -24,12 +24,17 @@ const userSchema = mongoose.Schema(
       type: String,
       enum: ["unverified", "verified"],
       default: "unverified",
-      required: function () {
-        return this.role === "student"; // ✅ only required for students
-      },
     },
   },
   { timestamps: true }
 );
+
+// ✅ Hook to remove "verified" field for non-students
+userSchema.pre("save", function (next) {
+  if (this.role !== "student") {
+    this.verified = undefined;
+  }
+  next();
+});
 
 module.exports = mongoose.model("User", userSchema);
