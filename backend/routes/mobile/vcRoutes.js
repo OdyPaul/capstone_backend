@@ -3,7 +3,7 @@ const router = express.Router();
 const vcCtrl = require('../../controllers/mobile/vcController');
 const { protect, admin } = require("../../middleware/authMiddleware");
 
-router.post('/', vcCtrl.createVCRequest);
+router.post('/',protect, vcCtrl.createVCRequest);
 router.post('/:id/verify', vcCtrl.verifyRequest); // admin verifies
 // add GET list, GET single, etc. as needed
 
