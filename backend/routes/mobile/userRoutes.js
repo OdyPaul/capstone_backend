@@ -8,7 +8,7 @@ const {
   getMe,
 } = require("../../controllers/common/userController");
 
-const { protect, admin } = require("../middleware/authMiddleware");
+const { protect, admin } = require("../../middleware/authMiddleware");
 
 
 router.post("/users", registerMobileUser);           // Register
