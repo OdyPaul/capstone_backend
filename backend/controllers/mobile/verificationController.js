@@ -2,10 +2,16 @@ const VerificationRequest = require("../../models/mobile/verificationRequestMode
 const Image = require("../../models/mobile/imageModel");
 const User = require("../../models/common/userModel");
 
-// Student submits verification request
+// @desc Student submits verification request
+// @route POST /api/verification
+// @access Private (student)
 exports.createVerificationRequest = async (req, res) => {
   try {
     const { personal, education, selfieImageId, idImageId } = req.body;
+
+    if (!personal || !education) {
+      return res.status(400).json({ message: "Personal and education info required" });
+    }
 
     const verification = await VerificationRequest.create({
       user: req.user._id,
@@ -16,17 +22,22 @@ exports.createVerificationRequest = async (req, res) => {
       status: "pending",
     });
 
-    if (selfieImageId) await Image.findByIdAndUpdate(selfieImageId, { ownerRequest: verification._id });
-    if (idImageId) await Image.findByIdAndUpdate(idImageId, { ownerRequest: verification._id });
+    // Tie uploaded images to this verification request
+    const updates = [];
+    if (selfieImageId) updates.push(Image.findByIdAndUpdate(selfieImageId, { ownerRequest: verification._id }));
+    if (idImageId) updates.push(Image.findByIdAndUpdate(idImageId, { ownerRequest: verification._id }));
+    await Promise.all(updates);
 
     return res.status(201).json(verification);
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message });
+    console.error("createVerificationRequest error:", err);
+    return res.status(500).json({ message: err.message || "Failed to submit verification" });
   }
 };
 
-// Admin verifies
+// @desc Admin verifies a request
+// @route POST /api/verification/:id/verify
+// @access Private (admin)
 exports.verifyRequest = async (req, res) => {
   try {
     const { id } = req.params;
@@ -37,50 +48,75 @@ exports.verifyRequest = async (req, res) => {
     verification.verifiedAt = new Date();
     await verification.save();
 
+    // Mark user as verified
     await User.findByIdAndUpdate(verification.user, { verified: "verified" });
 
     // Expire images in 30 days
     const expireDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const updates = [];
-    if (verification.selfieImage)
-      updates.push(Image.findByIdAndUpdate(verification.selfieImage, { expiresAt: expireDate }));
-    if (verification.idImage)
-      updates.push(Image.findByIdAndUpdate(verification.idImage, { expiresAt: expireDate }));
+    if (verification.selfieImage) updates.push(Image.findByIdAndUpdate(verification.selfieImage, { expiresAt: expireDate }));
+    if (verification.idImage) updates.push(Image.findByIdAndUpdate(verification.idImage, { expiresAt: expireDate }));
     await Promise.all(updates);
 
     return res.json({
-      message: "Verified: user account updated, request marked verified, images expire in 30 days",
+      message: "✅ User account verified, request updated, images set to expire in 30 days",
     });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ message: err.message });
+    console.error("verifyRequest error:", err);
+    return res.status(500).json({ message: err.message || "Failed to verify request" });
   }
 };
 
-// Admin fetch all
-exports.getVerificationRequests = async (req, res) => {
+// @desc Student fetches their own requests
+// @route GET /api/verification/mine
+// @access Private (student)
+exports.getMyVerificationRequests = async (req, res) => {
   try {
-    const requests = await VerificationRequest.find()
+    const requests = await VerificationRequest.find({ user: req.user._id })
       .populate("selfieImage", "url")
       .populate("idImage", "url")
       .sort({ createdAt: -1 });
+
     res.json(requests);
   } catch (err) {
-    console.error(err);
+    console.error("getMyVerificationRequests error:", err);
+    res.status(500).json({ message: "Failed to fetch your verification requests" });
+  }
+};
+
+// @desc Admin fetch all requests
+// @route GET /api/verification
+// @access Private (admin)
+exports.getVerificationRequests = async (req, res) => {
+  try {
+    const requests = await VerificationRequest.find()
+      .populate("user", "email name")
+      .populate("selfieImage", "url")
+      .populate("idImage", "url")
+      .sort({ createdAt: -1 });
+
+    res.json(requests);
+  } catch (err) {
+    console.error("getVerificationRequests error:", err);
     res.status(500).json({ message: "Failed to fetch verification requests" });
   }
 };
 
-// Admin fetch single
+// @desc Admin fetch single request
+// @route GET /api/verification/:id
+// @access Private (admin)
 exports.getVerificationRequestById = async (req, res) => {
   try {
     const request = await VerificationRequest.findById(req.params.id)
+      .populate("user", "email name")
       .populate("selfieImage", "url")
       .populate("idImage", "url");
+
     if (!request) return res.status(404).json({ message: "Request not found" });
+
     res.json(request);
   } catch (err) {
-    console.error(err);
+    console.error("getVerificationRequestById error:", err);
     res.status(500).json({ message: "Failed to fetch request" });
   }
 };

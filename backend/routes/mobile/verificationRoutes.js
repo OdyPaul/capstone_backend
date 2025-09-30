@@ -6,11 +6,12 @@ const { protect, admin } = require("../../middleware/authMiddleware");
 // Student submits
 router.post("/", protect, verificationCtrl.createVerificationRequest);
 
-// Admin verifies
-router.post("/:id/verify", protect, admin, verificationCtrl.verifyRequest);
+// Student views *their own* request(s)
+router.get("/my", protect, verificationCtrl.getMyVerificationRequests);
 
-// Admin views
-router.get("/", protect, admin, verificationCtrl.getVerificationRequests);
-router.get("/:id", protect, admin, verificationCtrl.getVerificationRequestById);
+// Admin only
+router.get("/", protect, admin, verificationCtrl.getVerificationRequests); // all requests
+router.get("/:id", protect, admin, verificationCtrl.getVerificationRequestById); // single request
+router.post("/:id/verify", protect, admin, verificationCtrl.verifyRequest);
 
 module.exports = router;
