@@ -24,6 +24,7 @@ app.use('/api/mobile', require('./routes/mobile/userRoutes')); // Mobile app rou
 //mobile
 app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
 app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
+app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
 // app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 // ---------- Error handler (must be last) ----------
 app.use(errorHandler);
