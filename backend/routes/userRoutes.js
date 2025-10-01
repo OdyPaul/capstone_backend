@@ -9,15 +9,15 @@ const {
 const { protect, admin } = require("../middleware/authMiddleware");
 
 // Web: Register user (staff/admin/etc.)
-router.post("/", registerWebUser);
+router.post("/users", registerWebUser);
 
 // Web: Login
-router.post("/login", loginWebUser);
+router.post("/users/login", loginWebUser);
 
 // Web: Get logged-in user profile
-router.get("/me", protect, getMe);
+router.get("/users/me", protect, getMe);
 
 // Web: Get all users (admin only)
-router.get("/", protect, admin, getUsers);
+router.get("/users", protect, admin, getUsers);
 
 module.exports = router;
