@@ -17,6 +17,7 @@
     "colors": "^1.4.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.2",
+    "ethers": "^6.15.0",
     "expo-file-system": "^19.0.14",
     "express": "^5.1.0",
     "express-async-handler": "^1.2.0",
