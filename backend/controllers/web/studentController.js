@@ -5,18 +5,22 @@ const asyncHandler = require('express-async-handler')
 
 
 //@desc  Get Passing Students
-//@route  GET /api/students
-//@Access Private (University Personel)
- const getStudentPassing = asyncHandler(async(req,res) => {
+//@route  GET /api/students/passing
+//@Access Private (University Personnel)
+const getStudentPassing = asyncHandler(async (req, res) => {
   try {
-    const { search } = req.query;
-    let filter = { gwa: { $lte: 3.0 } };
+    const { program, q } = req.query; // frontend sends these
+    let filter = { gwa: { $lte: 3.0 } }; // base filter: passing students only
 
-    if (search) {
+    if (program) {
+      filter.program = program; // match exact program
+    }
+
+    if (q) {
       filter.$or = [
-        { fullName: { $regex: search, $options: "i" } },
-        { studentNumber: { $regex: search, $options: "i" } },
-        { program: { $regex: search, $options: "i" } },
+        { fullName: { $regex: q, $options: "i" } },
+        { studentNumber: { $regex: q, $options: "i" } },
+        { program: { $regex: q, $options: "i" } },
       ];
     }
 
@@ -25,8 +29,7 @@ const asyncHandler = require('express-async-handler')
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-
- })
+});
 
  //@desc  Get Student TOR
 //@route  GET /api/:id/tor
