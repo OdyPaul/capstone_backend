@@ -1,6 +1,6 @@
 // controllers/vcController.js
 const asyncHandler = require('express-async-handler');
-const Student = require('../models/studentModel'); // you have this already
+const Student = require('../../models/web/studentModel'); // you have this already
 const RulesConfig = require("../../models/web/rulesConfig");
 const { buildUnsignedVC, signVC } = require('../../lib/vcBuilder');
 
