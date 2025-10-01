@@ -20,6 +20,7 @@ app.use(express.urlencoded({ extended: false }));
 // ---------- Routes ----------
 app.use('/api/web', require('./routes/userRoutes'));      // Web users (admin/staff/dev)
 app.use('/api/mobile', require('./routes/mobile/userRoutes')); // Mobile app routes (students, avatars, vcRequests)
+app.use('/api/web', require('./routes/vcRoutes'));  
 
 //mobile
 app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
