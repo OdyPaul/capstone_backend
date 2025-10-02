@@ -2,7 +2,6 @@ const express = require("express");
 const router = express.Router();
 const Student = require("../../models/web/studentModel");
 const asyncHandler = require('express-async-handler')
-
 const getStudentPassing = asyncHandler(async (req, res) => {
   try {
     const { college, programs, year, q } = req.query;
@@ -10,13 +9,13 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     // base filter: passing students only
     let filter = { gwa: { $lte: 3.0 } };
 
-    // ✅ case-insensitive college filter
-    if (college) {
+    // ✅ College filter (skip if "All")
+    if (college && college !== "All") {
       filter.college = { $regex: `^${college}$`, $options: "i" };
     }
 
-    // ✅ program(s) filter with case-insensitive matching
-    if (programs) {
+    // ✅ Program(s) filter (skip if "All")
+    if (programs && programs !== "All") {
       if (Array.isArray(programs)) {
         filter.program = { $in: programs.map(p => new RegExp(`^${p}$`, "i")) };
       } else if (typeof programs === "string") {
@@ -30,16 +29,16 @@ const getStudentPassing = asyncHandler(async (req, res) => {
       }
     }
 
-    // ✅ handle year (works if number or string)
-    if (year) {
+    // ✅ Year filter (skip if "All")
+    if (year && year !== "All") {
       if (!isNaN(year)) {
-        filter.dateGraduated = Number(year); // stored as number
+        filter.dateGraduated = Number(year);
       } else {
-        filter.dateGraduated = { $regex: `^${year}$` }; // stored as string
+        filter.dateGraduated = { $regex: `^${year}$` };
       }
     }
 
-    // search across fields
+    // ✅ Search filter
     if (q) {
       filter.$or = [
         { fullName: { $regex: q, $options: "i" } },
@@ -48,12 +47,15 @@ const getStudentPassing = asyncHandler(async (req, res) => {
       ];
     }
 
+    console.log("📌 Final filter:", filter);
+
     const students = await Student.find(filter);
     res.json(students);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
  //@desc  Get Student TOR
