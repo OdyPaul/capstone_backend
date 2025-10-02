@@ -9,13 +9,38 @@ const asyncHandler = require('express-async-handler')
 //@Access Private (University Personnel)
 const getStudentPassing = asyncHandler(async (req, res) => {
   try {
-    const { program, q } = req.query; // frontend sends these
-    let filter = { gwa: { $lte: 3.0 } }; // base filter: passing students only
+    const { college, programs, year, q } = req.query;
 
-    if (program) {
-      filter.program = program; // match exact program
+    // base filter: passing students only
+    let filter = { gwa: { $lte: 3.0 } };
+
+    // filter by college if provided
+    if (college) {
+      filter.college = college;
     }
 
+    // filter by program(s)
+    if (programs) {
+      if (Array.isArray(programs)) {
+        filter.program = { $in: programs };
+      } else if (typeof programs === "string") {
+        // handle comma-separated values from query params
+        if (programs.includes(",")) {
+          filter.program = { $in: programs.split(",") };
+        } else {
+          filter.program = programs;
+        }
+      }
+    }
+
+    // filter by year graduated
+// filter by year graduated
+  if (year) {
+    filter.dateGraduated = Number(year); // ✅ cast to number
+  }
+
+
+    // search across fields
     if (q) {
       filter.$or = [
         { fullName: { $regex: q, $options: "i" } },
@@ -30,6 +55,7 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
  //@desc  Get Student TOR
 //@route  GET /api/:id/tor
