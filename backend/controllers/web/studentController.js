@@ -18,11 +18,18 @@ const getStudentPassing = asyncHandler(async (req, res) => {
       filter.college = { $regex: `^${college}$`, $options: "i" };
     }
 
-    // ✅ Programs filter
-  // ✅ Programs filter (string only)
-    if (programs && programs !== "All") {
+   
+  // ✅ Programs filter (string or array)
+  if (programs && programs !== "All") {
+    if (Array.isArray(programs)) {
+      // multiple → use $in
+      filter.program = { $in: programs.map(p => new RegExp(`^${p}$`, "i")) };
+    } else {
+      // single program → regex match
       filter.program = { $regex: `^${programs}$`, $options: "i" };
     }
+  }
+
 
     // ✅ Year filter (dateGraduated stored as String in schema)
     if (year && year !== "All") {
