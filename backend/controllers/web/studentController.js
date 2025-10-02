@@ -51,6 +51,9 @@ const getStudentPassing = asyncHandler(async (req, res) => {
 
     const students = await Student.find(filter);
     res.json(students);
+    console.log("Incoming query:", req.query);
+    console.log("Final filter:", filter);
+
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
