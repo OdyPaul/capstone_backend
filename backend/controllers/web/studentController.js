@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const Student = require("../../models/web/studentModel");
 const asyncHandler = require('express-async-handler')
+
 const getStudentPassing = asyncHandler(async (req, res) => {
   try {
     const { college, programs, year, q } = req.query;
@@ -9,33 +10,31 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     // base filter: passing students only
     let filter = { gwa: { $lte: 3.0 } };
 
-    // ✅ College filter (skip if "All")
+    // ✅ College filter
     if (college && college !== "All") {
       filter.college = { $regex: `^${college}$`, $options: "i" };
     }
 
-    // ✅ Program(s) filter (skip if "All")
+    // ✅ Programs filter
     if (programs && programs !== "All") {
+      let programList = [];
+
       if (Array.isArray(programs)) {
-        filter.program = { $in: programs.map(p => new RegExp(`^${p}$`, "i")) };
+        programList = programs;
       } else if (typeof programs === "string") {
-        if (programs.includes(",")) {
-          filter.program = {
-            $in: programs.split(",").map(p => new RegExp(`^${p}$`, "i")),
-          };
-        } else {
-          filter.program = { $regex: `^${programs}$`, $options: "i" };
-        }
+        programList = [programs];
+      }
+
+      if (programList.length > 0) {
+        filter.program = {
+          $in: programList.map(p => new RegExp(`^${p}$`, "i")),
+        };
       }
     }
 
-    // ✅ Year filter (skip if "All")
+    // ✅ Year filter (dateGraduated stored as String)
     if (year && year !== "All") {
-      if (!isNaN(year)) {
-        filter.dateGraduated = Number(year);
-      } else {
-        filter.dateGraduated = { $regex: `^${year}$` };
-      }
+      filter.dateGraduated = { $regex: `^${year}`, $options: "i" };
     }
 
     // ✅ Search filter
@@ -55,6 +54,7 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
