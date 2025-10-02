@@ -3,10 +3,6 @@ const router = express.Router();
 const Student = require("../../models/web/studentModel");
 const asyncHandler = require('express-async-handler')
 
-
-//@desc  Get Passing Students
-//@route  GET /api/students/passing
-//@Access Private (University Personnel)
 const getStudentPassing = asyncHandler(async (req, res) => {
   try {
     const { college, programs, year, q } = req.query;
@@ -14,31 +10,34 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     // base filter: passing students only
     let filter = { gwa: { $lte: 3.0 } };
 
-    // filter by college if provided
+    // ✅ case-insensitive college filter
     if (college) {
-      filter.college = college;
+      filter.college = { $regex: `^${college}$`, $options: "i" };
     }
 
-    // filter by program(s)
+    // ✅ program(s) filter with case-insensitive matching
     if (programs) {
       if (Array.isArray(programs)) {
-        filter.program = { $in: programs };
+        filter.program = { $in: programs.map(p => new RegExp(`^${p}$`, "i")) };
       } else if (typeof programs === "string") {
-        // handle comma-separated values from query params
         if (programs.includes(",")) {
-          filter.program = { $in: programs.split(",") };
+          filter.program = {
+            $in: programs.split(",").map(p => new RegExp(`^${p}$`, "i")),
+          };
         } else {
-          filter.program = programs;
+          filter.program = { $regex: `^${programs}$`, $options: "i" };
         }
       }
     }
 
-    // filter by year graduated
-// filter by year graduated
-  if (year) {
-    filter.dateGraduated = Number(year); // ✅ cast to number
-  }
-
+    // ✅ handle year (works if number or string)
+    if (year) {
+      if (!isNaN(year)) {
+        filter.dateGraduated = Number(year); // stored as number
+      } else {
+        filter.dateGraduated = { $regex: `^${year}$` }; // stored as string
+      }
+    }
 
     // search across fields
     if (q) {
@@ -51,9 +50,6 @@ const getStudentPassing = asyncHandler(async (req, res) => {
 
     const students = await Student.find(filter);
     res.json(students);
-    console.log("Incoming query:", req.query);
-    console.log("Final filter:", filter);
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
