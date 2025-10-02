@@ -19,20 +19,9 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     }
 
     // ✅ Programs filter
+  // ✅ Programs filter (string only)
     if (programs && programs !== "All") {
-      let programList = [];
-
-      if (Array.isArray(programs)) {
-        programList = programs;
-      } else if (typeof programs === "string") {
-        programList = [programs];
-      }
-
-      if (programList.length > 0) {
-        filter.program = {
-          $in: programList.map((p) => new RegExp(`^${p}$`, "i")),
-        };
-      }
+      filter.program = { $regex: `^${programs}$`, $options: "i" };
     }
 
     // ✅ Year filter (dateGraduated stored as String in schema)
