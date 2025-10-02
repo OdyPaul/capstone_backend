@@ -1,8 +1,11 @@
 const express = require("express");
 const router = express.Router();
 const Student = require("../../models/web/studentModel");
-const asyncHandler = require('express-async-handler')
+const asyncHandler = require("express-async-handler");
 
+// @desc    Get Passing Students
+// @route   GET /api/student/passing
+// @access  Private (University Personnel)
 const getStudentPassing = asyncHandler(async (req, res) => {
   try {
     const { college, programs, year, q } = req.query;
@@ -27,12 +30,12 @@ const getStudentPassing = asyncHandler(async (req, res) => {
 
       if (programList.length > 0) {
         filter.program = {
-          $in: programList.map(p => new RegExp(`^${p}$`, "i")),
+          $in: programList.map((p) => new RegExp(`^${p}$`, "i")),
         };
       }
     }
 
-    // ✅ Year filter (dateGraduated stored as String)
+    // ✅ Year filter (dateGraduated stored as String in schema)
     if (year && year !== "All") {
       filter.dateGraduated = { $regex: `^${year}`, $options: "i" };
     }
@@ -55,30 +58,27 @@ const getStudentPassing = asyncHandler(async (req, res) => {
   }
 });
 
-
-
-
- //@desc  Get Student TOR
-//@route  GET /api/:id/tor
-//@Access Private (University Personel)
- const getStudentTor = asyncHandler(async(req,res) =>{
-    try {
+// @desc    Get Student TOR
+// @route   GET /api/student/:id/tor
+// @access  Private (University Personnel)
+const getStudentTor = asyncHandler(async (req, res) => {
+  try {
     const student = await Student.findById(req.params.id);
 
     if (!student) {
       return res.status(404).json({ error: "Student not found" });
     }
 
-    res.json(student.subjects || []);  // ✅ return subjects as TOR
+    res.json(student.subjects || []); // ✅ return subjects as TOR
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch TOR" });
   }
- })
+});
 
-//@desc  Search Function
-//@route  GET /api/search
-//@Access Private (University Personel)
-const searchStudent = asyncHandler(async(req,res) =>{
+// @desc    Search Students
+// @route   GET /api/student/search
+// @access  Private (University Personnel)
+const searchStudent = asyncHandler(async (req, res) => {
   try {
     const { q } = req.query;
     let filter = {};
@@ -96,14 +96,13 @@ const searchStudent = asyncHandler(async(req,res) =>{
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-})
+});
 
-//@desc  Search Singe Student
-//@route  GET /api/:id
-//@Access Private (University Personel)
-
-const findStudent = asyncHandler(async(req,res)=>{
-      try {
+// @desc    Find Single Student
+// @route   GET /api/student/:id
+// @access  Private (University Personnel)
+const findStudent = asyncHandler(async (req, res) => {
+  try {
     const student = await Student.findById(req.params.id);
     if (!student) {
       return res.status(404).json({ error: "Student not found" });
@@ -112,12 +111,11 @@ const findStudent = asyncHandler(async(req,res)=>{
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch student" });
   }
-})
-
+});
 
 module.exports = {
-    getStudentPassing,
-    getStudentTor,
-    searchStudent,
-    findStudent,
-}
+  getStudentPassing,
+  getStudentTor,
+  searchStudent,
+  findStudent,
+};
