@@ -19,31 +19,36 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     }
 
    
-  // ✅ Programs filter (string or array)
-  if (programs && programs !== "All") {
-    if (Array.isArray(programs)) {
-      // multiple → use $in
-      filter.program = { $in: programs.map(p => new RegExp(`^${p}$`, "i")) };
-    } else {
-      // single program → regex match
-      filter.program = { $regex: `^${programs}$`, $options: "i" };
+      // ✅ Programs filter (string or array)
+      if (programs && programs !== "All") {
+        if (Array.isArray(programs)) {
+          // multiple → use $in
+          filter.program = { $in: programs.map(p => p.toUpperCase()) };
+        } else {
+          // single program → exact match
+          filter.program = programs.toUpperCase();
+        }
+      }
+
+
+
+    if (req.query.year && req.query.year !== "All") {
+      const year = parseInt(req.query.year, 10);
+      query.dateGraduated = {
+        $gte: new Date(`${year}-01-01`),
+        $lte: new Date(`${year}-12-31`),
+      };
     }
-  }
 
-
-    // ✅ Year filter (dateGraduated stored as String in schema)
-    if (year && year !== "All") {
-      filter.dateGraduated = { $regex: `^${year}`, $options: "i" };
-    }
-
-    // ✅ Search filter
     if (q) {
+      const qUpper = q.toUpperCase();
       filter.$or = [
         { fullName: { $regex: q, $options: "i" } },
         { studentNumber: { $regex: q, $options: "i" } },
-        { program: { $regex: q, $options: "i" } },
+        { program: qUpper }
       ];
     }
+
 
     console.log("📌 Final filter:", filter);
 
