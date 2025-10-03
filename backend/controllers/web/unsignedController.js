@@ -41,9 +41,47 @@
     res.status(201).json(draft);
   });
 
-  const getUnsignedVCs = asyncHandler(async (req, res) => {
-    const drafts = await UnsignedVC.find().populate('student');
-    res.json(drafts);
-  });
+// controllers/unsignedController.js
+const getUnsignedVCs = asyncHandler(async (req, res) => {
+  const { type, range } = req.query; // filters from frontend
+  let filter = {};
+
+  // 🔹 Filter by type (Degree, TOR)
+  if (type && type !== "All") {
+    filter.type = type;
+  }
+
+  // 🔹 Filter by date range
+  if (range && range !== "All") {
+    const now = new Date();
+    let startDate;
+
+    switch (range) {
+      case "today":
+        startDate = new Date(now.setHours(0, 0, 0, 0));
+        break;
+      case "1w":
+        startDate = new Date(now.setDate(now.getDate() - 7));
+        break;
+      case "1m":
+        startDate = new Date(now.setMonth(now.getMonth() - 1));
+        break;
+      case "6m":
+        startDate = new Date(now.setMonth(now.getMonth() - 6));
+        break;
+      default:
+        startDate = null;
+    }
+
+    if (startDate) {
+      filter.createdAt = { $gte: startDate };
+    }
+  }
+
+  // 🔹 Query with filters
+  const drafts = await UnsignedVC.find(filter).populate("student");
+  res.json(drafts);
+});
+
 
   module.exports = { createUnsignedVC, getUnsignedVCs };
