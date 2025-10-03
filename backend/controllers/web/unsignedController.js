@@ -26,7 +26,7 @@ const createUnsignedVC = asyncHandler(async (req, res) => {
     student: studentId,
     type,
     purpose,
-  });
+  }).populate("student");
 
   if (existingDraft) {
     return res.status(409).json({
@@ -36,12 +36,15 @@ const createUnsignedVC = asyncHandler(async (req, res) => {
   }
 
   // ✅ Create draft
-  const draft = await UnsignedVC.create({
+  let draft = await UnsignedVC.create({
     student: studentId,
     type,
     purpose,
     expiration: expirationDate,
   });
+
+  // ✅ Populate student before returning
+  draft = await draft.populate("student");
 
   res.status(201).json(draft);
 });
