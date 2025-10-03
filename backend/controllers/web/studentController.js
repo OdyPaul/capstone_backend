@@ -32,13 +32,14 @@ const getStudentPassing = asyncHandler(async (req, res) => {
 
 
 
-    if (req.query.year && req.query.year !== "All") {
-      const year = parseInt(req.query.year, 10);
-      query.dateGraduated = {
-        $gte: new Date(`${year}-01-01`),
-        $lte: new Date(`${year}-12-31`),
-      };
-    }
+      if (req.query.year && req.query.year !== "All") {
+        const year = parseInt(req.query.year, 10);
+        filter.dateGraduated = {
+          $gte: new Date(`${year}-01-01`),
+          $lte: new Date(`${year}-12-31`),
+        };
+      }
+
 
     if (q) {
       const qUpper = q.toUpperCase();
