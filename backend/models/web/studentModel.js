@@ -12,15 +12,22 @@ const SubjectSchema = new mongoose.Schema({
 });
 
 const StudentSchema = new mongoose.Schema({
-  studentNumber: String,
+  studentNumber: { type: String, required: true, unique: true },
   fullName: String,
-  program: String,
-  dateGraduated: String,
+  extensionName: String,
+  gender: String,
+  address: String, // 👈 merged perm or res address
+  entranceCredentials: String,
+  highSchool: String,
+  program: String, // DegreeTitle
+  major: String,
+  dateAdmission: Date,
+  placeOfBirth: String,
+  dateGraduated: Date,
   gwa: Number,
   honor: String,
   subjects: [SubjectSchema],
-  curriculum: { type: mongoose.Schema.Types.ObjectId, ref: "Curriculum" }  // <- add this
+  curriculum: { type: mongoose.Schema.Types.ObjectId, ref: "Curriculum" },
 });
-
 
 module.exports = mongoose.model("Student", StudentSchema);
