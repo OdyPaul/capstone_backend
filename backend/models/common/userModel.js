@@ -20,6 +20,11 @@ const userSchema = mongoose.Schema(
       enum: ["student", "staff", "admin", "developer"],
       default: "student", // mobile app users default to student
     },
+    did: {
+      type: String,
+      unique: true,
+      sparse: true,
+  },
     verified: {
       type: String,
       enum: ["unverified", "verified"],

@@ -1,65 +1,40 @@
 const mongoose = require("mongoose");
 
-const vcRequestSchema = mongoose.Schema(
+const vcRequestSchema = new mongoose.Schema(
   {
     user: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true, // ✅ so every request is tied to the account who submitted it
-    },
-    personal: {
-      fullName: {
-        type: String,
-        required: [true, "Full name is required"],
-      },
-      address: {
-        type: String,
-        required: [true, "Address is required"],
-      },
-      birthPlace: {
-        type: String,
-        required: [true, "Birth place is required"],
-      },
-      birthDate: {
-        type: Date,
-        required: [true, "Birth date is required"],
-      },
-    },
-    education: {
-      highSchool: {
-        type: String,
-        required: [true, "High school name is required"],
-      },
-      admissionDate: {
-        type: String,
-        required: [true, "Admission date is required"],
-      },
-      graduationDate: {
-        type: String,
-        required: [true, "Graduation date is required"],
-      },
-    },
-    selfieImage: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Image",
-      required: [true, "Selfie image is required"],
+      ref: "User",
+      required: true,
     },
-    idImage: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Image",
-      required: [true, "Valid ID image is required"],
+    DID: {
+      type: String,
+      required: true, // ✅ comes from verified account
+    },
+    type: {
+      type: String,
+      enum: ["TOR", "DEGREE", "CERTIFICATE"],
+      required: true,
+    },
+    program: {
+      type: String,
+      required: true, // e.g., BSIT
+    },
+    purpose: {
+      type: String,
+      required: true, // e.g., Employment, Further Studies
     },
     status: {
       type: String,
-      enum: ["pending", "verified", "rejected"],
+      enum: ["pending", "approved", "rejected", "issued"],
       default: "pending",
     },
-    verifiedAt: {
+    issuedAt: {
       type: Date,
       default: null,
     },
   },
-  { timestamps: true } // ✅ adds createdAt & updatedAt automatically
+  { timestamps: true }
 );
 
 module.exports = mongoose.model("VCRequest", vcRequestSchema);

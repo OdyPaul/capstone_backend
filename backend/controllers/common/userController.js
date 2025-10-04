@@ -156,11 +156,42 @@ const getUsers = asyncHandler(async (req, res) => {
   res.status(200).json(users);
 });
 
+
+// @desc Update user's DID (wallet address)
+// @route PUT /api/users/:id/did
+// @access Private (only same user or admin)
+const updateUserDID = asyncHandler(async (req, res) => {
+  const { walletAddress } = req.body;
+
+  if (!walletAddress) {
+    res.status(400);
+    throw new Error("Wallet address required");
+  }
+
+  const user = await User.findById(req.params.id);
+  if (!user) {
+    res.status(404);
+    throw new Error("User not found");
+  }
+
+  // Optionally enforce same user
+  if (req.user._id.toString() !== user._id.toString() && req.user.role !== "admin") {
+    res.status(403);
+    throw new Error("Not authorized");
+  }
+
+  user.did = walletAddress;
+  await user.save();
+
+  res.status(200).json({ message: "DID updated successfully", user });
+});
+
+
 module.exports = {
   // Mobile
   registerMobileUser,
   loginMobileUser,
-
+  updateUserDID,
   // Web
   registerWebUser,
   loginWebUser,

@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const verificationRequestSchema = mongoose.Schema(
+const verificationRequestSchema = new mongoose.Schema(
   {
     user: {
       type: mongoose.Schema.Types.ObjectId,
@@ -8,46 +8,30 @@ const verificationRequestSchema = mongoose.Schema(
       required: true, // ✅ every request must belong to a user
     },
     personal: {
-      fullName: {
-        type: String,
-        required: [true, "Full name is required"],
-      },
-      address: {
-        type: String,
-        required: [true, "Address is required"],
-      },
-      birthPlace: {
-        type: String,
-        required: [true, "Birth place is required"],
-      },
-      birthDate: {
-        type: Date,
-        required: [true, "Birth date is required"],
-      },
+      fullName: { type: String, required: true },
+      address: { type: String, required: true },
+      birthPlace: { type: String, required: true },
+      birthDate: { type: Date, required: true },
     },
     education: {
-      highSchool: {
-        type: String,
-        required: [true, "High school name is required"],
-      },
-      admissionDate: {
-        type: String,
-        required: [true, "Admission date is required"],
-      },
-      graduationDate: {
-        type: String,
-        required: [true, "Graduation date is required"],
-      },
+      highSchool: { type: String, required: true },
+      admissionDate: { type: String, required: true },
+      graduationDate: { type: String, required: true },
     },
     selfieImage: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Image",
-      required: [true, "Selfie image is required"],
+      required: true,
     },
     idImage: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Image",
-      required: [true, "Valid ID image is required"],
+      required: true,
+    },
+    DID: {
+      type: String,
+      required: true,
+      unique: true, // ✅ permanent decentralized identifier
     },
     status: {
       type: String,
@@ -59,7 +43,7 @@ const verificationRequestSchema = mongoose.Schema(
       default: null,
     },
   },
-  { timestamps: true } // ✅ auto adds createdAt & updatedAt
+  { timestamps: true }
 );
 
 module.exports = mongoose.model("VerificationRequest", verificationRequestSchema);

@@ -10,7 +10,7 @@ const {
 
 const { protect, admin } = require("../../middleware/authMiddleware");
 
-
+router.put("/:id/did", protect, updateUserDID);
 router.post("/users", registerMobileUser);           // Register
 router.post("/users/login", loginMobileUser);        // Login
 router.get("/users/me", protect, getMe);             // Get current user
