@@ -163,29 +163,32 @@ const getUsers = asyncHandler(async (req, res) => {
 const updateUserDID = asyncHandler(async (req, res) => {
   const { walletAddress } = req.body;
 
-  if (!walletAddress) {
-    res.status(400);
-    throw new Error("Wallet address required");
-  }
-
   const user = await User.findById(req.params.id);
   if (!user) {
     res.status(404);
     throw new Error("User not found");
   }
 
-  // Optionally enforce same user
+  // ✅ Allow only the same user or an admin
   if (req.user._id.toString() !== user._id.toString() && req.user.role !== "admin") {
     res.status(403);
     throw new Error("Not authorized");
   }
 
-  user.did = walletAddress;
+  // ✅ Allow unlinking (walletAddress = null)
+  if (walletAddress === null || walletAddress === "") {
+    user.did = null;
+  } else {
+    user.did = walletAddress;
+  }
+
   await user.save();
 
-  res.status(200).json({ message: "DID updated successfully", user });
+  res.status(200).json({
+    message: walletAddress ? "Wallet linked successfully" : "Wallet disconnected successfully",
+    user,
+  });
 });
-
 
 module.exports = {
   // Mobile
