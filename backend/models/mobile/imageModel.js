@@ -26,7 +26,7 @@ const imageSchema = mongoose.Schema(
     },
     ownerRequest: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "VCRequest", // reference to the verification request
+      ref: "VerificationRequest", // reference to the verification request
     },
   },
   { timestamps: true }

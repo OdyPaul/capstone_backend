@@ -8,9 +8,6 @@ const User = require("../../models/common/userModel");
 exports.createVerificationRequest = async (req, res) => {
   try {
     let { personal, education, selfieImageId, idImageId, did } = req.body || {};
-
-  
-
     // validate presence
     if (!personal || !education) {
       return res.status(400).json({ message: "Personal and education info required" });
@@ -42,7 +39,7 @@ exports.createVerificationRequest = async (req, res) => {
       education,
       selfieImage: selfieImageId,
       idImage: idImageId,
-      did:did,         // 👈 store uppercase as per schema
+      did:did,        
       status: "pending",
     });
 
@@ -54,8 +51,8 @@ exports.createVerificationRequest = async (req, res) => {
 
     return res.status(201).json(verification);
   } catch (err) {
-    // handle unique DID collisions nicely
-    if (err?.code === 11000 && err?.keyPattern?.DID) {
+    // ✅ correct duplicate key detection for did
+    if (err?.code === 11000 && (err?.keyPattern?.did || err?.keyValue?.did)) {
       return res.status(409).json({ message: "DID already used in another request" });
     }
     console.error("createVerificationRequest error:", err);
