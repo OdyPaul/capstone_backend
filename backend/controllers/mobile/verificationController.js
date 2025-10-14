@@ -7,10 +7,9 @@ const User = require("../../models/common/userModel");
 // @access Private (student)
 exports.createVerificationRequest = async (req, res) => {
   try {
-    let { personal, education, selfieImageId, idImageId, DID, did } = req.body || {};
+    let { personal, education, selfieImageId, idImageId, did } = req.body || {};
 
-    // normalize DID from either casing
-    const DIDValue = DID || did || null;
+  
 
     // validate presence
     if (!personal || !education) {
@@ -19,7 +18,7 @@ exports.createVerificationRequest = async (req, res) => {
     if (!selfieImageId || !idImageId) {
       return res.status(400).json({ message: "Selfie and ID images are required" });
     }
-    if (!DIDValue) {
+    if (!did) {
       return res.status(400).json({ message: "DID is required. Please link your wallet first." });
     }
     if (!req.user || !req.user._id) {
@@ -43,7 +42,7 @@ exports.createVerificationRequest = async (req, res) => {
       education,
       selfieImage: selfieImageId,
       idImage: idImageId,
-      DID: DIDValue,         // 👈 store uppercase as per schema
+      did:did,         // 👈 store uppercase as per schema
       status: "pending",
     });
 

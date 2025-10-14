@@ -28,10 +28,10 @@ const verificationRequestSchema = new mongoose.Schema(
       ref: "Image",
       required: true,
     },
-    DID: {
+    did: {
       type: String,
       required: true,
-      unique: true, // ✅ permanent decentralized identifier
+      unique: true,
     },
     status: {
       type: String,
