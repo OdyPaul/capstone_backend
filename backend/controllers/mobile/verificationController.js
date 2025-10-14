@@ -7,29 +7,58 @@ const User = require("../../models/common/userModel");
 // @access Private (student)
 exports.createVerificationRequest = async (req, res) => {
   try {
-    const { personal, education, selfieImageId, idImageId } = req.body;
+    let { personal, education, selfieImageId, idImageId, DID, did } = req.body || {};
 
+    // normalize DID from either casing
+    const DIDValue = DID || did || null;
+
+    // validate presence
     if (!personal || !education) {
       return res.status(400).json({ message: "Personal and education info required" });
     }
+    if (!selfieImageId || !idImageId) {
+      return res.status(400).json({ message: "Selfie and ID images are required" });
+    }
+    if (!DIDValue) {
+      return res.status(400).json({ message: "DID is required. Please link your wallet first." });
+    }
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
+    // if strings slipped through, parse once
+    if (typeof personal === "string") {
+      try { personal = JSON.parse(personal); }
+      catch { return res.status(400).json({ message: "personal must be a JSON object" }); }
+    }
+    if (typeof education === "string") {
+      try { education = JSON.parse(education); }
+      catch { return res.status(400).json({ message: "education must be a JSON object" }); }
+    }
+
+    // create request
     const verification = await VerificationRequest.create({
       user: req.user._id,
       personal,
       education,
       selfieImage: selfieImageId,
       idImage: idImageId,
+      DID: DIDValue,         // 👈 store uppercase as per schema
       status: "pending",
     });
 
-    // Tie uploaded images to this verification request
-    const updates = [];
-    if (selfieImageId) updates.push(Image.findByIdAndUpdate(selfieImageId, { ownerRequest: verification._id }));
-    if (idImageId) updates.push(Image.findByIdAndUpdate(idImageId, { ownerRequest: verification._id }));
-    await Promise.all(updates);
+    // link images
+    await Promise.all([
+      Image.findByIdAndUpdate(selfieImageId, { ownerRequest: verification._id }),
+      Image.findByIdAndUpdate(idImageId, { ownerRequest: verification._id }),
+    ]);
 
     return res.status(201).json(verification);
   } catch (err) {
+    // handle unique DID collisions nicely
+    if (err?.code === 11000 && err?.keyPattern?.DID) {
+      return res.status(409).json({ message: "DID already used in another request" });
+    }
     console.error("createVerificationRequest error:", err);
     return res.status(500).json({ message: err.message || "Failed to submit verification" });
   }
