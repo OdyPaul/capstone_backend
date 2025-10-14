@@ -30,4 +30,4 @@ const StudentSchema = new mongoose.Schema({
   curriculum: { type: mongoose.Schema.Types.ObjectId, ref: "Curriculum" },
 });
 
-module.exports = mongoose.model("Student", StudentSchema);
+module.exports = mongoose.model("Student_Profiles", StudentSchema);
