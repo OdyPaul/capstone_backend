@@ -1,21 +1,20 @@
+// importAllCurriculums.js
 const mongoose = require("mongoose");
 const path = require("path");
 const fs = require("fs");
 const Curriculum = require("../models/web/Curriculum");
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+const MONGO_URI = process.env.MONGO_URI_Students;
 
-
-const MONGO_URI = process.env.MONGO_URI;
-
-// Regex to validate subject codes
+// ✅ Regex for subject codes
 const validCodeRegex = /^([A-Z]{2,}[0-9]{0,3}([- ]?[0-9A-Z]{0,3})*)$/;
 
 function isValidCode(code) {
   if (!code) return false;
   const trimmed = code.trim();
   if (validCodeRegex.test(trimmed)) return true;
-  if (/^[A-Z]{2,10}$/.test(trimmed)) return true; // allow short codes like OJT, NSTP
+  if (/^[A-Z]{2,10}$/.test(trimmed)) return true; // e.g., OJT, NSTP
   return false;
 }
 
@@ -47,7 +46,7 @@ async function importCurriculumFromFile(filePath) {
     return;
   }
 
-  await Curriculum.deleteMany({ program }); // remove old one(s) if any
+  await Curriculum.deleteMany({ program });
 
   const curriculum = new Curriculum({
     program,
@@ -56,7 +55,7 @@ async function importCurriculumFromFile(filePath) {
   });
 
   await curriculum.save();
-  console.log(`✅ Imported curriculum for ${program} with ${subjectCount} subjects`);
+  console.log(`✅ Imported ${program} with ${subjectCount} subjects.`);
 }
 
 async function run() {
@@ -64,14 +63,13 @@ async function run() {
     const dir = path.join(__dirname, "..", "Curriculums");
     const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
 
-    if (files.length === 0) {
+    if (!files.length) {
       console.log("❌ No JSON files found in Curriculums folder.");
       return;
     }
 
     for (const file of files) {
-      const filePath = path.join(dir, file);
-      await importCurriculumFromFile(filePath);
+      await importCurriculumFromFile(path.join(dir, file));
     }
   } catch (err) {
     console.error("❌ Error importing:", err);
@@ -81,8 +79,8 @@ async function run() {
   }
 }
 
-// Only connect and run once
-mongoose.connect(MONGO_URI)
+mongoose
+  .connect(MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB connected");
     return run();
