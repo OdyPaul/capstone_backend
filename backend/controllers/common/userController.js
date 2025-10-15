@@ -57,17 +57,17 @@ const registerMobileUser = asyncHandler(async (req, res) => {
 // @access  Public
 const loginMobileUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-
   const user = await User.findOne({ email });
 
   if (user && (await bcrypt.compare(password, user.password))) {
     res.json({
-      _id: user.id,
+      _id: user._id, // use _id to be explicit
       name: user.name,
       email: user.email,
-      verified: user.role === "student" ? user.verified : undefined,
-      did: user.did ?? null, 
-      createdAt: user.createdAt,                     
+      role: user.role,
+      verified: user.verified ?? "unverified",
+      did: user.did ?? null,
+      createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       token: generateToken(user._id),
     });
@@ -76,6 +76,7 @@ const loginMobileUser = asyncHandler(async (req, res) => {
     throw new Error("Invalid credentials");
   }
 });
+
 
 // ---------------- WEB CONTROLLERS ----------------
 
