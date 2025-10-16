@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const Student = require("../../models/web/studentModel");
+const Student = require("../../models/students/studentModel");
 const asyncHandler = require("express-async-handler");
 
 // @desc    Get Passing Students
