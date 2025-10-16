@@ -33,6 +33,16 @@ function parseSemester(s) {
 function termLabel(row) {
   return `${row.semester || ''}`;
 }
+function expandRowsForAy(rows) {
+  const out = [];
+  for (const r of rows) {
+    out.push({ ...r, isAyRow: false });
+    if (r.isTermStart && r.ay) {     // 👈 guard for missing AY
+      out.push({ isAyRow: true, ay: r.ay, semester: r.semester });
+    }
+  }
+  return out;
+}
 // paginate rows into pages
 function paginateRows(rows, perFirst=24, perNext=32) {
   const pages = [];
@@ -62,7 +72,8 @@ function buildRows(subjects = [], admissionDate = null) {
     subjectDescription: s.subjectDescription || '',
     finalGrade: (s.finalGrade ?? '').toString(),
     reExam: '',
-    units: (s.units ?? '').toString()
+    units: (s.units ?? '').toString(),
+    ay: academicYearFor(s.yearLevel, admissionDate) // needed for AY rows
   }));
 
   // sort by year then sem then code
@@ -74,19 +85,12 @@ function buildRows(subjects = [], admissionDate = null) {
     return (a.subjectCode || '').localeCompare(b.subjectCode || '');
   });
 
-  // only show the term on the first row of each (year+semester) group
-  // and add the academic year line beneath it.
+  // mark the first row of each (year+semester) group
   let lastKey = '';
   for (const r of norm) {
     const key = `${parseYearLevel(r.yearLevel)}|${parseSemester(r.semester)}`;
-    if (key !== lastKey) {
-      const semText = r.semester || '';
-      const ay = academicYearFor(r.yearLevel, admissionDate); // 2021-2022, 2022-2023, ...
-      r.termHtml = `<div>${semText}</div><div class="ay">${ay}</div>`;
-      lastKey = key;
-    } else {
-      r.termHtml = ''; // blank for repeated rows in the same sem
-    }
+    r.isTermStart = key !== lastKey;
+    if (r.isTermStart) lastKey = key;
   }
   return norm;
 }
@@ -108,9 +112,9 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   });
   const verifyUrl = `${process.env.BASE_URL}/verify/${sessionId}`;
 
-  // 3) Build & paginate table rows
-    const rows = buildRows(student.subjects || [], student.dateAdmission);
-    const pageChunks = paginateRows(rows, 24, 32);
+    const subjectRows = buildRows(student.subjects || [], student.dateAdmission);
+    const rows = expandRowsForAy(subjectRows);
+    const pageChunks = paginateRows(rows, 22, 30);
 
   // 4) Read background images as data URLs
   const bg1Path = path.join(__dirname, '../../templates/assets/tor-page-1.png');
