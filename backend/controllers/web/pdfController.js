@@ -45,8 +45,16 @@ function paginateRows(rows, perFirst=24, perNext=32) {
   }
   return pages;
 }
-// build rows from student.subjects
-function buildRows(subjects = []) {
+function academicYearFor(yearLevelStr, admissionDate) {
+  if (!admissionDate) return '';
+  const base = new Date(admissionDate).getFullYear();     // e.g., 2021
+  const lvl = parseYearLevel(yearLevelStr) || 1;          // "1st Year" -> 1
+  const y1 = base + (lvl - 1);
+  const y2 = y1 + 1;
+  return `${y1}-${y2}`;                                   // "2021-2022"
+}
+// build rows from student.subjects, show term once with AY line
+function buildRows(subjects = [], admissionDate = null) {
   const norm = subjects.map(s => ({
     yearLevel: s.yearLevel,
     semester: s.semester,
@@ -67,11 +75,18 @@ function buildRows(subjects = []) {
   });
 
   // only show the term on the first row of each (year+semester) group
+  // and add the academic year line beneath it.
   let lastKey = '';
   for (const r of norm) {
     const key = `${parseYearLevel(r.yearLevel)}|${parseSemester(r.semester)}`;
-    r.term = key !== lastKey ? termLabel(r) : ''; // first of group shows, rest blank
-    lastKey = key;
+    if (key !== lastKey) {
+      const semText = r.semester || '';
+      const ay = academicYearFor(r.yearLevel, admissionDate); // 2021-2022, 2022-2023, ...
+      r.termHtml = `<div>${semText}</div><div class="ay">${ay}</div>`;
+      lastKey = key;
+    } else {
+      r.termHtml = ''; // blank for repeated rows in the same sem
+    }
   }
   return norm;
 }
@@ -94,8 +109,8 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   const verifyUrl = `${process.env.BASE_URL}/verify/${sessionId}`;
 
   // 3) Build & paginate table rows
-  const rows = buildRows(student.subjects || []);
-  const pageChunks = paginateRows(rows, 24, 32);
+    const rows = buildRows(student.subjects || [], student.dateAdmission);
+    const pageChunks = paginateRows(rows, 24, 32);
 
   // 4) Read background images as data URLs
   const bg1Path = path.join(__dirname, '../../templates/assets/tor-page-1.png');

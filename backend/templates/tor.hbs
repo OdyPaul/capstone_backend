@@ -3,51 +3,77 @@
 <head>
   <meta charset="utf-8"/>
   <title>Transcript of Records</title>
-  <style>
-    @page { size: A4; margin: 10mm; } /* If your form is Letter, change to size: Letter; */
+ <style>
+  @page { size: A4; margin: 10mm; }
 
-    body { margin: 0; font-family: Arial, sans-serif; font-size: 12px; }
-    .page {
-      position: relative;
-      height: 277mm;  /* A4 content height after margins (adjust if Letter) */
-      box-sizing: border-box;
-      page-break-after: always;
-      padding: 16mm 10mm 10mm 10mm;
-      background-repeat: no-repeat;
-      background-position: center top;
-      background-size: cover;
-    }
-    .header { text-align: center; margin: 2mm 0 4mm; }
-    .meta {
-      width: 100%;
-      border-collapse: collapse;
-      margin-bottom: 4mm;
-      font-size: 11px;
-    }
-    .meta td { padding: 2px 6px; vertical-align: top; }
-    .grid {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 11px;
-    }
-    .grid th, .grid td {
-      border: 1px solid #333;
-      padding: 3px 4px;
-    }
-    .grid thead { display: table-header-group; } /* repeat header each page */
-    .note { font-size: 10px; color: #555; margin-top: 4mm; }
-    .footer-remark { font-size: 10px; margin-top: 3mm; }
-    .right { text-align: right; }
-    .center { text-align: center; }
+  body { margin: 0; font-family: Arial, sans-serif; font-size: 12px; }
+  .page {
+    position: relative;
+    height: 277mm;
+    box-sizing: border-box;
+    page-break-after: always;
+    /* was: padding: 10mm; */
+    padding: 16mm 10mm 10mm 10mm; /* push content down; tweak 16→18mm if needed */
+    background-repeat: no-repeat;
+    background-position: top left;
+    background-size: cover;
+  }
 
-    /* Column widths tuned to match the form grid */
-    .col-term   { width: 20mm; }
-    .col-code   { width: 26mm; }
-    .col-subj   { width: auto; } /* fill */
-    .col-grade  { width: 18mm; text-align: center; }
-    .col-reexam { width: 18mm; text-align: center; }
-    .col-units  { width: 16mm; text-align: center; }
-  </style>
+  .header { text-align: center; margin: 2mm 0 4mm; }
+  .meta {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 4mm;
+    font-size: 11px;
+  }
+  .meta td { padding: 2px 6px; vertical-align: top; }
+
+  .grid {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+
+  /* Hide all borders by default */
+  .grid th,
+  .grid td {
+    border: none;
+    padding: 3px 4px;
+  }
+
+  /* Show borders on header */
+  .grid thead th {
+    border: 1px solid #333;
+  }
+
+  /* Show a closing line on the last row only */
+  .grid tbody tr:last-child td {
+    border-bottom: 1px solid #333;
+  }
+
+  .grid thead { display: table-header-group; } /* repeat header each page */
+
+  .note { font-size: 10px; color: #555; margin-top: 4mm; }
+  .footer-remark { font-size: 10px; margin-top: 3mm; }
+  .right { text-align: right; }
+  .center { text-align: center; }
+
+  /* Column widths */
+  .col-term   { width: 24mm; } /* slightly wider to fit AY line */
+  .col-code   { width: 26mm; }
+  .col-subj   { width: auto; }
+  .col-grade  { width: 18mm; text-align: center; }
+  .col-reexam { width: 18mm; text-align: center; }
+  .col-units  { width: 16mm; text-align: center; }
+
+  /* Term cell subline for AY */
+  .col-term .ay {
+    font-size: 10px;
+    line-height: 1.0;
+    white-space: nowrap;
+  }
+</style>
+
 </head>
 <body>
 
@@ -100,7 +126,7 @@
       <tbody>
         {{#each rows}}
           <tr>
-            <td class="col-term">{{this.term}}</td>
+            <td class="col-term">{{{this.termHtml}}}</td>
             <td class="col-code">{{this.subjectCode}}</td>
             <td class="col-subj">{{this.subjectDescription}}</td>
             <td class="col-grade">{{this.finalGrade}}</td>
@@ -109,6 +135,7 @@
           </tr>
         {{/each}}
       </tbody>
+
     </table>
 
     <div class="note">
