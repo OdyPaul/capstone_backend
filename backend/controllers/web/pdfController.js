@@ -3,10 +3,12 @@ const asyncHandler = require('express-async-handler');
 const hbs = require('handlebars');
 const fs = require('fs/promises');
 const path = require('path');
-const puppeteer = require('puppeteer');
+// ❌ do not import plain puppeteer on Render
+// const puppeteer = require('puppeteer');
 const Student = require('../../models/students/studentModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
 const launchBrowser = require('../../utils/launchBrowser');
+
 // Helpers ------------------------------------------------------
 function toISODate(d) { return d ? new Date(d).toISOString().split('T')[0] : ''; }
 function readAsDataUrl(absPath) {
@@ -29,8 +31,6 @@ function parseSemester(s) {
   return 9; // unknown -> last
 }
 function termLabel(row) {
-  // What to display in the TERM column
-  // You can refine this to include AY if you store it. For now:
   return `${row.semester || ''}`;
 }
 // paginate rows into pages
@@ -53,10 +53,9 @@ function buildRows(subjects=[]) {
     subjectCode: s.subjectCode || '',
     subjectDescription: s.subjectDescription || '',
     finalGrade: (s.finalGrade ?? '').toString(),
-    reExam: '', // you can compute / fill if you track it
+    reExam: '',
     units: (s.units ?? '').toString()
   }));
-  // sort by year then sem then code
   norm.sort((a, b) => {
     const ya = parseYearLevel(a.yearLevel), yb = parseYearLevel(b.yearLevel);
     if (ya !== yb) return ya - yb;
@@ -64,7 +63,6 @@ function buildRows(subjects=[]) {
     if (sa !== sb) return sa - sb;
     return (a.subjectCode || '').localeCompare(b.subjectCode || '');
   });
-  // attach TERM labels
   norm.forEach(r => r.term = termLabel(r));
   return norm;
 }
@@ -88,8 +86,7 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
 
   // 3) Build & paginate table rows
   const rows = buildRows(student.subjects || []);
-  // tune per page counts to match your background grid
-  const pageChunks = paginateRows(rows, /*perFirst*/24, /*perNext*/32);
+  const pageChunks = paginateRows(rows, 24, 32);
 
   // 4) Read background images as data URLs
   const bg1Path = path.join(__dirname, '../../templates/assets/tor-page-1.png');
@@ -127,17 +124,39 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
     pages
   });
 
-  // 7) Render via Puppeteer
-  const browser = await launchBrowser();  
+  // 7) Render via Puppeteer (safer settings for Render)
+  const browser = await launchBrowser();
   const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: 'networkidle0' });
 
-  // If your form is Letter, change format: 'Letter'
+  // Logs to Render dashboard
+  page.on('console', msg => console.log('[puppeteer]', msg.type(), msg.text()));
+  page.on('pageerror', err => console.log('[puppeteer pageerror]', err));
+  page.on('requestfailed', req => console.log('[puppeteer requestfailed]', req.url(), req.failure()?.errorText));
+
+  // Block any external requests so we never wait on the network
+  await page.setRequestInterception(true);
+  page.on('request', req => {
+    const url = req.url();
+    if (url.startsWith('http://') || url.startsWith('https://')) return req.abort();
+    return req.continue();
+  });
+
+  // More generous timeouts
+  page.setDefaultNavigationTimeout(120000);
+  page.setDefaultTimeout(120000);
+
+  // Do not wait for network idle (can hang on server)
+  await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.emulateMediaType('screen');
+
   const pdf = await page.pdf({
     format: 'A4',
     printBackground: true,
-    margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' }
+    margin: { top: '10mm', right: '10mm', bottom: '10mm', left: '10mm' },
+    preferCSSPageSize: true,
+    timeout: 0
   });
+
   await browser.close();
 
   res.setHeader('Content-Type', 'application/pdf');
