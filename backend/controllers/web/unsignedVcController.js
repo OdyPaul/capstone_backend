@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
 const UnsignedVC = require('../../models/web/unsignedVc');       
-const Student    = require('../../models/web/studentModel');
+const Student = require("../../models/students/studentModel");
 // ---------- helpers ----------
 function parseExpiration(expiration) {
   if (!expiration || expiration === 'N/A') return null;
