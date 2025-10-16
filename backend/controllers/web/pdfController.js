@@ -4,7 +4,7 @@ const hbs = require('handlebars');
 const fs = require('fs/promises');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const Student = require('../../models/web/studentModel');
+const Student = require('../../models/students/studentModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
 const launchBrowser = require('../../utils/launchBrowser');
 // Helpers ------------------------------------------------------
