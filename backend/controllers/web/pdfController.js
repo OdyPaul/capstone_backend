@@ -85,12 +85,17 @@ function buildRows(subjects = [], admissionDate = null) {
     return (a.subjectCode || '').localeCompare(b.subjectCode || '');
   });
 
-  // mark the first row of each (year+semester) group
+  // mark the first row of each (year+semester) group,
+  // and decide if the semester label should be shown in that row.
   let lastKey = '';
   for (const r of norm) {
     const key = `${parseYearLevel(r.yearLevel)}|${parseSemester(r.semester)}`;
     r.isTermStart = key !== lastKey;
     if (r.isTermStart) lastKey = key;
+
+    // 👇 Show the semester only on the first row,
+    // except when it's 2nd Sem — then show it on ALL rows
+    r.showSemesterInRow = r.isTermStart || parseSemester(r.semester) === 2;
   }
   return norm;
 }
