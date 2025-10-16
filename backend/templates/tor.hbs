@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Transcript of Records</title>
+  <style>
+    @page { size: A4; margin: 10mm; } /* If your form is Letter, change to size: Letter; */
+
+    body { margin: 0; font-family: Arial, sans-serif; font-size: 12px; }
+    .page {
+      position: relative;
+      height: 277mm;  /* A4 content height after margins (adjust if Letter) */
+      box-sizing: border-box;
+      page-break-after: always;
+      padding: 10mm;
+      background-repeat: no-repeat;
+      background-position: center top;
+      background-size: cover;
+    }
+    .header { text-align: center; margin: 2mm 0 4mm; }
+    .meta {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 4mm;
+      font-size: 11px;
+    }
+    .meta td { padding: 2px 6px; vertical-align: top; }
+    .grid {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .grid th, .grid td {
+      border: 1px solid #333;
+      padding: 3px 4px;
+    }
+    .grid thead { display: table-header-group; } /* repeat header each page */
+    .note { font-size: 10px; color: #555; margin-top: 4mm; }
+    .footer-remark { font-size: 10px; margin-top: 3mm; }
+    .right { text-align: right; }
+    .center { text-align: center; }
+
+    /* Column widths tuned to match the form grid */
+    .col-term   { width: 20mm; }
+    .col-code   { width: 26mm; }
+    .col-subj   { width: auto; } /* fill */
+    .col-grade  { width: 18mm; text-align: center; }
+    .col-reexam { width: 18mm; text-align: center; }
+    .col-units  { width: 16mm; text-align: center; }
+  </style>
+</head>
+<body>
+
+{{#each pages}}
+  <div class="page" style="background-image: url('{{this.bg}}');">
+    <div class="header">
+      <div><strong>OFFICIAL TRANSCRIPT OF RECORDS</strong></div>
+    </div>
+
+    <!-- Student meta block -->
+    <table class="meta">
+      <tr>
+        <td><strong>NAME</strong> {{../fullName}}</td>
+        <td><strong>DATE OF ADMISSION</strong> {{../dateAdmission}}</td>
+      </tr>
+      <tr>
+        <td><strong>ADDRESS</strong> {{../address}}</td>
+        <td><strong>PLACE OF BIRTH</strong> {{../placeOfBirth}}</td>
+      </tr>
+      <tr>
+        <td><strong>ENTRANCE CREDENTIALS</strong> {{../entranceCredentials}}</td>
+        <td><strong>DATE OF BIRTH</strong> {{../dateOfBirth}}</td>
+      </tr>
+      <tr>
+        <td><strong>HIGH SCHOOL</strong> {{../highSchool}}</td>
+        <td><strong>DATE GRADUATED</strong> {{../dateGraduated}}</td>
+      </tr>
+      <tr>
+        <td><strong>DEGREE/TITLE EARNED</strong> {{../program}}</td>
+        <td><strong>MAJOR</strong> {{../major}}</td>
+      </tr>
+      <tr>
+        <td></td>
+        <td><strong>DATE OF GRADUATION</strong> {{../dateGraduated}}</td>
+      </tr>
+    </table>
+
+    <!-- Subjects table -->
+    <table class="grid">
+      <thead>
+        <tr>
+          <th class="col-term">TERM</th>
+          <th class="col-code">COURSE NO.</th>
+          <th class="col-subj">SUBJECTS DESCRIPTION</th>
+          <th class="col-grade">FINAL GRADE</th>
+          <th class="col-reexam">RE-EXAM</th>
+          <th class="col-units">CREDIT</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each rows}}
+          <tr>
+            <td class="col-term">{{this.term}}</td>
+            <td class="col-code">{{this.subjectCode}}</td>
+            <td class="col-subj">{{this.subjectDescription}}</td>
+            <td class="col-grade">{{this.finalGrade}}</td>
+            <td class="col-reexam">{{this.reExam}}</td>
+            <td class="col-units">{{this.units}}</td>
+          </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <div class="note">
+      GRADING SYSTEM: 1.00–1.25 Excellent; 1.50–1.75 Very Good; 2.00–2.75 Good; 2.50–2.75 Satisfactory; 3.00 Passed; 4.00 Conditional; Inc – Incomplete; Drp – Dropped; 5.00 Failed/Unofficially Dropped.
+      <br/>NOT VALID WITHOUT UNIVERSITY SEAL.
+    </div>
+
+    <div class="footer-remark">
+    {{#if this.continues}}
+        Remarks: Continue on next page
+    {{else}}
+        NOTHING FOLLOWS
+    {{/if}}
+    </div>
+
+    <div class="note">
+      Verify online: {{../verifyUrl}}
+    </div>
+  </div>
+{{/each}}
+
+</body>
+</html>

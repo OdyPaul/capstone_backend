@@ -5,9 +5,7 @@ const User = require("../../models/common/userModel");
 
 // ---------------- HELPERS ----------------
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: "30d",
-  });
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 };
 
 // ---------------- MOBILE CONTROLLERS ----------------
@@ -16,9 +14,9 @@ const generateToken = (id) => {
 // @route   POST /api/mobile/users
 // @access  Public
 const registerMobileUser = asyncHandler(async (req, res) => {
-  const { name, email, password } = req.body;
+  const { username, email, password } = req.body;
 
-  if (!name || !email || !password) {
+  if (!username || !email || !password) {
     res.status(400);
     throw new Error("Please add all fields");
   }
@@ -33,16 +31,16 @@ const registerMobileUser = asyncHandler(async (req, res) => {
   const hashedPassword = await bcrypt.hash(password, salt);
 
   const user = await User.create({
-    name,
+    username,
     email,
     password: hashedPassword,
-    role: "student", // ✅ always student on mobile
+    role: "student",
   });
 
   if (user) {
     res.status(201).json({
       _id: user.id,
-      name: user.name,
+      username: user.username,
       email: user.email,
       token: generateToken(user._id),
     });
@@ -61,8 +59,8 @@ const loginMobileUser = asyncHandler(async (req, res) => {
 
   if (user && (await bcrypt.compare(password, user.password))) {
     res.json({
-      _id: user._id, // use _id to be explicit
-      name: user.name,
+      _id: user._id,
+      username: user.username,
       email: user.email,
       role: user.role,
       verified: user.verified ?? "unverified",
@@ -77,16 +75,15 @@ const loginMobileUser = asyncHandler(async (req, res) => {
   }
 });
 
-
 // ---------------- WEB CONTROLLERS ----------------
 
 // @desc    Register new web user (role required / defaults to staff)
 // @route   POST /api/web/users
 // @access  Public
 const registerWebUser = asyncHandler(async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { username, email, password, role } = req.body;
 
-  if (!name || !email || !password) {
+  if (!username || !email || !password) {
     res.status(400);
     throw new Error("Please add all required fields");
   }
@@ -101,7 +98,7 @@ const registerWebUser = asyncHandler(async (req, res) => {
   const hashedPassword = await bcrypt.hash(password, salt);
 
   const user = await User.create({
-    name,
+    username,
     email,
     password: hashedPassword,
     role: role || "staff",
@@ -110,7 +107,7 @@ const registerWebUser = asyncHandler(async (req, res) => {
   if (user) {
     res.status(201).json({
       _id: user.id,
-      name: user.name,
+      username: user.username,
       email: user.email,
       role: user.role,
       token: generateToken(user._id),
@@ -126,13 +123,12 @@ const registerWebUser = asyncHandler(async (req, res) => {
 // @access  Public
 const loginWebUser = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
-
   const user = await User.findOne({ email });
 
   if (user && (await bcrypt.compare(password, user.password))) {
     res.json({
       _id: user.id,
-      name: user.name,
+      username: user.username,
       email: user.email,
       role: user.role,
       token: generateToken(user._id),
@@ -160,10 +156,9 @@ const getUsers = asyncHandler(async (req, res) => {
   res.status(200).json(users);
 });
 
-
-// @desc Update user's DID (wallet address)
-// @route PUT /api/users/:id/did
-// @access Private (only same user or admin)
+// @desc    Update user's DID (wallet address)
+// @route   PUT /api/users/:id/did
+// @access  Private (only same user or admin)
 const updateUserDID = asyncHandler(async (req, res) => {
   const { walletAddress } = req.body;
 
@@ -173,13 +168,11 @@ const updateUserDID = asyncHandler(async (req, res) => {
     throw new Error("User not found");
   }
 
-  // ✅ Allow only the same user or an admin
   if (req.user._id.toString() !== user._id.toString() && req.user.role !== "admin") {
     res.status(403);
     throw new Error("Not authorized");
   }
 
-  // ✅ Allow unlinking (walletAddress = null)
   if (walletAddress === null || walletAddress === "") {
     user.did = null;
   } else {
@@ -195,15 +188,11 @@ const updateUserDID = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  // Mobile
   registerMobileUser,
   loginMobileUser,
-  updateUserDID,
-  // Web
   registerWebUser,
   loginWebUser,
   getUsers,
-
-  // Shared
   getMe,
+  updateUserDID,
 };

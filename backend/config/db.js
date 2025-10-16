@@ -1,17 +1,27 @@
 // config/db.js
 const mongoose = require('mongoose');
 
-const connectDB = async () => {
-  try {
-    const conn = await mongoose.connect(process.env.MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
-  } catch (error) {
-    console.error(`Error connecting to MongoDB: ${error.message}`);
-    process.exit(1);
-  }
-};
+let authConn, studentsConn, vcConn;
 
-module.exports = connectDB;
+async function connectAll() {
+  // Node MongoDB v4+: no need for useNewUrlParser/useUnifiedTopology
+  const commonOpts = {};
+
+  authConn     = await mongoose.createConnection(process.env.MONGO_URI_AUTH, commonOpts).asPromise();
+  studentsConn = await mongoose.createConnection(process.env.MONGO_URI_STUDENTS, commonOpts).asPromise();
+  vcConn       = await mongoose.createConnection(process.env.MONGO_URI_VC, commonOpts).asPromise();
+
+  console.log('Mongo connected:', {
+    auth: authConn.name,
+    students: studentsConn.name,
+    vc: vcConn.name,
+  });
+
+  return { authConn, studentsConn, vcConn };
+}
+
+const getAuthConn     = () => authConn;
+const getStudentsConn = () => studentsConn;
+const getVcConn       = () => vcConn;
+
+module.exports = { connectAll, getAuthConn, getStudentsConn, getVcConn };

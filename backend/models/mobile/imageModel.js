@@ -1,4 +1,6 @@
 const mongoose = require("mongoose");
+const { getAuthConn } = require('../../config/db');
+const conn = getAuthConn();
 
 const imageSchema = mongoose.Schema(
   {
@@ -36,4 +38,4 @@ const imageSchema = mongoose.Schema(
 // NOTE: This does NOT delete the file from Cloudinary — still need a cron job for that.
 imageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-module.exports = mongoose.model("Image", imageSchema);
+module.exports = conn.model("Image", imageSchema);

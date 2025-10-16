@@ -5,8 +5,8 @@ const {
   loginWebUser,
   getUsers,
   getMe,
-} = require("../controllers/common/userController");
-const { protect, admin } = require("../middleware/authMiddleware");
+} = require("../../controllers/common/userController");
+const { protect, admin } = require("../../middleware/authMiddleware");
 
 // Web: Register user (staff/admin/etc.)
 router.post("/users", registerWebUser);

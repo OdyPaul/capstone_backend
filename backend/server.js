@@ -1,44 +1,52 @@
+// backend/server.js
 const path = require('path');
 const express = require('express');
 const colors = require('colors');
-const cors = require("cors");
+const cors = require('cors');
+const qs = require('qs');
 require('dotenv').config();
-const qs = require("qs");
-const connectDB = require('./config/db');
+
+const { connectAll } = require('./config/db');
 const { errorHandler } = require('./middleware/errorMiddleware');
 
-// Connect to MongoDB
-connectDB();
+(async () => {
+  // 1) Connect to all DBs before mounting routes
+  await connectAll();
 
-const app = express();
+  const app = express();
 
-// ---------- Middleware ----------
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
-app.set("query parser", (str) => qs.parse(str));
+  // 2) Middleware
+  app.use(cors());
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
+  app.set('query parser', (str) => qs.parse(str));
 
-// ---------- Routes ----------
-app.use('/api/web', require('./routes/userRoutes'));      // Web users (admin/staff/dev)
+  // 3) Health
+  app.get('/', (_req, res) => res.send('✅ API is running...'));
 
-app.use('/api/mobile', require('./routes/mobile/userRoutes')); // Mobile app routes (students, avatars, vcRequests)
-app.use('/api/web', require('./routes/vcRoutes'));  
-app.use('/api/student', require('./routes/studentRoutes'));
+  // 4) Routes (deduplicated)
+  app.use('/api/web', require('./routes/web/userRoutes'));           // web users (admin/staff/dev)
+  app.use('/api/mobile', require('./routes/mobile/userRoutes'));     // mobile auth/users
+  app.use('/api/web', require('./routes/web/vcRoutes'));             // VC: drafts/sign/anchor/etc
+  app.use('/api/web', require('./routes/web/pdfRoutes'));            // PDF render/download
+  app.use('/api/web', require('./routes/web/settingsRoutes'));       // issuer metadata/settings
+  app.use('/api/student', require('./routes/studentRoutes'));        // student queries
+  app.use('/api/web', require('./routes/web/unsignedVcRoutes'));
+  
+  // mobile feature routes
+  app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));  // image uploads
+  app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));  // mobile VC requests
+  app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
 
-//mobile
-app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
-app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
-app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
-// app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-// ---------- Error handler (must be last) ----------
-app.use(errorHandler);
+  // Optional: static files
+  // app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-app.get("/", (req, res) => {
-  res.send("✅ API is running...");
-});
+  // 5) Error handler (last)
+  app.use(errorHandler);
 
-// ---------- Start server ----------
-const port = process.env.PORT || 5000;
-app.listen(port, '0.0.0.0', () =>
-  console.log(`🚀 Server running on port ${port}`.yellow.bold)
-);
+  // 6) Start
+  const port = process.env.PORT || 5000;
+  app.listen(port, '0.0.0.0', () =>
+    console.log(`🚀 Server running on port ${port}`.yellow.bold)
+  );
+})();

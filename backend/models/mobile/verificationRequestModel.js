@@ -1,4 +1,6 @@
 const mongoose = require("mongoose");
+const { getAuthConn } = require('../../config/db');
+const conn = getAuthConn();
 
 const verificationRequestSchema = new mongoose.Schema(
   {
@@ -46,4 +48,4 @@ const verificationRequestSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-module.exports = mongoose.model("VerificationRequest", verificationRequestSchema);
+module.exports = conn.model("VerificationRequest", verificationRequestSchema);

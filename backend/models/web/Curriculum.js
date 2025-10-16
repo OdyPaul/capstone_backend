@@ -1,17 +1,12 @@
-//For generating dummy data
-
-const mongoose = require("mongoose");
-
-const SubjectSchema = new mongoose.Schema({
-  subjectCode: String,
-  subjectDescription: String,
-  units: Number,
-});
+// models/students/curriculumModel.js
+const mongoose = require('mongoose');
+const { getStudentsConn } = require('../../config/db');
+const sconn = getStudentsConn();
 
 const CurriculumSchema = new mongoose.Schema({
-  program: { type: String, required: true },
+  program:        { type: String, required: true },
   curriculumYear: { type: String, required: true },
-  structure: { type: Object, default: {} }, // dynamic object for years & semesters
-});
+  structure:      { type: Object, default: {} },
+}, { timestamps: true });
 
-module.exports = mongoose.model("Curriculum", CurriculumSchema);
+module.exports = sconn.model('Curriculum', CurriculumSchema);
