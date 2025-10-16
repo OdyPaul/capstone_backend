@@ -147,27 +147,31 @@
         <col class="col-reexam">
         <col class="col-units">
       </colgroup>
-      <tbody>
-        {{#each rows}}
-          {{#if this.isAyRow}}
-            <!-- A.Y. row injected right after the first subject of each term -->
-            <tr class="term-ay-row">
-              <td class="td-term"><span class="ay">{{this.ay}}</span></td>
-              <td class="td-code" colspan="5"></td>
-            </tr>
-          {{else}}
-            <!-- Normal subject row -->
-            <tr>
-              <td class="td-term">{{this.semester}}</td>
-              <td class="td-code">{{this.subjectCode}}</td>
-              <td class="td-subj">{{this.subjectDescription}}</td>
-              <td class="td-grade">{{this.finalGrade}}</td>
-              <td class="td-reexam">{{this.reExam}}</td>
-              <td class="td-units">{{this.units}}</td>
-            </tr>
+     <tbody>
+  {{#each rows}}
+    {{#if this.isAyRow}}
+      <!-- A.Y. row injected right after the first subject of each term -->
+      <tr class="term-ay-row">
+        <td class="td-term"><span class="ay">{{this.ay}}</span></td>
+        <td class="td-code" colspan="5"></td>
+      </tr>
+    {{else}}
+      <!-- Normal subject row -->
+      <tr>
+        <td class="td-term">
+          {{#if this.showSemesterInRow}}
+            {{this.semester}}
           {{/if}}
-        {{/each}}
-      </tbody>
+        </td>
+        <td class="td-code">{{this.subjectCode}}</td>
+        <td class="td-subj">{{this.subjectDescription}}</td>
+        <td class="td-grade">{{this.finalGrade}}</td>
+        <td class="td-reexam">{{this.reExam}}</td>
+        <td class="td-units">{{this.units}}</td>
+      </tr>
+    {{/if}}
+  {{/each}}
+</tbody>
 
     </table>
   </div>
