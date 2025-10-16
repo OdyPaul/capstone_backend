@@ -46,7 +46,7 @@ function paginateRows(rows, perFirst=24, perNext=32) {
   return pages;
 }
 // build rows from student.subjects
-function buildRows(subjects=[]) {
+function buildRows(subjects = []) {
   const norm = subjects.map(s => ({
     yearLevel: s.yearLevel,
     semester: s.semester,
@@ -56,6 +56,8 @@ function buildRows(subjects=[]) {
     reExam: '',
     units: (s.units ?? '').toString()
   }));
+
+  // sort by year then sem then code
   norm.sort((a, b) => {
     const ya = parseYearLevel(a.yearLevel), yb = parseYearLevel(b.yearLevel);
     if (ya !== yb) return ya - yb;
@@ -63,7 +65,14 @@ function buildRows(subjects=[]) {
     if (sa !== sb) return sa - sb;
     return (a.subjectCode || '').localeCompare(b.subjectCode || '');
   });
-  norm.forEach(r => r.term = termLabel(r));
+
+  // only show the term on the first row of each (year+semester) group
+  let lastKey = '';
+  for (const r of norm) {
+    const key = `${parseYearLevel(r.yearLevel)}|${parseSemester(r.semester)}`;
+    r.term = key !== lastKey ? termLabel(r) : ''; // first of group shows, rest blank
+    lastKey = key;
+  }
   return norm;
 }
 
