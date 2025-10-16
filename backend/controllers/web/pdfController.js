@@ -6,7 +6,7 @@ const path = require('path');
 const puppeteer = require('puppeteer');
 const Student = require('../../models/web/studentModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
-
+const launchBrowser = require('../../utils/launchBrowser');
 // Helpers ------------------------------------------------------
 function toISODate(d) { return d ? new Date(d).toISOString().split('T')[0] : ''; }
 function readAsDataUrl(absPath) {
@@ -128,9 +128,7 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   });
 
   // 7) Render via Puppeteer
-  const browser = await puppeteer.launch({
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
+  const browser = await launchBrowser();  
   const page = await browser.newPage();
   await page.setContent(html, { waitUntil: 'networkidle0' });
 

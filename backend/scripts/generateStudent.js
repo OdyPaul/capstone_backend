@@ -1,24 +1,13 @@
-// generateStudents.js
+// backend/scripts/generateStudents.js
+require("dotenv").config({ path: require("path").resolve(__dirname, "../.env") });
 const mongoose = require("mongoose");
-const path = require("path");
-require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
+const { getStudentsConn } = require("../config/db");
+const Student = require("../models/students/studentModel");              // ⬅️ Students-DB Student
+const Curriculum = require("../models/students/Curriculum");       // ⬅️ Students-DB Curriculum
 
-const Student = require("../models/web/studentModel");
-const Curriculum = require("../models/web/Curriculum");
+const MONGO_URI = process.env.MONGO_URI_STUDENTS;
 
-const connectDB = async () => {
-  try {
-    const conn = await mongoose.connect(process.env.MONGO_URI_Students, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
-  } catch (error) {
-    console.error(`❌ Error connecting to MongoDB: ${error.message}`);
-    process.exit(1);
-  }
-};
-
+// ---------- Helper Functions ----------
 function getRandomGrade() {
   const grades = [1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0];
   return grades[Math.floor(Math.random() * grades.length)];
@@ -49,7 +38,7 @@ function flattenSubjects(curriculum) {
           subjects.push({
             subjectCode: s.code,
             subjectDescription: s.title || "",
-            units: s.units || "",
+            units: s.units || 3,
             yearLevel: year,
             semester: sem,
           });
@@ -64,6 +53,7 @@ function generateStudentNumber(year, index) {
   return `C${year}${String(index).padStart(5, "0")}`;
 }
 
+// ---------- Main Logic ----------
 async function createRandomStudent(curriculum, studentNumber, fullName) {
   const subjects = flattenSubjects(curriculum);
   if (!subjects.length) {
@@ -80,25 +70,25 @@ async function createRandomStudent(curriculum, studentNumber, fullName) {
   const subjectsWithGrades = subjects.map((s) => {
     const grade = getRandomGrade();
     return {
-      subjectCode: s.subjectCode,
-      subjectDescription: s.subjectDescription,
-      units: s.units,
-      yearLevel: s.yearLevel,
-      semester: s.semester,
+      ...s,
       finalGrade: grade,
       remarks: grade <= 3.0 ? "PASSED" : "FAILED",
     };
   });
 
-  const gwa = Number(
-    (subjectsWithGrades.reduce((sum, s) => sum + s.finalGrade, 0) / subjectsWithGrades.length).toFixed(2)
-  );
+  const gwa =
+    Number(
+      (
+        subjectsWithGrades.reduce((sum, s) => sum + s.finalGrade, 0) /
+        subjectsWithGrades.length
+      ).toFixed(2)
+    ) || 0;
 
   const student = new Student({
     studentNumber,
     fullName,
     program: curriculum.program,
-    dateGraduated: "2025-06-30",
+    dateGraduated: new Date("2025-06-30"),
     gwa,
     honor: "",
     curriculum: curriculum._id,
@@ -110,12 +100,12 @@ async function createRandomStudent(curriculum, studentNumber, fullName) {
 }
 
 async function main() {
-  await connectDB();
+  await mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+  console.log("✅ MongoDB connected to Students DB");
 
   const curriculums = await Curriculum.find({});
   if (!curriculums.length) {
     console.error("❌ No curriculums found. Run importAllCurriculums.js first.");
-    await mongoose.disconnect();
     return;
   }
 
@@ -132,13 +122,18 @@ async function main() {
       await createRandomStudent(curriculum, studentNumber, fullName);
     }
   }
-
-  console.log(`🎉 Finished generating ${programs.length * 5} students.`);
-  await mongoose.disconnect();
-  console.log("🔌 Disconnected from MongoDB.");
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  mongoose.disconnect();
-});
+main()
+  .then(async () => {
+    // Close BOTH connections to exit cleanly
+    try { await mongoose.disconnect(); } catch {}
+    try { await getStudentsConn().close(); } catch {}
+    console.log("\n🎉 Finished generating students.\n🔌 Disconnected from MongoDB.");
+  })
+  .catch(async (err) => {
+    console.error("Fatal error:", err);
+    try { await mongoose.disconnect(); } catch {}
+    try { await getStudentsConn().close(); } catch {}
+    process.exit(1);
+  });
