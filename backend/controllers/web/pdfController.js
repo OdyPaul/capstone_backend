@@ -8,6 +8,8 @@ const Student = require('../../models/students/studentModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
 const launchBrowser = require('../../utils/launchBrowser');
 
+//works but not yet arrange -- 17/10/2025
+
 // ------------------------------- Helpers --------------------------------
 function toISODate(d) { return d ? new Date(d).toISOString().split('T')[0] : ''; }
 
