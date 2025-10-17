@@ -5,7 +5,10 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+  "tor:convert": "node templates/convertTor.cjs",
+  "tor:convert:all": "node templates/convertTor.cjs --all"
+
   },
   "keywords": [],
   "author": "",
@@ -33,7 +36,8 @@
     "puppeteer": "^24.25.0",
     "puppeteer-core": "^24.25.0",
     "qs": "^6.14.0",
-    "streamifier": "^0.1.1"
+    "streamifier": "^0.1.1",
+     "pdf2pic": "^3.1.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"

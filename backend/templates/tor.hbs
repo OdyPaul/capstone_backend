@@ -97,6 +97,20 @@
       vertical-align: middle;
       overflow: hidden;
     }
+    .grid thead th {
+      font-weight: bold;
+      border-bottom: 1px solid #000;
+      padding: 0 3mm 0 2mm;
+      height: 6mm;
+      line-height: 6mm;
+      vertical-align: middle;
+      white-space: nowrap;
+      text-align: left;
+    }
+
+    .grid .th-grade,
+    .grid .th-reexam,
+    .grid .th-units { text-align: center; }
 
     .td-term { padding-left: 0; }
     .td-code { white-space: nowrap; }
@@ -138,42 +152,41 @@
       <div class="field name">{{../fullName}}</div>
     {{/if}}
 
-    <table class="grid">
-      <colgroup>
-        <col class="col-term">
-        <col class="col-code">
-        <col class="col-subj">
-        <col class="col-grade">
-        <col class="col-reexam">
-        <col class="col-units">
-      </colgroup>
-     <tbody>
-  {{#each rows}}
-    {{#if this.isAyRow}}
-      <!-- A.Y. row injected right after the first subject of each term -->
-      <tr class="term-ay-row">
-        <td class="td-term"><span class="ay">{{this.ay}}</span></td>
-        <td class="td-code" colspan="5"></td>
-      </tr>
-    {{else}}
-      <!-- Normal subject row -->
+<table class="grid">
+  <colgroup>
+    <col class="col-term">
+    <col class="col-code">
+    <col class="col-subj">
+    <col class="col-grade">
+    <col class="col-reexam">
+    <col class="col-units">
+  </colgroup>
+
+  <thead>
+    <tr class="grid-head">
+      <th class="th-term">TERM</th>
+      <th class="th-code">COURSE NO.</th>
+      <th class="th-subj">SUBJECTS/DESCRIPTION</th>
+      <th class="th-grade">FINAL GRADE</th>
+      <th class="th-reexam">RE EXAM</th>
+      <th class="th-units">CREDIT</th>
+    </tr>
+  </thead>
+
+  <tbody>
+    {{#each rows}}
       <tr>
-        <td class="td-term">
-          {{#if this.showSemesterInRow}}
-            {{this.semester}}
-          {{/if}}
-        </td>
+        <td class="td-term">{{this.termInline}}</td>
         <td class="td-code">{{this.subjectCode}}</td>
         <td class="td-subj">{{this.subjectDescription}}</td>
         <td class="td-grade">{{this.finalGrade}}</td>
         <td class="td-reexam">{{this.reExam}}</td>
         <td class="td-units">{{this.units}}</td>
       </tr>
-    {{/if}}
-  {{/each}}
-</tbody>
+    {{/each}}
+  </tbody>
+</table>
 
-    </table>
   </div>
 {{/each}}
 
