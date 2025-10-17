@@ -63,18 +63,23 @@ function academicYearFor(yearLevelStr, admissionDate) {
   const y2 = y1 + 1;
   return `${y1}-${y2}`;                                   // "2021-2022"
 }
-// build rows from student.subjects, show term once with AY line
 function buildRows(subjects = [], admissionDate = null) {
-  const norm = subjects.map(s => ({
-    yearLevel: s.yearLevel,
-    semester: s.semester,
-    subjectCode: s.subjectCode || '',
-    subjectDescription: s.subjectDescription || '',
-    finalGrade: (s.finalGrade ?? '').toString(),
-    reExam: '',
-    units: (s.units ?? '').toString(),
-    ay: academicYearFor(s.yearLevel, admissionDate) // needed for AY rows
-  }));
+  const norm = subjects.map(s => {
+    const ay = academicYearFor(s.yearLevel, admissionDate);
+    const sem = s.semester || '';
+    return {
+      yearLevel: s.yearLevel,
+      semester: sem,
+      subjectCode: s.subjectCode || '',
+      subjectDescription: s.subjectDescription || '',
+      finalGrade: (s.finalGrade ?? '').toString(),
+      reExam: '',
+      units: (s.units ?? '').toString(),
+      ay,
+      // single-line label: "1st Sem (2021-2022)" or just "1st Sem" if AY missing
+      termInline: sem ? (ay ? `${sem} (${ay})` : sem) : ''
+    };
+  });
 
   // sort by year then sem then code
   norm.sort((a, b) => {
@@ -85,18 +90,6 @@ function buildRows(subjects = [], admissionDate = null) {
     return (a.subjectCode || '').localeCompare(b.subjectCode || '');
   });
 
-  // mark the first row of each (year+semester) group,
-  // and decide if the semester label should be shown in that row.
-  let lastKey = '';
-  for (const r of norm) {
-    const key = `${parseYearLevel(r.yearLevel)}|${parseSemester(r.semester)}`;
-    r.isTermStart = key !== lastKey;
-    if (r.isTermStart) lastKey = key;
-
-    // 👇 Show the semester only on the first row,
-    // except when it's 2nd Sem — then show it on ALL rows
-    r.showSemesterInRow = r.isTermStart || parseSemester(r.semester) === 2;
-  }
   return norm;
 }
 
@@ -117,9 +110,9 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   });
   const verifyUrl = `${process.env.BASE_URL}/verify/${sessionId}`;
 
-    const subjectRows = buildRows(student.subjects || [], student.dateAdmission);
-    const rows = expandRowsForAy(subjectRows);
-    const pageChunks = paginateRows(rows, 22, 30);
+  const rows = buildRows(student.subjects || [], student.dateAdmission);
+  const pageChunks = paginateRows(rows, 23, 31); // was 24/32
+
 
   // 4) Read background images as data URLs
   const bg1Path = path.join(__dirname, '../../templates/assets/tor-page-1.png');
