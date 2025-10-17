@@ -105,49 +105,54 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   });
   const verifyUrl = `${process.env.BASE_URL}/verify/${sessionId}`;
 
-const baseRows = buildRows(student.subjects || [], student.dateAdmission);
-  const pageChunks = paginateRows(baseRows, 23, 31); // tune counts if needed
+ // 1) normalize + paginate
+const baseRows  = buildRows(student.subjects || [], student.dateAdmission);
+const pageChunks = paginateRows(baseRows, 23, 31);
 
 
- const pages = pageChunks.map((chunk, idx, arr) => {
-    let prevKey = null;
-    const rows = chunk.map(r => {
-      const termHtml = (r.termKey !== prevKey) ? r._termLabelHtml : '';
-      prevKey = r.termKey;
-      return { ...r, termHtml };
-    });
-    return {
-      rows,
-      continues: idx < arr.length - 1,
-      bg: idx === 0 ? (/* bg1 set below */ null) : null
-    };
+// 2) build pages (SEM/AY label only on first row of each term per page)
+const pages = pageChunks.map(chunk => {
+  let prevKey = null;
+  const rows = chunk.map(r => {
+    const termHtml = (r.termKey !== prevKey) ? r._termLabelHtml : '';
+    prevKey = r.termKey;
+    return { ...r, termHtml };
   });
-  const bg1 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-1.png'));
-  const bg2 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-2.png'));
+  return { rows, continues: false, bg: '' }; // bg gets filled in step 3
+});
 
-  
+// 3) load backgrounds, then assign per page
+const bg1 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-1.png'));
+const bg2 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-2.png'));
 
-  const source = await fs.readFile(path.join(__dirname, '../../templates/tor.hbs'), 'utf8');
-  const tpl = hbs.compile(source);
+  pages.forEach((p, i, arr) => {
+  p.bg = i === 0 ? (bg1 || '') : (bg2 || bg1 || '');
+  p.continues = i < arr.length - 1;
+});
+
+// 4) compile and render the Handlebars template
+const source = await fs.readFile(path.join(__dirname, '../../templates/tor.hbs'), 'utf8');
+const tpl = hbs.compile(source);
 
   const html = tpl({
-    issuerName: process.env.ISSUER_NAME || 'University Registrar',
-    fullName: student.fullName,
-    studentNumber: student.studentNumber,
-    address: student.address || '',
-    entranceCredentials: student.entranceCredentials || '',
-    highSchool: student.highSchool || '',
-    program: student.program || '',
-    major: student.major || '',
-    placeOfBirth: student.placeOfBirth || '',
-    dateAdmission: toISODate(student.dateAdmission),
-    dateOfBirth: '', // if you have it
-    dateGraduated: toISODate(student.dateGraduated),
-    dateIssued: toISODate(new Date()),
-    gwa: student.gwa,
-    verifyUrl,
-    pages
-  });
+  issuerName: process.env.ISSUER_NAME || 'University Registrar',
+  fullName: student.fullName,
+  studentNumber: student.studentNumber,
+  address: student.address || '',
+  entranceCredentials: student.entranceCredentials || '',
+  highSchool: student.highSchool || '',
+  program: student.program || '',
+  major: student.major || '',
+  placeOfBirth: student.placeOfBirth || '',
+  dateAdmission: toISODate(student.dateAdmission),
+  dateOfBirth: '', // if you have it
+  dateGraduated: toISODate(student.dateGraduated),
+  dateIssued: toISODate(new Date()),
+  gwa: student.gwa,
+  verifyUrl,
+  pages
+});
+
 
   const browser = await launchBrowser();
   const page = await browser.newPage();
