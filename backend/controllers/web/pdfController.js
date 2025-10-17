@@ -48,7 +48,7 @@ function academicYearFor(yearLevelStr, admissionDate) {
 
 // Normalize, sort, and attach inline term label
 function buildRows(subjects = [], admissionDate = null) {
-  const norm = subjects.map(s => {
+  const norm = (subjects || []).map(s => {
     const ay = academicYearFor(s.yearLevel, admissionDate);
     const sem = s.semester || '';
     return {
@@ -60,11 +60,13 @@ function buildRows(subjects = [], admissionDate = null) {
       reExam: '',
       units: (s.units ?? '').toString(),
       ay,
-      termInline: sem ? (ay ? `${sem} (${ay})` : sem) : ''
+      termInline: sem ? (ay ? `${sem} (${ay})` : sem) : '',
+      termKey: `${parseYearLevel(s.yearLevel)||0}|${parseSemester(sem)}`,
+      _termLabelHtml: `<div>${sem}</div><div class="ay">${ay || ''}</div>`
     };
   });
 
-  norm.sort((a, b) => {
+  norm.sort((a,b) => {
     const ya = parseYearLevel(a.yearLevel), yb = parseYearLevel(b.yearLevel);
     if (ya !== yb) return ya - yb;
     const sa = parseSemester(a.semester), sb = parseSemester(b.semester);
@@ -103,17 +105,27 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   });
   const verifyUrl = `${process.env.BASE_URL}/verify/${sessionId}`;
 
-  const rows = buildRows(student.subjects || [], student.dateAdmission);
-  const pageChunks = paginateRows(rows, 23, 31); // tweak per your form
+const baseRows = buildRows(student.subjects || [], student.dateAdmission);
+  const pageChunks = paginateRows(baseRows, 23, 31); // tune counts if needed
 
+
+ const pages = pageChunks.map((chunk, idx, arr) => {
+    let prevKey = null;
+    const rows = chunk.map(r => {
+      const termHtml = (r.termKey !== prevKey) ? r._termLabelHtml : '';
+      prevKey = r.termKey;
+      return { ...r, termHtml };
+    });
+    return {
+      rows,
+      continues: idx < arr.length - 1,
+      bg: idx === 0 ? (/* bg1 set below */ null) : null
+    };
+  });
   const bg1 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-1.png'));
   const bg2 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-2.png'));
 
-  const pages = pageChunks.map((rowsChunk, idx, arr) => ({
-    rows: rowsChunk,
-    continues: idx < arr.length - 1,
-    bg: idx === 0 ? (bg1 || '') : (bg2 || bg1 || '')
-  }));
+  
 
   const source = await fs.readFile(path.join(__dirname, '../../templates/tor.hbs'), 'utf8');
   const tpl = hbs.compile(source);
@@ -129,7 +141,7 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
     major: student.major || '',
     placeOfBirth: student.placeOfBirth || '',
     dateAdmission: toISODate(student.dateAdmission),
-    dateOfBirth: '', // set if available
+    dateOfBirth: '', // if you have it
     dateGraduated: toISODate(student.dateGraduated),
     dateIssued: toISODate(new Date()),
     gwa: student.gwa,

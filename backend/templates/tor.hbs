@@ -10,8 +10,8 @@
 
     .page {
       position: relative;
-      width: 190mm;           /* A4 width (210) - margins 10+10 */
-      height: 277mm;          /* A4 height (297) - margins 10+10 */
+      width: 190mm;     /* 210 - 20 */
+      height: 277mm;    /* 297 - 20 */
       page-break-after: always;
       box-sizing: border-box;
 
@@ -22,47 +22,52 @@
       --left: 10mm;
       --right: 10mm;
 
-      /* top offsets */
-      --meta-top-first: 40mm;     /* where the printed labels start on page 1 */
-      --rows-top-first:  92mm;    /* subject rows start (p1) */
-      --rows-top-next:   72mm;    /* subject rows start (p2+) */
+      --rows-top-first: 92mm;   /* table top on page 1 */
+      --rows-top-next:  72mm;   /* table top on p2+ */
+
+      /* absolute fields you can adjust freely */
+      --name-x: 35mm;    --name-y: 47mm;
+      --admit-x:150mm;   --admit-y: 47mm;
+
+      --addr-x: 35mm;    --addr-y: 54mm;
+      --pob-x: 150mm;    --pob-y: 54mm;
+
+      --entr-x: 35mm;    --entr-y: 61mm;
+      --dob-x:  150mm;   --dob-y:  61mm;
+
+      --hs-x:   35mm;    --hs-y:   68mm;
+      --dgrad-x:150mm;   --dgrad-y:68mm;
+
+      --prog-x: 35mm;    --prog-y: 75mm;
+      --major-x:150mm;   --major-y:75mm;
+
+      --grad-x: 150mm;   --grad-y: 82mm;
+      --issued-x:35mm;   --issued-y:82mm;
     }
 
-    /* ---------- Printed labels (replace background labels) ---------- */
-    .meta {
-      position: absolute;
-      left: var(--left);
-      right: var(--right);
-      font-size: 11px;
-      line-height: 1.25;
-    }
-    .page.first .meta { top: var(--meta-top-first); }
-    .page.other .meta { display:none; } /* labels only on first page */
+    /* ===== absolute fields (no printed labels) ===== */
+    .field { position: absolute; white-space: nowrap; line-height: 1.1; }
+    .page.first .name     { left: var(--name-x);   top: var(--name-y); }
+    .page.first .admit    { left: var(--admit-x);  top: var(--admit-y); }
 
-    .meta-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;   /* left/right halves */
-      column-gap: 10mm;
-      margin-bottom: 4mm;
-    }
-    .meta-item { white-space: nowrap; }
-    .label { font-weight: 600; }
-    .value {
-      display: inline-block;
-      min-width: 55mm;                 /* underline length */
-      border-bottom: 1px solid #000;   /* visual underscore */
-      transform: translateY(-1px);     /* sit nicely on the line */
-      padding: 0 2mm;
-      max-width: calc(100% - 40mm);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      vertical-align: baseline;
-    }
+    .page.first .address  { left: var(--addr-x);   top: var(--addr-y); max-width: 110mm; overflow: hidden; text-overflow: ellipsis; }
+    .page.first .pob      { left: var(--pob-x);    top: var(--pob-y); }
 
-    /* Single full-width row (e.g., DEGREE/TITLE EARNED) */
-    .meta-row.full { grid-template-columns: 1fr; }
+    .page.first .entr     { left: var(--entr-x);   top: var(--entr-y); }
+    .page.first .dob      { left: var(--dob-x);    top: var(--dob-y); }
 
-    /* ---------- Table (subjects) ---------- */
+    .page.first .hs       { left: var(--hs-x);     top: var(--hs-y); }
+    .page.first .dategrad { left: var(--dgrad-x);  top: var(--dgrad-y); }
+
+    .page.first .program  { left: var(--prog-x);   top: var(--prog-y); }
+    .page.first .major    { left: var(--major-x);  top: var(--major-y); }
+
+    .page.first .grad     { left: var(--grad-x);   top: var(--grad-y); }
+    .page.first .issued   { left: var(--issued-x); top: var(--issued-y); }
+
+    .page.other .name { left: var(--name-x); top: 47mm; } /* carry name to next pages */
+
+    /* ===== table ===== */
     .grid {
       position: absolute;
       left: var(--left);
@@ -74,34 +79,32 @@
     .page.first .grid { top: var(--rows-top-first); }
     .page.other .grid { top: var(--rows-top-next); }
 
-    /* Make TERM wider as requested */
-    .grid col.col-term   { width: 32mm; }  /* was 24mm */
+    /* wider TERM column */
+    .grid col.col-term   { width: 32mm; }
     .grid col.col-code   { width: 26mm; }
     .grid col.col-subj   { width: auto; }
     .grid col.col-grade  { width: 18mm; }
     .grid col.col-reexam { width: 18mm; }
     .grid col.col-units  { width: 16mm; }
 
-    /* Header: top & bottom border only */
+    /* header: top+bottom+left+right borders, centered */
     thead th {
       font-weight: 700;
-      text-align: left;
-      padding: 0 3mm 0 2mm;
+      text-align: center;
+      vertical-align: middle;
       height: 6mm;
       line-height: 6mm;
+      padding: 0 2mm;
       border-top: 1px solid #000;
       border-bottom: 1px solid #000;
-      border-left: none;
-      border-right: none;
+      border-left: 1px solid #000;
+      border-right: 1px solid #000;
       white-space: nowrap;
     }
-    thead th.th-grade,
-    thead th.th-reexam,
-    thead th.th-units { text-align: center; }
 
-    /* Body cells: left/right borders only (except first/last) */
+    /* body cells: only left/right borders (outer edges open) */
     tbody td {
-      padding: 0 3mm 0 2mm;
+      padding: 0 2mm;
       height: 6mm;
       line-height: 6mm;
       vertical-align: middle;
@@ -111,14 +114,24 @@
       border-left: 1px solid #000;
       border-right: 1px solid #000;
     }
-    tbody td:first-child { border-left: none; }   /* first column: no left border */
-    tbody td:last-child  { border-right: none; }  /* last column: no right border */
+    tbody td:first-child { border-left: none; }
+    tbody td:last-child  { border-right: none; }
 
     .td-code { white-space: nowrap; }
-    .td-subj { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
-    .td-grade, .td-reexam, .td-units { text-align: center; padding-left: 0; padding-right: 0; }
+    /* SUBJECTS/DESCRIPTION: allow up to two lines inside the same row */
+    .td-subj { white-space: normal; }
+    .td-subj .twolines {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;     /* clamp to 2 lines */
+      overflow: hidden;
+      line-height: 3mm;
+      height: 6mm;               /* two lines * 3mm */
+    }
 
-    /* TERM content can be multi-line (e.g., "1st Semester" + AY) */
+    .td-grade, .td-reexam, .td-units { text-align: center; }
+
+    /* TERM label: “Sem” with AY on next line */
     .term-wrap { display: inline-block; line-height: 1.0; }
     .term-wrap .ay { font-size: 10px; display: block; margin-top: -1px; }
 
@@ -131,80 +144,23 @@
   <div class="page {{#if @first}}first{{else}}other{{/if}}" style="background-image: url('{{this.bg}}');">
 
     {{#if @first}}
-      <!-- Printed labels -->
-      <div class="meta">
-        <div class="meta-row">
-          <div class="meta-item">
-            <span class="label">NAME</span>
-            <span class="value">{{../fullName}}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">DATE OF ADMISSION</span>
-            <span class="value">{{../dateAdmission}}</span>
-          </div>
-        </div>
-
-        <div class="meta-row">
-          <div class="meta-item">
-            <span class="label">ADDRESS</span>
-            <span class="value">{{../address}}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">PLACE OF BIRTH</span>
-            <span class="value">{{../placeOfBirth}}</span>
-          </div>
-        </div>
-
-        <div class="meta-row">
-          <div class="meta-item">
-            <span class="label">ENTRANCE CREDENTIALS</span>
-            <span class="value">{{../entranceCredentials}}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">DATE OF BIRTH</span>
-            <span class="value">{{../dateOfBirth}}</span>
-          </div>
-        </div>
-
-        <div class="meta-row">
-          <div class="meta-item">
-            <span class="label">HIGH SCHOOL</span>
-            <span class="value">{{../highSchool}}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">DATE GRADUATED</span>
-            <span class="value">{{../dateGraduated}}</span>
-          </div>
-        </div>
-
-        <div class="meta-row full">
-          <div class="meta-item">
-            <span class="label">DEGREE/TITLE EARNED</span>
-            <span class="value" style="min-width:120mm">{{../program}}</span>
-          </div>
-        </div>
-
-        <div class="meta-row">
-          <div class="meta-item">
-            <span class="label">MAJOR</span>
-            <span class="value">{{../major}}</span>
-          </div>
-          <div class="meta-item">
-            <span class="label">DATE OF GRADUATION</span>
-            <span class="value">{{../dateGraduated}}</span>
-          </div>
-        </div>
-
-        <div class="meta-row full" style="margin-top:2mm">
-          <div class="meta-item">
-            <span class="label">DATE ISSUED</span>
-            <span class="value">{{../dateIssued}}</span>
-          </div>
-        </div>
-      </div>
+      <!-- absolute fields (edit positions above) -->
+      <div class="field name">{{../fullName}}</div>
+      <div class="field admit">{{../dateAdmission}}</div>
+      <div class="field address">{{../address}}</div>
+      <div class="field pob">{{../placeOfBirth}}</div>
+      <div class="field entr">{{../entranceCredentials}}</div>
+      <div class="field dob">{{../dateOfBirth}}</div>
+      <div class="field hs">{{../highSchool}}</div>
+      <div class="field dategrad">{{../dateGraduated}}</div>
+      <div class="field program">{{../program}}</div>
+      <div class="field major">{{../major}}</div>
+      <div class="field grad">{{../dateGraduated}}</div>
+      <div class="field issued">{{../dateIssued}}</div>
+    {{else}}
+      <div class="field name">{{../fullName}}</div>
     {{/if}}
 
-    <!-- Subjects -->
     <table class="grid">
       <colgroup>
         <col class="col-term">
@@ -217,12 +173,12 @@
 
       <thead>
         <tr>
-          <th class="th-term">TERM</th>
-          <th class="th-code">COURSE NO.</th>
-          <th class="th-subj">SUBJECTS/DESCRIPTION</th>
-          <th class="th-grade">FINAL GRADE</th>
-          <th class="th-reexam">RE EXAM</th>
-          <th class="th-units">CREDIT</th>
+          <th>TERM</th>
+          <th>COURSE NO.</th>
+          <th>SUBJECTS / DESCRIPTION</th>
+          <th>FINAL GRADE</th>
+          <th>RE-EXAM</th>
+          <th>CREDIT</th>
         </tr>
       </thead>
 
@@ -233,7 +189,7 @@
               <span class="term-wrap">{{{this.termHtml}}}</span>
             </td>
             <td class="td-code">{{this.subjectCode}}</td>
-            <td class="td-subj">{{this.subjectDescription}}</td>
+            <td class="td-subj"><span class="twolines">{{this.subjectDescription}}</span></td>
             <td class="td-grade">{{this.finalGrade}}</td>
             <td class="td-reexam">{{this.reExam}}</td>
             <td class="td-units">{{this.units}}</td>
