@@ -145,6 +145,7 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
     dateAdmission: toISODate(student.dateAdmission),
     dateOfBirth: '', // add if you store it elsewhere
     dateGraduated: toISODate(student.dateGraduated),
+    dateIssued: toISODate(new Date()), 
     gwa: student.gwa,
     verifyUrl,
     pages
