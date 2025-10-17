@@ -3,26 +3,31 @@ const asyncHandler = require('express-async-handler');
 const hbs = require('handlebars');
 const fs = require('fs/promises');
 const path = require('path');
-// ❌ do not import plain puppeteer on Render
-// const puppeteer = require('puppeteer');
+// const puppeteer = require('puppeteer'); // not used on Render
 const Student = require('../../models/students/studentModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
 const launchBrowser = require('../../utils/launchBrowser');
 
-// Helpers ------------------------------------------------------
+// ------------------------------- Helpers --------------------------------
 function toISODate(d) { return d ? new Date(d).toISOString().split('T')[0] : ''; }
-function readAsDataUrl(absPath) {
-  return fs.readFile(absPath)
-    .then(buf => `data:image/png;base64,${buf.toString('base64')}`)
-    .catch(() => null);
+
+async function readAsDataUrl(absPath) {
+  try {
+    const buf = await fs.readFile(absPath);
+    return `data:image/png;base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
 }
-// map "1st Year" -> 1, "2nd Year" -> 2, etc.
+
+// "1st Year" -> 1, "2nd Year" -> 2
 function parseYearLevel(s) {
   if (!s) return 0;
   const m = String(s).match(/(\d+)/);
   return m ? parseInt(m[1], 10) : 0;
 }
-// map "1st Sem" -> 1, "2nd Sem" -> 2, "Midyear" -> 3 (optional)
+
+// "1st Sem" -> 1, "2nd Sem" -> 2, "Midyear" -> 3
 function parseSemester(s) {
   const v = String(s || '').toLowerCase();
   if (v.includes('1st')) return 1;
@@ -30,39 +35,18 @@ function parseSemester(s) {
   if (v.includes('mid')) return 3;
   return 9; // unknown -> last
 }
-function termLabel(row) {
-  return `${row.semester || ''}`;
-}
-function expandRowsForAy(rows) {
-  const out = [];
-  for (const r of rows) {
-    out.push({ ...r, isAyRow: false });
-    if (r.isTermStart && r.ay) {     // 👈 guard for missing AY
-      out.push({ isAyRow: true, ay: r.ay, semester: r.semester });
-    }
-  }
-  return out;
-}
-// paginate rows into pages
-function paginateRows(rows, perFirst=24, perNext=32) {
-  const pages = [];
-  if (rows.length === 0) return pages;
-  pages.push(rows.slice(0, perFirst));
-  let i = perFirst;
-  while (i < rows.length) {
-    pages.push(rows.slice(i, i + perNext));
-    i += perNext;
-  }
-  return pages;
-}
+
+// Build AY string from admission year + year level
 function academicYearFor(yearLevelStr, admissionDate) {
   if (!admissionDate) return '';
-  const base = new Date(admissionDate).getFullYear();     // e.g., 2021
-  const lvl = parseYearLevel(yearLevelStr) || 1;          // "1st Year" -> 1
+  const base = new Date(admissionDate).getFullYear();
+  const lvl = parseYearLevel(yearLevelStr) || 1;
   const y1 = base + (lvl - 1);
   const y2 = y1 + 1;
-  return `${y1}-${y2}`;                                   // "2021-2022"
+  return `${y1}-${y2}`;
 }
+
+// Normalize, sort, and attach inline term label
 function buildRows(subjects = [], admissionDate = null) {
   const norm = subjects.map(s => {
     const ay = academicYearFor(s.yearLevel, admissionDate);
@@ -76,12 +60,10 @@ function buildRows(subjects = [], admissionDate = null) {
       reExam: '',
       units: (s.units ?? '').toString(),
       ay,
-      // single-line label: "1st Sem (2021-2022)" or just "1st Sem" if AY missing
       termInline: sem ? (ay ? `${sem} (${ay})` : sem) : ''
     };
   });
 
-  // sort by year then sem then code
   norm.sort((a, b) => {
     const ya = parseYearLevel(a.yearLevel), yb = parseYearLevel(b.yearLevel);
     if (ya !== yb) return ya - yb;
@@ -93,12 +75,23 @@ function buildRows(subjects = [], admissionDate = null) {
   return norm;
 }
 
+// Simple pagination
+function paginateRows(rows, perFirst = 24, perNext = 32) {
+  const pages = [];
+  if (!rows.length) return pages;
+  pages.push(rows.slice(0, perFirst));
+  for (let i = perFirst; i < rows.length; i += perNext) {
+    pages.push(rows.slice(i, i + perNext));
+  }
+  return pages;
+}
+
+// ------------------------------- Controller -----------------------------
 exports.renderTorPdf = asyncHandler(async (req, res) => {
-  // 1) Load student
   const student = await Student.findById(req.params.studentId).lean();
   if (!student) { res.status(404); throw new Error('Student not found'); }
 
-  // 2) Verification session (short-lived)
+  // (Optional) short-lived verification session used for verifyUrl in the PDF
   const sessionId = 'prs_' + Math.random().toString(36).slice(2,10);
   const expires_at = new Date(Date.now() + 48*3600*1000);
   await VerificationSession.create({
@@ -111,25 +104,18 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
   const verifyUrl = `${process.env.BASE_URL}/verify/${sessionId}`;
 
   const rows = buildRows(student.subjects || [], student.dateAdmission);
-  const pageChunks = paginateRows(rows, 23, 31); // was 24/32
+  const pageChunks = paginateRows(rows, 23, 31); // tweak per your form
 
+  const bg1 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-1.png'));
+  const bg2 = await readAsDataUrl(path.join(__dirname, '../../templates/assets/tor-page-2.png'));
 
-  // 4) Read background images as data URLs
-  const bg1Path = path.join(__dirname, '../../templates/assets/tor-page-1.png');
-  const bg2Path = path.join(__dirname, '../../templates/assets/tor-page-2.png');
-  const bg1 = await readAsDataUrl(bg1Path);
-  const bg2 = await readAsDataUrl(bg2Path);
-
-  // 5) Build pages payload with bg selection
   const pages = pageChunks.map((rowsChunk, idx, arr) => ({
     rows: rowsChunk,
     continues: idx < arr.length - 1,
     bg: idx === 0 ? (bg1 || '') : (bg2 || bg1 || '')
   }));
 
-  // 6) Compile Handlebars template
-  const templatePath = path.join(__dirname, '../../templates/tor.hbs');
-  const source = await fs.readFile(templatePath, 'utf8');
+  const source = await fs.readFile(path.join(__dirname, '../../templates/tor.hbs'), 'utf8');
   const tpl = hbs.compile(source);
 
   const html = tpl({
@@ -143,36 +129,28 @@ exports.renderTorPdf = asyncHandler(async (req, res) => {
     major: student.major || '',
     placeOfBirth: student.placeOfBirth || '',
     dateAdmission: toISODate(student.dateAdmission),
-    dateOfBirth: '', // add if you store it elsewhere
+    dateOfBirth: '', // set if available
     dateGraduated: toISODate(student.dateGraduated),
-    dateIssued: toISODate(new Date()), 
+    dateIssued: toISODate(new Date()),
     gwa: student.gwa,
     verifyUrl,
     pages
   });
 
-  // 7) Render via Puppeteer (safer settings for Render)
   const browser = await launchBrowser();
   const page = await browser.newPage();
 
-  // Logs to Render dashboard
-  page.on('console', msg => console.log('[puppeteer]', msg.type(), msg.text()));
-  page.on('pageerror', err => console.log('[puppeteer pageerror]', err));
-  page.on('requestfailed', req => console.log('[puppeteer requestfailed]', req.url(), req.failure()?.errorText));
-
-  // Block any external requests so we never wait on the network
+  // Avoid hanging on external requests
   await page.setRequestInterception(true);
   page.on('request', req => {
-    const url = req.url();
-    if (url.startsWith('http://') || url.startsWith('https://')) return req.abort();
+    const u = req.url();
+    if (u.startsWith('http://') || u.startsWith('https://')) return req.abort();
     return req.continue();
   });
 
-  // More generous timeouts
   page.setDefaultNavigationTimeout(120000);
   page.setDefaultTimeout(120000);
 
-  // Do not wait for network idle (can hang on server)
   await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.emulateMediaType('screen');
 
