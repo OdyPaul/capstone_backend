@@ -32,6 +32,7 @@ const { errorHandler } = require('./middleware/errorMiddleware');
   app.use('/api/web', require('./routes/web/pdfRoutes'));            // PDF render/download
   app.use('/api/web', require('./routes/web/settingsRoutes'));       // issuer metadata/settings
        // student queries
+  app.use('/api/web', require('./routes/studentRoutes')); 
   app.use('/api/web', require('./routes/web/draftVcRoutes'));
   
   // mobile feature routes

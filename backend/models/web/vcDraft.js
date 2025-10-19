@@ -15,6 +15,8 @@ const vcDraftSchema = new mongoose.Schema({
   status:     { type: String, enum: ["draft", "signed", "anchored"], default: "draft" },
   signedAt:   { type: Date, default: null },
   anchoredAt: { type: Date, default: null },
+  payment:      { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
+  payment_tx_no:{ type: String, default: null } 
 }, { timestamps: true });
 
 // Only one ACTIVE draft per (student, template, purpose)

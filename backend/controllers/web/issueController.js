@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const UnsignedVC = require('../../models/web/vcDraft');
 const SignedVC   = require('../../models/web/signedVcModel');
 const { computeDigest, randomSalt } = require('../../utils/vcCrypto');
+const Payment = require('../../models/web/paymentModel');
 
 // POST /api/web/vc/drafts/:id/issue  (admin)
 exports.issueFromDraft = asyncHandler(async (req, res) => {
@@ -30,6 +31,12 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
   const salt   = randomSalt();
   const digest = computeDigest(vcPayload, salt);
 
+    // Ensure there's a paid & unused payment for this draft
+  const pay = await Payment.findOne({ draft: draft._id, status: 'paid', consumed_at: null });
+  if (!pay) {
+    res.status(402); // Payment Required
+    throw new Error('No paid payment request found for this draft');
+  }
   const signed = await SignedVC.create({
     student_id: draft.student.studentNumber,
     template_id: draft.type,
@@ -39,6 +46,10 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     status: 'active',
     anchoring: { state: 'unanchored' }
   });
+
+  pay.status = 'consumed';
+  pay.consumed_at = new Date();
+  await pay.save();
 
   res.status(201).json({ message: 'Issued (unanchored)', credential_id: signed._id });
 });

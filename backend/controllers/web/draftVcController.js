@@ -57,7 +57,7 @@ async function createOneDraft({ studentId, templateId, type, purpose, expiration
 
   draft = await draft
     .populate({ path: 'student', select: 'fullName studentNumber program dateGraduated' })
-    .populate({ path: 'template', select: 'name slug version' });
+    .populate({ path: 'template', select: 'displayName version' });
 
   return { status: 'created', draft };
 }
