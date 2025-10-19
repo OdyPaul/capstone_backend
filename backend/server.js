@@ -32,7 +32,7 @@ const { errorHandler } = require('./middleware/errorMiddleware');
   app.use('/api/web', require('./routes/web/pdfRoutes'));            // PDF render/download
   app.use('/api/web', require('./routes/web/settingsRoutes'));       // issuer metadata/settings
   app.use('/api/student', require('./routes/studentRoutes'));        // student queries
-  app.use('/api/web', require('./routes/web/unsignedVcRoutes'));
+  app.use('/api/web', require('./routes/web/draftVcRoutes'));
   
   // mobile feature routes
   app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));  // image uploads
