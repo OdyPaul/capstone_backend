@@ -25,6 +25,7 @@ const { errorHandler } = require('./middleware/errorMiddleware');
   app.get('/', (_req, res) => res.send('✅ API is running...'));
 
   // 4) Routes (deduplicated)
+  app.use('/api/web/templates', require('./routes/web/vcTemplateRoutes'));
   app.use('/api/web', require('./routes/web/userRoutes'));           // web users (admin/staff/dev)
   app.use('/api/mobile', require('./routes/mobile/userRoutes'));     // mobile auth/users
   app.use('/api/web', require('./routes/web/vcRoutes'));             // VC: drafts/sign/anchor/etc

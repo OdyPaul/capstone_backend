@@ -1,5 +1,5 @@
 const asyncHandler = require('express-async-handler');
-const UnsignedVC = require('../../models/web/unsignedVc');
+const UnsignedVC = require('../../models/web/vcDraft');
 const SignedVC   = require('../../models/web/signedVcModel');
 const { computeDigest, randomSalt } = require('../../utils/vcCrypto');
 
