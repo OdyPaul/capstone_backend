@@ -1,63 +1,102 @@
-const get = (obj, path) => path.split('.').reduce((o,p)=> (o ? o[p] : undefined), obj);
+// utils/vcTemplate.js
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
 
-function coerceType(val, type) {
-  if (val == null) return val;
-  if (type === 'number')  return Number(val);
-  if (type === 'boolean') return Boolean(val === true || val === 'true' || val === 1 || val === '1');
-  if (type === 'date')    return new Date(val);
-  if (type === 'array')   return Array.isArray(val) ? val : [val];
-  if (type === 'object')  return (typeof val === 'object' ? val : { value: val });
-  return String(val);
+function getByPath(obj, path) {
+  if (!obj || !path) return undefined;
+  return path.split('.').reduce((acc, k) => (acc ? acc[k] : undefined), obj);
+}
+
+function coerce(value, type) {
+  if (value == null) return value;
+  switch (type) {
+    case 'string': return String(value);
+    case 'number': {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    }
+    case 'boolean': {
+      if (typeof value === 'boolean') return value;
+      if (typeof value === 'string') return ['true','1','yes','y'].includes(value.toLowerCase());
+      if (typeof value === 'number') return value !== 0;
+      return null;
+    }
+    case 'date': {
+      const d = value instanceof Date ? value : new Date(value);
+      return isNaN(d) ? null : new Date(d).toISOString();
+    }
+    case 'array': return Array.isArray(value) ? value : (value == null ? [] : [value]);
+    case 'object': return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
+    default: return value;
+  }
 }
 
 /**
- * Build a data object from a template + a source Student doc (for auto-fill).
- * `overrides` can override mapped values (from the request).
+ * Build initial draft.data from template fields and student doc
+ * Priority: overrides[key] > student[path] > default per type
  */
-function buildDataFromTemplate(template, studentDoc, overrides = {}) {
+function buildDataFromTemplate(template, student, overrides = {}) {
   const out = {};
-  for (const a of (template.attributes || [])) {
-    let val = undefined;
+  const attrs = Array.isArray(template?.attributes) ? template.attributes : [];
 
-    // mapping from Student
-    if (a.mapFrom?.model && a.mapFrom?.path && studentDoc) {
-      val = get(studentDoc, a.mapFrom.path);
+  for (const a of attrs) {
+    const key = a.key;
+    const type = a.type || 'string';
+    if (!key) continue;
+
+    let value = Object.prototype.hasOwnProperty.call(overrides, key)
+      ? overrides[key]
+      : undefined;
+
+    if (value === undefined && a.path) {
+      value = getByPath(student, a.path);
     }
 
-    // request override (wins)
-    if (Object.prototype.hasOwnProperty.call(overrides, a.key)) {
-      val = overrides[a.key];
+    if (value === undefined) {
+      if (type === 'array') value = [];
+      else if (type === 'object') value = {};
+      else value = null;
     }
 
-    out[a.key] = coerceType(val, a.type);
+    out[key] = coerce(value, type);
   }
   return out;
 }
 
+/**
+ * Minimal validation: required + basic type soundness
+ */
 function validateAgainstTemplate(template, data = {}) {
   const errors = [];
+  const attrs = Array.isArray(template?.attributes) ? template.attributes : [];
 
-  for (const a of (template.attributes || [])) {
-    const val = data[a.key];
+  for (const a of attrs) {
+    const key = a.key;
+    const type = a.type || 'string';
+    const val = data[key];
 
-    if (a.required && (val === undefined || val === null || val === "")) {
-      errors.push(`${a.title || a.key} is required`);
-      continue;
+    // required
+    if (a.required) {
+      const empty =
+        val === null || val === undefined ||
+        (type === 'string' && String(val).trim() === '') ||
+        (type === 'array' && Array.isArray(val) && val.length === 0) ||
+        (type === 'object' && val && Object.keys(val).length === 0);
+      if (empty) errors.push(`"${a.title || key}" is required.`);
     }
 
-    if (val == null) continue; // nothing to type/format-check
+    // simple type checks
+    if (val != null) {
+      const coerced = coerce(val, type);
+      if (coerced === null && type !== 'string') {
+        errors.push(`"${a.title || key}" must be a valid ${type}.`);
+      }
+    }
 
-    // type checks
-    if (a.type === 'number'   && Number.isNaN(Number(val))) errors.push(`${a.title || a.key} must be a number`);
-    if (a.type === 'date'     && isNaN(new Date(val).getTime())) errors.push(`${a.title || a.key} must be a valid date`);
-    if (a.type === 'array'    && !Array.isArray(val)) errors.push(`${a.title || a.key} must be an array`);
-    if (a.type === 'object'   && (typeof val !== 'object' || Array.isArray(val))) errors.push(`${a.title || a.key} must be an object`);
-    if (a.enum && a.enum.length && !a.enum.includes(String(val))) errors.push(`${a.title || a.key} must be one of: ${a.enum.join(', ')}`);
-    if (a.pattern) {
-      try {
-        const re = new RegExp(a.pattern);
-        if (!re.test(String(val))) errors.push(`${a.title || a.key} does not match pattern`);
-      } catch { /* bad pattern ignored */ }
+    // optional: basic email sanity if key hints email (you can remove this)
+    if (/email/i.test(key) && val) {
+      if (typeof val !== 'string' || !EMAIL_RE.test(val)) {
+        errors.push(`"${a.title || key}" must be a valid email.`);
+      }
     }
   }
 

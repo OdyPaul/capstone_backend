@@ -1,4 +1,3 @@
-// controllers/web/vcTemplateController.js
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const VcTemplate = require('../../models/web/vcTemplate');
@@ -16,14 +15,7 @@ exports.createTemplate = asyncHandler(async (req, res) => {
   const { name, slug, description, version, attributes, vc, createdBy } = req.body;
   ensureUniqueKeys(attributes || []);
   const doc = await VcTemplate.create({
-    name,
-    slug,
-    description,
-    version,
-    attributes,
-    vc,
-    createdBy,
-    status: 'draft', // always draft
+    name, slug, description, version, attributes, vc, createdBy, status: 'draft'
   });
   res.status(201).json(doc);
 });
@@ -54,16 +46,12 @@ exports.getTemplate = asyncHandler(async (req, res) => {
 exports.updateTemplate = asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid id'); }
-
   const doc = await VcTemplate.findById(id);
   if (!doc) { res.status(404); throw new Error('Template not found'); }
 
-  // Only allow specific fields (never allow status changes)
   const allowed = ['name', 'slug', 'description', 'version', 'attributes', 'vc', 'createdBy'];
   const updates = {};
-  for (const k of allowed) {
-    if (Object.prototype.hasOwnProperty.call(req.body, k)) updates[k] = req.body[k];
-  }
+  for (const k of allowed) if (Object.prototype.hasOwnProperty.call(req.body, k)) updates[k] = req.body[k];
   if (updates.attributes) ensureUniqueKeys(updates.attributes);
 
   Object.assign(doc, updates);
@@ -85,10 +73,11 @@ exports.previewTemplate = asyncHandler(async (req, res) => {
   const doc = await VcTemplate.findById(id);
   if (!doc) { res.status(404); throw new Error('Template not found'); }
   res.json({
+    _id: doc._id,
     name: doc.name,
     slug: doc.slug,
     version: doc.version,
     lastUpdated: doc.updatedAt,
-    attributes: doc.attributes,
+    attributes: doc.attributes, // [{key,title,type,required,path}]
   });
 });
