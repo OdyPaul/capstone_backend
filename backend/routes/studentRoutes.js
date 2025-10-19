@@ -7,7 +7,6 @@ const {
   findStudent,
 } = require("../controllers/web/studentController");
 const { protect } = require("../middleware/authMiddleware");
-const { getStudentSchema } = require("../controllers/web/studentController.extras");
 // GET /api/student/passing
 router.get("/passing", protect, getStudentPassing);
 
@@ -20,7 +19,5 @@ router.get("/search", protect, searchStudent);
 // GET /api/student/:id
 router.get("/:id", protect, findStudent);
 
-
-router.get("/schema", protect, getStudentSchema);
 
 module.exports = router;
