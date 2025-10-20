@@ -1,3 +1,4 @@
+// controllers/web/issueController.js
 const asyncHandler = require('express-async-handler');
 const UnsignedVC = require('../../models/web/vcDraft');
 const SignedVC   = require('../../models/web/signedVcModel');
@@ -6,12 +7,10 @@ const Payment = require('../../models/web/paymentModel');
 
 // POST /api/web/vc/drafts/:id/issue  (admin)
 exports.issueFromDraft = asyncHandler(async (req, res) => {
-  const draft = await UnsignedVC.findById(req.params.id)
-    .populate('student'); // uses 'Student_Profiles'
-
+  const draft = await UnsignedVC.findById(req.params.id).populate('student'); // Student_Profiles
   if (!draft) { res.status(404); throw new Error('Draft not found'); }
 
-  // Build a minimal VC payload from your student + draft data
+  // Build VC payload (minimal)
   const vcPayload = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', draft.type],
@@ -27,16 +26,14 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     }
   };
 
-  // (Optional) Sign VC (JWT/LD-Proof) later; for capstone store payload
   const salt   = randomSalt();
   const digest = computeDigest(vcPayload, salt);
 
-    // Ensure there's a paid & unused payment for this draft
+  // Require a paid & unused payment
   const pay = await Payment.findOne({ draft: draft._id, status: 'paid', consumed_at: null });
-  if (!pay) {
-    res.status(402); // Payment Required
-    throw new Error('No paid payment request found for this draft');
-  }
+  if (!pay) { res.status(402); throw new Error('No paid payment request found for this draft'); }
+
+  // Create signed VC record
   const signed = await SignedVC.create({
     student_id: draft.student.studentNumber,
     template_id: draft.type,
@@ -47,9 +44,36 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     anchoring: { state: 'unanchored' }
   });
 
+  // Consume the payment
   pay.status = 'consumed';
   pay.consumed_at = new Date();
   await pay.save();
 
-  res.status(201).json({ message: 'Issued (unanchored)', credential_id: signed._id });
+  // Flip draft → signed (guarded so we don't double-issue)
+  const upd = await UnsignedVC.updateOne(
+    { _id: draft._id, status: 'draft' }, // guard
+    { $set: { status: 'signed', signedAt: new Date(), signedVc: signed._id } }
+  );
+  if (upd.modifiedCount !== 1) {
+    // Someone else changed it — abort (optional: revert payment consume here if needed)
+    return res.status(409).json({ message: 'Draft is no longer in draft status' });
+  }
+
+  // Anchor now?
+  const wantAnchorNow =
+    String(req.query.anchorNow).toLowerCase() === 'true' ||
+    pay.anchorNow === true;
+
+  if (wantAnchorNow) {
+    // delegates response to mintNow
+    req.params.credId = signed._id.toString();
+    const anchorCtrl = require('./anchorController');
+    return anchorCtrl.mintNow(req, res);
+  }
+
+  // Unanchored (queued for batch)
+  return res.status(201).json({
+    message: 'Issued (unanchored)',
+    credential_id: signed._id
+  });
 });

@@ -18,6 +18,8 @@ router.post('/vc/drafts/:id/issue', protect, admin, issueCtrl.issueFromDraft);
 
 // Anchor batch (admin or superadmin)
 router.post('/anchor/mint-batch', protect, admin, anchorCtrl.mintBatch);
+// routes/web/vcRoutes.js
+router.post('/anchor/mint-now/:credId', protect, admin, anchorCtrl.mintNow);
 
 // Verification sessions
 router.post('/present/session', protect, verifyCtrl.createSession);          // ✅ function

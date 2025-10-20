@@ -24,7 +24,9 @@ const vcDraftSchema = new mongoose.Schema({
   anchoredAt: { type: Date, default: null },
 
   payment:       { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
-  payment_tx_no: { type: String, default: null }
+  payment_tx_no: { type: String, default: null },
+  signedVc: { type: mongoose.Schema.Types.ObjectId, ref: 'SignedVC', default: null },
+
 }, { timestamps: true });
 
 // unique draft per (student, template, purpose) while status='draft'

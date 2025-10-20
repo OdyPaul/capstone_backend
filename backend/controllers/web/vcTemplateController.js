@@ -12,10 +12,10 @@ const ensureUniqueKeys = (attributes = []) => {
 };
 
 exports.createTemplate = asyncHandler(async (req, res) => {
-  const { name, slug, description, version, attributes, vc, createdBy } = req.body;
+  const { name, slug, description, version, attributes, vc, createdBy, price } = req.body; // ← add price
   ensureUniqueKeys(attributes || []);
   const doc = await VcTemplate.create({
-    name, slug, description, version, attributes, vc, createdBy, status: 'draft'
+    name, slug, description, version, attributes, vc, createdBy, status: 'draft', price
   });
   res.status(201).json(doc);
 });
@@ -49,7 +49,7 @@ exports.updateTemplate = asyncHandler(async (req, res) => {
   const doc = await VcTemplate.findById(id);
   if (!doc) { res.status(404); throw new Error('Template not found'); }
 
-  const allowed = ['name', 'slug', 'description', 'version', 'attributes', 'vc', 'createdBy'];
+  const allowed = ['name', 'slug', 'description', 'version', 'attributes', 'vc', 'createdBy', 'price']; // ⬅️ add price
   const updates = {};
   for (const k of allowed) if (Object.prototype.hasOwnProperty.call(req.body, k)) updates[k] = req.body[k];
   if (updates.attributes) ensureUniqueKeys(updates.attributes);
