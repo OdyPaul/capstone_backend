@@ -1,40 +1,49 @@
-// utils/vcTemplate.js
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+// backend/utils/vcTemplate.js
+const getByPath = (obj, path) => {
+  if (!path) return undefined;
+  return path.split('.').reduce((o, k) => (o ? o[k] : undefined), obj);
+};
 
-function getByPath(obj, path) {
-  if (!obj || !path) return undefined;
-  return path.split('.').reduce((acc, k) => (acc ? acc[k] : undefined), obj);
-}
-
-function coerce(value, type) {
-  if (value == null) return value;
+function coerce(v, type) {
+  if (v == null) return v;
   switch (type) {
-    case 'string': return String(value);
-    case 'number': {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : null;
-    }
-    case 'boolean': {
-      if (typeof value === 'boolean') return value;
-      if (typeof value === 'string') return ['true','1','yes','y'].includes(value.toLowerCase());
-      if (typeof value === 'number') return value !== 0;
-      return null;
-    }
-    case 'date': {
-      const d = value instanceof Date ? value : new Date(value);
-      return isNaN(d) ? null : new Date(d).toISOString();
-    }
-    case 'array': return Array.isArray(value) ? value : (value == null ? [] : [value]);
-    case 'object': return (value && typeof value === 'object' && !Array.isArray(value)) ? value : {};
-    default: return value;
+    case 'number': return Number(v);
+    case 'boolean': return Boolean(v);
+    case 'date': return (v instanceof Date) ? v : new Date(v);
+    case 'array': return Array.isArray(v) ? v : (v == null ? [] : [v]);
+    case 'object': return (v && typeof v === 'object') ? v : {};
+    default: return v;
   }
 }
 
-/**
- * Build initial draft.data from template fields and student doc
- * Priority: overrides[key] > student[path] > default per type
- */
-function buildDataFromTemplate(template, student, overrides = {}) {
+function titleCase(s = '') {
+  return String(s)
+    .toLowerCase()
+    .replace(/\b([a-z])/g, (m, c) => c.toUpperCase());
+}
+
+function computeDegreeTitle(student, curriculumDoc) {
+  const curriculumTitle = curriculumDoc?.longName || curriculumDoc?.degreeTitle;
+  if (curriculumTitle) return curriculumTitle;
+
+  const raw = String(student?.program || '').trim();
+  if (!raw) return '';
+
+  const norm = raw.replace(/\s+/g, ' ').replace(/^[\s\-]+|[\s\-]+$/g, '');
+
+  const mBS = norm.match(/^B\.?\s*S\.?\s*(?:in)?\s*(.+)$/i);
+  if (mBS) return `Bachelor of Science in ${titleCase(mBS[1])}`;
+
+  const mBA = norm.match(/^B\.?\s*A\.?\s*(?:in)?\s*(.+)$/i);
+  if (mBA) return `Bachelor of Arts in ${titleCase(mBA[1])}`;
+
+  const mB = norm.match(/^B(?:achelor)?\s*(?:of)?\s*(.+)$/i);
+  if (mB) return `Bachelor of ${titleCase(mB[1])}`;
+
+  return titleCase(norm);
+}
+
+function buildDataFromTemplate(template, student, overrides = {}, curriculumDoc = null) {
   const out = {};
   const attrs = Array.isArray(template?.attributes) ? template.attributes : [];
 
@@ -43,12 +52,15 @@ function buildDataFromTemplate(template, student, overrides = {}) {
     const type = a.type || 'string';
     if (!key) continue;
 
-    let value = Object.prototype.hasOwnProperty.call(overrides, key)
-      ? overrides[key]
-      : undefined;
+    let value =
+      Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : undefined;
 
-    if (value === undefined && a.path) {
-      value = getByPath(student, a.path);
+    if (value === undefined) {
+      if (key === 'degreeTitle') {
+        value = computeDegreeTitle(student, curriculumDoc);
+      } else if (a.path) {
+        value = getByPath(student, a.path);
+      }
     }
 
     if (value === undefined) {
@@ -62,45 +74,15 @@ function buildDataFromTemplate(template, student, overrides = {}) {
   return out;
 }
 
-/**
- * Minimal validation: required + basic type soundness
- */
-function validateAgainstTemplate(template, data = {}) {
-  const errors = [];
+function validateAgainstTemplate(template, data) {
   const attrs = Array.isArray(template?.attributes) ? template.attributes : [];
-
+  const errors = [];
   for (const a of attrs) {
-    const key = a.key;
-    const type = a.type || 'string';
-    const val = data[key];
-
-    // required
-    if (a.required) {
-      const empty =
-        val === null || val === undefined ||
-        (type === 'string' && String(val).trim() === '') ||
-        (type === 'array' && Array.isArray(val) && val.length === 0) ||
-        (type === 'object' && val && Object.keys(val).length === 0);
-      if (empty) errors.push(`"${a.title || key}" is required.`);
-    }
-
-    // simple type checks
-    if (val != null) {
-      const coerced = coerce(val, type);
-      if (coerced === null && type !== 'string') {
-        errors.push(`"${a.title || key}" must be a valid ${type}.`);
-      }
-    }
-
-    // optional: basic email sanity if key hints email (you can remove this)
-    if (/email/i.test(key) && val) {
-      if (typeof val !== 'string' || !EMAIL_RE.test(val)) {
-        errors.push(`"${a.title || key}" must be a valid email.`);
-      }
+    if (a.required && (data[a.key] === null || data[a.key] === undefined || data[a.key] === "")) {
+      errors.push(`Missing required: ${a.key}`);
     }
   }
-
   return { valid: errors.length === 0, errors };
 }
 
-module.exports = { buildDataFromTemplate, validateAgainstTemplate };
+module.exports = { buildDataFromTemplate, validateAgainstTemplate, computeDegreeTitle };

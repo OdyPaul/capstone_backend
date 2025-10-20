@@ -1,16 +1,15 @@
+// backend/models/web/vcTemplate.js
 const mongoose = require('mongoose');
 const { getVcConn } = require('../../config/db');
 const vconn = getVcConn();
 
-/**
- * Minimal attribute (schema field) for a VC Template.
- */
 const AttributeSchema = new mongoose.Schema({
-  key:      { type: String, required: true }, // unique within template
+  key:      { type: String, required: true },
   title:    { type: String, required: true },
   type:     { type: String, enum: ["string","number","date","boolean","array","object"], default: "string" },
   required: { type: Boolean, default: false },
-  path:     { type: String, default: "" }, // Student field path for auto-fill
+  path:     { type: String, default: "" },
+  description: { type: String, default: "" },
 }, { _id: false });
 
 const VcTemplateSchema = new mongoose.Schema({
@@ -19,16 +18,11 @@ const VcTemplateSchema = new mongoose.Schema({
   description: { type: String, default: "" },
   version:     { type: String, default: "1.0.0" },
 
-  // draft-only lifecycle
   status:      { type: String, enum: ["draft"], default: "draft" },
-
-  // minimal schema fields
   attributes:  { type: [AttributeSchema], default: [] },
-
-  // 💸 default price per credential (used to open a pending Payment)
   price:       { type: Number, default: 250 },
 
-  // optional W3C hints (kept for future issuance; safe defaults)
+  // Use this to carry “Diploma” or “TOR”, etc.
   vc: {
     '@context': { type: [String], default: ["https://www.w3.org/2018/credentials/v1"] },
     type:       { type: [String], default: ["VerifiableCredential"] }
