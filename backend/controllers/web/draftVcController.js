@@ -13,7 +13,28 @@ function parseExpiration(exp) {
   return d;
 }
 
-async function createOneDraft({ studentId, templateId, type, purpose, expiration, overrides }) {
+function genClientTx7() {
+  return String(Math.floor(1000000 + Math.random() * 9000000)); // 7 digits
+}
+
+async function createDraftWithUniqueTx(doc, retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await VcDraft.create(doc);
+    } catch (e) {
+      const dup = e?.code === 11000 && (e?.keyPattern?.client_tx || String(e?.message || '').includes('client_tx'));
+      if (!dup) throw e;
+      doc.client_tx = genClientTx7(); // regenerate and retry
+    }
+  }
+  const err = new Error('Could not generate a unique client_tx after several attempts');
+  err.status = 500;
+  throw err;
+}
+
+async function createOneDraft({
+  studentId, templateId, type, purpose, expiration, overrides, clientTx,
+}) {
   if (!studentId || !templateId || !type || !purpose) {
     const err = new Error('Missing studentId, templateId, type or purpose');
     err.status = 400; throw err;
@@ -44,27 +65,20 @@ async function createOneDraft({ studentId, templateId, type, purpose, expiration
   });
   if (existing) return { status: 'duplicate', draft: existing };
 
-  let draft = await VcDraft.create({
+  let draft = await createDraftWithUniqueTx({
     template: template._id,
-    student: student._id,
+    student:  student._id,
     type,
     purpose,
     data,
     status: 'draft',
     expiration: parseExpiration(expiration),
+    client_tx: clientTx || genClientTx7(),
   });
 
-  // ✅ consistent populate for response
   draft = await draft
-    .populate({
-      path: 'student',
-      model: Student,
-      select: 'fullName studentNumber program dateGraduated',
-    })
-    .populate({
-      path: 'template',
-      select: 'name slug version', // ← use name/slug/version here too
-    });
+    .populate({ path: 'student', model: Student, select: 'fullName studentNumber program dateGraduated' })
+    .populate({ path: 'template', select: 'name slug version' });
 
   return { status: 'created', draft };
 }
@@ -76,7 +90,7 @@ exports.createDraft = asyncHandler(async (req, res) => {
     const results = [];
     for (const item of body) {
       try {
-        const r = await createOneDraft(item);
+        const r = await createOneDraft(item); // no shared client_tx; each draft gets its own
         results.push(r);
       } catch (e) {
         results.push({ status: 'error', error: e.message, input: item });
@@ -95,8 +109,8 @@ exports.createDraft = asyncHandler(async (req, res) => {
     });
   }
 
-  const { studentId, templateId, type, purpose, expiration, overrides } = body;
-  const result = await createOneDraft({ studentId, templateId, type, purpose, expiration, overrides });
+  const { studentId, templateId, type, purpose, expiration, overrides, clientTx } = body;
+  const result = await createOneDraft({ studentId, templateId, type, purpose, expiration, overrides, clientTx });
   if (result.status === 'duplicate') {
     return res.status(409).json({ message: 'Draft already exists', draft: result.draft });
   }
@@ -104,10 +118,11 @@ exports.createDraft = asyncHandler(async (req, res) => {
 });
 
 exports.getDrafts = asyncHandler(async (req, res) => {
-  const { type, range, program, q, template } = req.query;
+  const { type, range, program, q, template, clientTx } = req.query;
   const filter = {};
   if (type && type !== 'All') filter.type = type;
   if (template && mongoose.isValidObjectId(template)) filter.template = template;
+  if (clientTx) filter.client_tx = String(clientTx);
 
   if (range && range !== 'All') {
     let start = null;
@@ -121,7 +136,7 @@ exports.getDrafts = asyncHandler(async (req, res) => {
   let drafts = await VcDraft.find(filter)
     .populate({
       path: 'student',
-      model: Student, // ✅ cross-connection populate
+      model: Student,
       select: 'fullName studentNumber program dateGraduated',
       ...(program && program !== 'All' ? { match: { program } } : {}),
     })
@@ -139,6 +154,7 @@ exports.getDrafts = asyncHandler(async (req, res) => {
         (s.studentNumber || '').toLowerCase().includes(needle) ||
         (d.type || '').toLowerCase().includes(needle) ||
         (d.purpose || '').toLowerCase().includes(needle) ||
+        (d.client_tx || '').toLowerCase().includes(needle) ||
         (d.template?.name || '').toLowerCase().includes(needle)
       );
     });
