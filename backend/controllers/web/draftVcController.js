@@ -1,9 +1,9 @@
-// controllers/web/draftVcController.js
 const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
 const VcDraft = require('../../models/web/vcDraft');
 const VcTemplate = require('../../models/web/vcTemplate');
 const Student = require('../../models/students/studentModel');
+const Payment = require('../../models/web/paymentModel'); // ⬅️ add this
 const { buildDataFromTemplate, validateAgainstTemplate } = require('../../utils/vcTemplate');
 
 function parseExpiration(exp) {
@@ -57,6 +57,7 @@ async function createOneDraft({
     e.status = 400; throw e;
   }
 
+  // only block duplicates for ACTIVE draft
   const existing = await VcDraft.findOne({
     student: studentId,
     template: templateId,
@@ -65,6 +66,7 @@ async function createOneDraft({
   });
   if (existing) return { status: 'duplicate', draft: existing };
 
+  // create the draft with a 7-digit client code
   let draft = await createDraftWithUniqueTx({
     template: template._id,
     student:  student._id,
@@ -76,9 +78,32 @@ async function createOneDraft({
     client_tx: clientTx || genClientTx7(),
   });
 
+  // 💸 ensure there is exactly one PENDING payment for this draft (idempotent)
+  const amount = Number.isFinite(Number(template.price)) ? Number(template.price) : 250;
+  const pay = await Payment.findOneAndUpdate(
+    { draft: draft._id, status: 'pending' },
+    {
+      $setOnInsert: {
+        amount,
+        currency: 'PHP',
+        anchorNow: false,
+        notes: `Auto-created for draft ${draft._id} (client_tx ${draft.client_tx})`
+      }
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+
+  // mirror payment info on draft for easy lookup
+  if (pay) {
+    draft.payment = pay._id;
+    draft.payment_tx_no = pay.tx_no;
+    await draft.save();
+  }
+
+  // populate for response
   draft = await draft
     .populate({ path: 'student', model: Student, select: 'fullName studentNumber program dateGraduated' })
-    .populate({ path: 'template', select: 'name slug version' });
+    .populate({ path: 'template', select: 'name slug version price' });
 
   return { status: 'created', draft };
 }
@@ -90,7 +115,7 @@ exports.createDraft = asyncHandler(async (req, res) => {
     const results = [];
     for (const item of body) {
       try {
-        const r = await createOneDraft(item); // no shared client_tx; each draft gets its own
+        const r = await createOneDraft(item); // each draft gets its own client_tx + pending payment
         results.push(r);
       } catch (e) {
         results.push({ status: 'error', error: e.message, input: item });
@@ -140,7 +165,7 @@ exports.getDrafts = asyncHandler(async (req, res) => {
       select: 'fullName studentNumber program dateGraduated',
       ...(program && program !== 'All' ? { match: { program } } : {}),
     })
-    .populate({ path: 'template', select: 'name slug version' })
+    .populate({ path: 'template', select: 'name slug version price' })
     .sort({ createdAt: -1 });
 
   if (program && program !== 'All') drafts = drafts.filter(d => d.student);

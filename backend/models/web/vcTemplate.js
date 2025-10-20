@@ -4,11 +4,6 @@ const vconn = getVcConn();
 
 /**
  * Minimal attribute (schema field) for a VC Template.
- * - key:     identifier used in VcDraft.data (e.g., "studentId")
- * - title:   human label shown to admins ("Subject ID")
- * - type:    basic type for validation/serialization ("string"|"number"|"date"|"boolean"|"array"|"object")
- * - required:is this field required when validating a draft?
- * - path:    OPTIONAL dot-path into Student document for auto-fill (e.g. "studentNumber", "fullName", "subjects")
  */
 const AttributeSchema = new mongoose.Schema({
   key:      { type: String, required: true }, // unique within template
@@ -29,6 +24,9 @@ const VcTemplateSchema = new mongoose.Schema({
 
   // minimal schema fields
   attributes:  { type: [AttributeSchema], default: [] },
+
+  // 💸 default price per credential (used to open a pending Payment)
+  price:       { type: Number, default: 250 },
 
   // optional W3C hints (kept for future issuance; safe defaults)
   vc: {
