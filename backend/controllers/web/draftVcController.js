@@ -36,7 +36,6 @@ async function createOneDraft({ studentId, templateId, type, purpose, expiration
     e.status = 400; throw e;
   }
 
-  // Only block duplicates for ACTIVE drafts
   const existing = await VcDraft.findOne({
     student: studentId,
     template: templateId,
@@ -55,9 +54,17 @@ async function createOneDraft({ studentId, templateId, type, purpose, expiration
     expiration: parseExpiration(expiration),
   });
 
+  // ✅ consistent populate for response
   draft = await draft
-    .populate({ path: 'student', select: 'fullName studentNumber program dateGraduated' })
-    .populate({ path: 'template', select: 'displayName version' });
+    .populate({
+      path: 'student',
+      model: Student,
+      select: 'fullName studentNumber program dateGraduated',
+    })
+    .populate({
+      path: 'template',
+      select: 'name slug version', // ← use name/slug/version here too
+    });
 
   return { status: 'created', draft };
 }
@@ -111,11 +118,13 @@ exports.getDrafts = asyncHandler(async (req, res) => {
     if (start) filter.createdAt = { $gte: start };
   }
 
-  const popStudent = { path: 'student', select: 'fullName studentNumber program dateGraduated' };
-  if (program && program !== 'All') popStudent.match = { program };
-
   let drafts = await VcDraft.find(filter)
-    .populate(popStudent)
+    .populate({
+      path: 'student',
+      model: Student, // ✅ cross-connection populate
+      select: 'fullName studentNumber program dateGraduated',
+      ...(program && program !== 'All' ? { match: { program } } : {}),
+    })
     .populate({ path: 'template', select: 'name slug version' })
     .sort({ createdAt: -1 });
 
