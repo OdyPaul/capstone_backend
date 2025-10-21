@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const { MerkleTree } = require('merkletreejs');
 const keccak256 = require('keccak256');
 const SignedVC = require('../../models/web/signedVcModel');
-const AnchorBatch = require('../../models/web/anchorBatch');
+const AnchorBatch = require('../../models/web/anchorBatchModel');
 const { fromB64url } = require('../../utils/vcCrypto');
 
 async function submitToPolygon(merkleRootHex) {
@@ -65,7 +65,8 @@ exports.mintBatch = asyncHandler(async (req, res) => {
   const root = '0x' + tree.getRoot().toString('hex');
 
   const txHash = await submitToPolygon(root);
-  const batch_id = new Date().toISOString().slice(0, 16); // 'YYYY-MM-DDTHH:MM'
+ const batch_id = new Date().toISOString().slice(0,19); // 'YYYY-MM-DDTHH:MM:SS'
+ // 'YYYY-MM-DDTHH:MM'
 
   await AnchorBatch.create({
     batch_id, merkle_root: root, tx_hash: txHash, chain_id: 137,

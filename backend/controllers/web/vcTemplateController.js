@@ -18,8 +18,7 @@ function resolveKindFromVC(vc) {
   const arr = Array.isArray(vc?.type) ? vc.type.map(s => String(s).toLowerCase()) : [];
   if (arr.some(s => s.includes('tor'))) return 'tor';
   if (arr.some(s => s.includes('diploma'))) return 'diploma';
-  // default: diploma if not specified
-  return 'tor';
+  return 'diploma'; // ← default should be diploma
 }
 
 exports.createTemplate = asyncHandler(async (req, res) => {

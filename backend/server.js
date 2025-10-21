@@ -60,6 +60,8 @@ const { errorHandler } = require('./middleware/errorMiddleware');
   app.use('/api/web/student', require('./routes/studentRoutes'));    // student queries
   app.use('/api/web', require('./routes/web/draftVcRoutes'));
   app.use('/api/web', require('./routes/web/paymentRoutes'));
+  app.use('/api/web', require('./routes/web/claimRoutes'));
+
 
 
   // Mobile feature routes

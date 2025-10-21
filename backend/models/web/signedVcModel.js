@@ -1,15 +1,26 @@
+// models/web/signedVcModel.js
 const mongoose = require('mongoose');
 const { getVcConn } = require('../../config/db');
 const vconn = getVcConn();
 
 const signedVcSchema = new mongoose.Schema({
-  student_id: { type: String, required: true },          // school ID for fast search
+  student_id: { type: String, required: true },
   holder_user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  template_id: { type: String, required: true },         // 'TOR' | 'Diploma'
-  format: { type: String, enum: ['sd-jwt-vc', 'vc+ldp'], default: 'sd-jwt-vc' },
-  vc_payload: { type: Object, required: true },          // W3C VC JSON (or compact)
-  digest: { type: String, required: true },              // base64url(SHA-256(...))
+  template_id: { type: String, required: true },
+
+  // NEW: make space for a JWS VC
+  format: { type: String, enum: ['sd-jwt-vc', 'vc+ldp', 'jws-vc'], default: 'jws-vc' },
+  jws: { type: String },       // compact JWS of the VC payload
+  alg: { type: String, default: 'ES256' },
+  kid: { type: String, default: '' },
+
+  // keep your original payload for convenience (optional)
+  vc_payload: { type: Object, required: true },
+
+  // digest & salt now computed from the JWS, not raw JSON
+  digest: { type: String, required: true },    // base64url(SHA-256(...))
   salt: { type: String, required: true },
+
   status: { type: String, enum: ['active', 'revoked'], default: 'active' },
   anchoring: {
     state: { type: String, enum: ['unanchored', 'anchored'], default: 'unanchored' },
