@@ -1,23 +1,21 @@
 // controllers/web/issueController.js
 const asyncHandler = require('express-async-handler');
 const UnsignedVC = require('../../models/web/vcDraft');
-const SignedVC = require('../../models/web/signedVcModel');
-const Payment = require('../../models/web/paymentModel');
-const Student = require('../../models/students/studentModel');
+const SignedVC   = require('../../models/web/signedVcModel');
+const Payment    = require('../../models/web/paymentModel');
+const Student    = require('../../models/students/studentModel');
 const { randomSalt, stableStringify } = require('../../utils/vcCrypto');
 const crypto = require('crypto');
 
 const sha256b64url = (s) =>
   crypto.createHash('sha256').update(s).digest('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
 
-// If you’re on Node < 18, uncomment this:
-// const { TextEncoder } = require('util');
-
+// --- JWS signing helpers (jose is ESM-only) ---
 let ISSUER_KEY_PROMISE = null;
 async function getIssuerKey() {
   if (!ISSUER_KEY_PROMISE) {
-    const { importPKCS8 } = await import('jose'); // ESM-only lib
+    const { importPKCS8 } = await import('jose'); // dynamic import
     const pem = process.env.ISSUER_EC_P256_PKCS8_PEM;
     if (!pem) throw new Error('ISSUER_EC_P256_PKCS8_PEM not set');
     ISSUER_KEY_PROMISE = importPKCS8(pem, 'ES256');
@@ -26,13 +24,14 @@ async function getIssuerKey() {
 }
 
 async function signJws(payloadBytes, kid) {
-  const { CompactSign } = await import('jose'); // ESM-only lib
+  const { CompactSign } = await import('jose'); // dynamic import
   const key = await getIssuerKey();
   return new CompactSign(payloadBytes)
     .setProtectedHeader({ alg: 'ES256', kid })
     .sign(key);
 }
 
+// -------------------- ISSUE FROM DRAFT --------------------
 exports.issueFromDraft = asyncHandler(async (req, res) => {
   const draft = await UnsignedVC.findById(req.params.id)
     .populate({ path: 'student', model: Student, select: 'fullName studentNumber program dateGraduated' });
@@ -43,34 +42,42 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
   const issuerDid = process.env.ISSUER_DID || 'did:web:example.org';
   const kid = process.env.ISSUER_KID || `${issuerDid}#keys-1`;
 
+  // 🔹 Keep everything produced by template (draft.data), e.g. subjects (TOR), gwa, degreeTitle, etc.
+  // Then enforce canonical identifiers from Student + add purpose/expiration.
+  const credentialSubject = {
+    ...(draft.data || {}),
+    studentNumber: draft.student.studentNumber,
+    fullName:      draft.student.fullName,
+    program:       draft.student.program,
+    dateGraduated: draft.student.dateGraduated,
+    purpose:       draft.purpose || null,
+    expires:       draft.expiration || null,
+  };
+
+  // If you don't want the duplicate "studentId" (from defaults), uncomment:
+  // delete credentialSubject.studentId;
+
   const vcPayload = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', draft.type],
     issuer: { id: issuerDid },
     issuanceDate: new Date().toISOString(),
-    credentialSubject: {
-      studentNumber: draft.student.studentNumber,
-      fullName:      draft.student.fullName,
-      program:       draft.student.program,
-      dateGraduated: draft.student.dateGraduated,
-      purpose:       draft.purpose || null,
-      expires:       draft.expiration || null,
-    }
+    credentialSubject,
   };
 
-  // 1) Sign VC → compact JWS (helper handles CompactSign + header + sign)
+  // 1) Sign the VC JSON as compact JWS (ES256)
   const payloadBytes = new TextEncoder().encode(stableStringify(vcPayload));
   const jws = await signJws(payloadBytes, kid);
 
-  // 2) Digest over signed artifact + salt
+  // 2) Compute digest over the signed artifact + salt
   const salt = randomSalt();
   const digest = sha256b64url(`${jws}.${salt}`);
 
-  // 3) Require paid & unused payment
+  // 3) Require a paid & unused payment
   const pay = await Payment.findOne({ draft: draft._id, status: 'paid', consumed_at: null });
   if (!pay) { res.status(402); throw new Error('No paid payment request found for this draft'); }
 
-  // 4) Save SignedVC
+  // 4) Persist Signed VC
   const signed = await SignedVC.create({
     student_id:  draft.student.studentNumber,
     template_id: draft.type,
@@ -78,13 +85,13 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     jws,
     alg:         'ES256',
     kid,
-    vc_payload:  vcPayload,
+    vc_payload:  vcPayload,  // convenience copy for UI/filtering
     digest, salt,
     status: 'active',
     anchoring: { state: 'unanchored' }
   });
 
-  // 5) Consume payment & flip draft
+  // 5) Consume payment & flip draft → signed
   pay.status = 'consumed';
   pay.consumed_at = new Date();
   await pay.save();
@@ -97,7 +104,7 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     return res.status(409).json({ message: 'Draft is no longer in draft status' });
   }
 
-  // 6) Anchor now?
+  // 6) Optional immediate anchoring
   const wantAnchorNow =
     String(req.query.anchorNow).toLowerCase() === 'true' || pay.anchorNow === true;
 
@@ -110,7 +117,7 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
   return res.status(201).json({ message: 'Issued (unanchored)', credential_id: signed._id });
 });
 
-
+// -------------------- LIST SIGNED (unchanged) --------------------
 exports.listSigned = asyncHandler(async (req, res) => {
   const { q, status, anchorState } = req.query;
 
