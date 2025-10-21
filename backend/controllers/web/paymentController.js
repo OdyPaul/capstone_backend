@@ -92,7 +92,7 @@ exports.markPaid = asyncHandler(async (req, res) => {
   pay.method       = method;
   pay.paid_at      = new Date();
   pay.confirmed_by = req.user._id;
-  pay.receipt_no   = String(receipt_no).trim().toUpperCase();   // 👈 normalize
+  pay.receipt_no   = String(receipt_no).trim().toUpperCase();   // normalize
   pay.receipt_date = receipt_date ? new Date(receipt_date) : pay.paid_at;
   if (notes) pay.notes = notes;
 
@@ -124,7 +124,7 @@ exports.markPaidByTx = asyncHandler(async (req, res) => {
   pay.method       = method;
   pay.paid_at      = new Date();
   pay.confirmed_by = req.user._id;
-  pay.receipt_no   = String(receipt_no).trim().toUpperCase();   // 👈 normalize
+  pay.receipt_no   = String(receipt_no).trim().toUpperCase();   // normalize
   pay.receipt_date = receipt_date ? new Date(receipt_date) : pay.paid_at;
   if (notes) pay.notes = notes;
 
