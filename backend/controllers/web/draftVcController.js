@@ -136,3 +136,11 @@ async function createOneDraft({
 
   return { status: 'created', draft };
 }
+exports.deleteDraft = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid draft id'); }
+  const doc = await VcDraft.findById(id);
+  if (!doc) { res.status(404); throw new Error('Draft not found'); }
+  await doc.deleteOne();
+  res.json(doc);
+});
