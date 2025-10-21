@@ -13,7 +13,7 @@ router.patch('/payments/:id/mark-paid', protect, admin, ctrl.markPaid);
 // Mark as paid (by tx number)
 router.post('/payments/tx/:txNo/mark-paid', protect, admin, ctrl.markPaidByTx);
 
-// List payments (filters: draft, status, tx_no)
+// List payments (filters: draft, status, tx_no))
 router.get('/payments', protect, admin, ctrl.listPayments);
 
 module.exports = router;
