@@ -16,4 +16,6 @@ router.post('/payments/tx/:txNo/mark-paid', protect, admin, ctrl.markPaidByTx);
 // List payments (filters: draft, status, tx_no)
 router.get('/payments', protect, admin, ctrl.listPayments);
 
+router.patch('/payments/:id/void', protect, admin, ctrl.voidPayment);
+
 module.exports = router;

@@ -140,3 +140,27 @@ exports.markPaidByTx = asyncHandler(async (req, res) => {
 
   res.json(pay);
 });
+exports.listPayments = asyncHandler(async (req, res) => {
+  const { draft, status, tx_no } = req.query;
+  const filter = {};
+  if (draft && mongoose.isValidObjectId(draft)) filter.draft = draft;
+  if (status) filter.status = status;
+  if (tx_no) filter.tx_no = tx_no;
+
+  const items = await Payment.find(filter)
+    .populate({ path: 'draft', select: 'type purpose student status payment_tx_no' })
+    .sort({ createdAt: -1 });
+
+  res.json(items);
+});
+
+exports.voidPayment = asyncHandler(async (req, res) => {
+  const pay = await Payment.findById(req.params.id);
+  if (!pay) { res.status(404); throw new Error('Payment not found'); }
+  if (pay.status === 'consumed') { res.status(409); throw new Error('Already used for issuance'); }
+
+  pay.status = 'void';
+  await pay.save();
+  res.json(pay);
+});
+
