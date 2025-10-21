@@ -109,3 +109,31 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
 
   return res.status(201).json({ message: 'Issued (unanchored)', credential_id: signed._id });
 });
+
+
+exports.listSigned = asyncHandler(async (req, res) => {
+  const { q, status, anchorState } = req.query;
+
+  const filter = {};
+  if (status) filter.status = status;                       // 'active' | 'revoked'
+  if (anchorState) filter['anchoring.state'] = anchorState; // 'unanchored' | 'anchored'
+
+  let docs = await SignedVC.find(filter)
+    .select('_id template_id status anchoring createdAt vc_payload')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (q) {
+    const needle = String(q).toLowerCase();
+    docs = docs.filter(d => {
+      const subj = d.vc_payload?.credentialSubject || {};
+      return (
+        (subj.fullName || '').toLowerCase().includes(needle) ||
+        (subj.studentNumber || '').toLowerCase().includes(needle) ||
+        (d.template_id || '').toLowerCase().includes(needle)
+      );
+    });
+  }
+
+  res.json(docs);
+});

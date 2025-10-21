@@ -13,6 +13,9 @@ console.log('typeof verifyCtrl.submitPresentation:', typeof verifyCtrl.submitPre
 console.log('typeof rateLimit:', typeof rateLimit);
 console.log('typeof rateLimit():', typeof rateLimit());
 
+
+//filter/ get signed
+router.get('/vc/signed', protect, admin, issueCtrl.listSigned); 
 // Issue from draft (admin)
 router.post('/vc/drafts/:id/issue', protect, admin, issueCtrl.issueFromDraft);
 
