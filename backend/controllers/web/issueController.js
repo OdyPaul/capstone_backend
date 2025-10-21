@@ -4,11 +4,22 @@ const UnsignedVC = require('../../models/web/vcDraft');
 const SignedVC   = require('../../models/web/signedVcModel');
 const { computeDigest, randomSalt } = require('../../utils/vcCrypto');
 const Payment = require('../../models/web/paymentModel');
+const Student = require('../../models/students/studentModel'); // ⬅️ add this
 
 // POST /api/web/vc/drafts/:id/issue  (admin)
 exports.issueFromDraft = asyncHandler(async (req, res) => {
-  const draft = await UnsignedVC.findById(req.params.id).populate('student'); // Student_Profiles
+  const draft = await UnsignedVC.findById(req.params.id)
+    .populate({
+      path: 'student',
+      model: Student, // ⬅️ ensure correct connection/model
+      select: 'fullName studentNumber program dateGraduated',
+    });
+
   if (!draft) { res.status(404); throw new Error('Draft not found'); }
+  if (!draft.student) { // ⬅️ nice, deterministic error instead of TypeError
+    res.status(409);
+    throw new Error('Draft has no linked student record. The student might have been deleted or not on this connection.');
+  }
 
   // Build VC payload (minimal)
   const vcPayload = {
@@ -49,13 +60,12 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
   pay.consumed_at = new Date();
   await pay.save();
 
-  // Flip draft → signed (guarded so we don't double-issue)
+  // Flip draft → signed (guard against double-issue)
   const upd = await UnsignedVC.updateOne(
-    { _id: draft._id, status: 'draft' }, // guard
+    { _id: draft._id, status: 'draft' },
     { $set: { status: 'signed', signedAt: new Date(), signedVc: signed._id } }
   );
   if (upd.modifiedCount !== 1) {
-    // Someone else changed it — abort (optional: revert payment consume here if needed)
     return res.status(409).json({ message: 'Draft is no longer in draft status' });
   }
 
@@ -65,13 +75,11 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     pay.anchorNow === true;
 
   if (wantAnchorNow) {
-    // delegates response to mintNow
     req.params.credId = signed._id.toString();
     const anchorCtrl = require('./anchorController');
     return anchorCtrl.mintNow(req, res);
   }
 
-  // Unanchored (queued for batch)
   return res.status(201).json({
     message: 'Issued (unanchored)',
     credential_id: signed._id
