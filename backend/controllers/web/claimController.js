@@ -19,7 +19,7 @@ exports.createClaim = asyncHandler(async (req, res) => {
       .sort({ createdAt: -1 });
 
     if (existing) {
-      const base = process.env.PUBLIC_BASE_URL || 'https://issuer.example.edu';
+      const base = process.env.BASE_URL || 'https://issuer.example.edu';
       const claim_url = `${base}/c/${existing.token}`;
       return res.status(200).json({
         token: existing.token,
@@ -87,7 +87,7 @@ exports.listClaims = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
-  const base = process.env.PUBLIC_BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || 'https://issuer.example.edu';
 
   let rows = tickets.map(t => {
     const vc = t.cred_id || {};
@@ -137,7 +137,7 @@ exports.getClaim = asyncHandler(async (req, res) => {
 
   if (!t) { res.status(404); throw new Error('Claim not found'); }
 
-  const base = process.env.PUBLIC_BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || 'https://issuer.example.edu';
   const now = new Date();
   const computedStatus =
     t.expires_at < now ? 'expired' : (t.used_at ? 'used' : 'active');
@@ -169,7 +169,7 @@ exports.qrPng = asyncHandler(async (req, res) => {
   const t = await ClaimTicket.findById(req.params.id).lean();
   if (!t) { res.status(404); throw new Error('Claim not found'); }
 
-  const base = process.env.PUBLIC_BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || 'https://issuer.example.edu';
   const claimUrl = `${base}/c/${t.token}`;
 
   const size = Math.max(120, Math.min(1024, Number(req.query.size) || 256));
