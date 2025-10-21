@@ -40,7 +40,7 @@ exports.createClaim = asyncHandler(async (req, res) => {
     created_by: req.user?._id || null, // tolerate unauthenticated contexts if needed
   });
 
-  const base = process.env.PUBLIC_BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || 'https://issuer.example.edu';
   const claim_url = `${base}/c/${token}`;
 
   return res.status(201).json({ token, claim_url, expires_at, reused: false });
