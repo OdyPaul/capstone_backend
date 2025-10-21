@@ -21,10 +21,9 @@ const paymentSchema = new mongoose.Schema({
   status:  { type: String, enum: ['pending','paid','void','consumed'], default: 'pending' },
   method:  { type: String, enum: ['cash','gcash','card','other'], default: 'cash' },
 
-  // ✅ add these
-  receipt_no:   { type: String, default: null },
+  // 👇 normalize-able, unique when present
+  receipt_no:   { type: String, default: null, trim: true, uppercase: true },
   receipt_date: { type: Date,   default: null },
-
 
   paid_at:      { type: Date, default: null },
   confirmed_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -33,25 +32,22 @@ const paymentSchema = new mongoose.Schema({
   notes: { type: String, default: '' },
 }, { timestamps: true });
 
-
-paymentSchema.index(
-  { receipt_no: 1 },
-  {
-    unique: true,
-    partialFilterExpression: { receipt_no: { $ne: null } },
-    name: 'uniq_receipt_no'
-  }
-);
-// One open 'pending' request per draft
+// one pending per draft
 paymentSchema.index(
   { draft: 1, status: 1 },
   { unique: true, partialFilterExpression: { status: 'pending' }, name: 'uniq_pending_per_draft' }
 );
 
-// One open 'paid & unused' per draft (optional but nice)
+// one paid & unused per draft
 paymentSchema.index(
   { draft: 1, status: 1, consumed_at: 1 },
   { unique: true, partialFilterExpression: { status: 'paid', consumed_at: null }, name: 'uniq_paid_open_per_draft' }
+);
+
+// 👇 unique receipt_no when present
+paymentSchema.index(
+  { receipt_no: 1 },
+  { unique: true, partialFilterExpression: { receipt_no: { $ne: null } }, name: 'uniq_receipt_no' }
 );
 
 module.exports = vconn.model('Payment', paymentSchema);
