@@ -3,6 +3,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const Payment = require('../../models/web/paymentModel');
 const VcDraft = require('../../models/web/vcDraft');
+const Student = require('../../models/students/studentModel');
 
 exports.createRequest = asyncHandler(async (req, res) => {
   const {
@@ -148,8 +149,17 @@ exports.listPayments = asyncHandler(async (req, res) => {
   if (tx_no) filter.tx_no = tx_no;
 
   const items = await Payment.find(filter)
-    .populate({ path: 'draft', select: 'type purpose student status payment_tx_no' })
-    .sort({ createdAt: -1 });
+    .populate({
+      path: 'draft',
+      select: 'type purpose student status payment_tx_no',
+      populate: {
+        path: 'student',
+        model: Student, // ⬅️ populate the referenced Student_Profiles document
+        select: 'fullName studentNumber program',
+      },
+    })
+    .sort({ createdAt: -1 })
+    .lean(); // optional
 
   res.json(items);
 });
