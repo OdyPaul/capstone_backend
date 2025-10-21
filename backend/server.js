@@ -62,6 +62,8 @@ const { errorHandler } = require('./middleware/errorMiddleware');
   app.use('/api/web', require('./routes/web/paymentRoutes'));
   app.use('/api/web', require('./routes/web/claimRoutes'));
 
+  app.use('/',        require('./routes/web/claimPublicRoutes'));
+
 
 
   // Mobile feature routes
