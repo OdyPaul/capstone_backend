@@ -7,13 +7,11 @@ const ctrl = require('../../controllers/web/paymentController');
 // Create a payment request for a draft
 router.post('/payments/request', protect, admin, ctrl.createRequest);
 
-// Mark as paid (cashier)
+// Mark as paid (by id)
 router.patch('/payments/:id/mark-paid', protect, admin, ctrl.markPaid);
-// or by tx number (handy at cashier window)
-router.post('/payments/tx/:txNo/mark-paid', protect, admin, ctrl.markPaidByTx);
 
-// Void a payment (before issuance)
-router.patch('/payments/:id/void', protect, admin, ctrl.voidPayment);
+// Mark as paid (by tx number)
+router.post('/payments/tx/:txNo/mark-paid', protect, admin, ctrl.markPaidByTx);
 
 // List payments (filters: draft, status, tx_no)
 router.get('/payments', protect, admin, ctrl.listPayments);
