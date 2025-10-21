@@ -1,10 +1,13 @@
+// controllers/web/draftVcController.js
 const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
 const VcDraft = require('../../models/web/vcDraft');
 const VcTemplate = require('../../models/web/vcTemplate');
 const Student = require('../../models/students/studentModel');
-const Payment = require('../../models/web/paymentModel'); // ⬅️ add this
+const Payment = require('../../models/web/paymentModel');
 const { buildDataFromTemplate, validateAgainstTemplate } = require('../../utils/vcTemplate');
+// ⬇️ NEW: bring in defaults
+const { getDefaults } = require('../../utils/templateDefaults');
 
 function parseExpiration(exp) {
   if (!exp || exp === 'N/A') return null;
@@ -32,6 +35,20 @@ async function createDraftWithUniqueTx(doc, retries = 5) {
   throw err;
 }
 
+// ⬇️ NEW: infer kind ('tor' | 'diploma') from template.vc.type or requested VC "type"
+function inferKind(draftType, templateVc) {
+  const t = String(draftType || '').toLowerCase();
+  if (t.includes('tor')) return 'tor';
+  if (t.includes('diploma')) return 'diploma';
+
+  const arr = Array.isArray(templateVc?.type) ? templateVc.type.map(s => String(s).toLowerCase()) : [];
+  if (arr.some(s => s.includes('tor'))) return 'tor';
+  if (arr.some(s => s.includes('diploma'))) return 'diploma';
+
+  // default
+  return 'diploma';
+}
+
 async function createOneDraft({
   studentId, templateId, type, purpose, expiration, overrides, clientTx,
 }) {
@@ -50,14 +67,26 @@ async function createOneDraft({
   const student = await Student.findById(studentId).lean();
   if (!student) { const e = new Error('Student not found'); e.status = 404; throw e; }
 
-  const data = buildDataFromTemplate(template, student, overrides || {});
-  const { valid, errors } = validateAgainstTemplate(template, data);
+  // ⬇️ NEW: decide which attributes to use (template’s, or the defaults)
+  const hasAttrs = Array.isArray(template.attributes) && template.attributes.length > 0;
+  const kind = inferKind(type, template.vc);
+  const attributes = hasAttrs ? template.attributes : getDefaults(kind);
+
+  // Build a local template “view” with effective attributes
+  const effectiveTemplate = {
+    ...template.toObject(),
+    attributes,
+  };
+
+  // Build & validate data from the effective template
+  const data = buildDataFromTemplate(effectiveTemplate, student, overrides || {});
+  const { valid, errors } = validateAgainstTemplate(effectiveTemplate, data);
   if (!valid) {
     const e = new Error('Validation failed: ' + errors.join('; '));
     e.status = 400; throw e;
   }
 
-  // only block duplicates for ACTIVE draft
+  // Only block duplicates for ACTIVE draft
   const existing = await VcDraft.findOne({
     student: studentId,
     template: templateId,
@@ -66,7 +95,7 @@ async function createOneDraft({
   });
   if (existing) return { status: 'duplicate', draft: existing };
 
-  // create the draft with a 7-digit client code
+  // Create the draft with a 7-digit client code
   let draft = await createDraftWithUniqueTx({
     template: template._id,
     student:  student._id,
@@ -107,92 +136,3 @@ async function createOneDraft({
 
   return { status: 'created', draft };
 }
-
-exports.createDraft = asyncHandler(async (req, res) => {
-  const body = req.body;
-
-  if (Array.isArray(body)) {
-    const results = [];
-    for (const item of body) {
-      try {
-        const r = await createOneDraft(item); // each draft gets its own client_tx + pending payment
-        results.push(r);
-      } catch (e) {
-        results.push({ status: 'error', error: e.message, input: item });
-      }
-    }
-    const created = results.filter(r => r.status === 'created').map(r => r.draft);
-    const duplicates = results.filter(r => r.status === 'duplicate').map(r => r.draft);
-    const errors = results.filter(r => r.status === 'error');
-    return res.status(created.length ? 201 : 200).json({
-      createdCount: created.length,
-      duplicateCount: duplicates.length,
-      errorCount: errors.length,
-      created,
-      duplicates,
-      errors,
-    });
-  }
-
-  const { studentId, templateId, type, purpose, expiration, overrides, clientTx } = body;
-  const result = await createOneDraft({ studentId, templateId, type, purpose, expiration, overrides, clientTx });
-  if (result.status === 'duplicate') {
-    return res.status(409).json({ message: 'Draft already exists', draft: result.draft });
-  }
-  res.status(201).json(result.draft);
-});
-
-exports.getDrafts = asyncHandler(async (req, res) => {
-  const { type, range, program, q, template, clientTx } = req.query;
-  const filter = {};
-  if (type && type !== 'All') filter.type = type;
-  if (template && mongoose.isValidObjectId(template)) filter.template = template;
-  if (clientTx) filter.client_tx = String(clientTx);
-
-  if (range && range !== 'All') {
-    let start = null;
-    if (range === 'today') { start = new Date(); start.setHours(0, 0, 0, 0); }
-    if (range === '1w')   { start = new Date(Date.now() - 7 * 864e5); }
-    if (range === '1m')   { start = new Date(); start.setMonth(start.getMonth() - 1); }
-    if (range === '6m')   { start = new Date(); start.setMonth(start.getMonth() - 6); }
-    if (start) filter.createdAt = { $gte: start };
-  }
-
-  let drafts = await VcDraft.find(filter)
-    .populate({
-      path: 'student',
-      model: Student,
-      select: 'fullName studentNumber program dateGraduated',
-      ...(program && program !== 'All' ? { match: { program } } : {}),
-    })
-    .populate({ path: 'template', select: 'name slug version price' })
-    .sort({ createdAt: -1 });
-
-  if (program && program !== 'All') drafts = drafts.filter(d => d.student);
-
-  if (q) {
-    const needle = q.toLowerCase();
-    drafts = drafts.filter(d => {
-      const s = d.student || {};
-      return (
-        (s.fullName || '').toLowerCase().includes(needle) ||
-        (s.studentNumber || '').toLowerCase().includes(needle) ||
-        (d.type || '').toLowerCase().includes(needle) ||
-        (d.purpose || '').toLowerCase().includes(needle) ||
-        (d.client_tx || '').toLowerCase().includes(needle) ||
-        (d.template?.name || '').toLowerCase().includes(needle)
-      );
-    });
-  }
-
-  res.json(drafts);
-});
-
-exports.deleteDraft = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid draft id'); }
-  const doc = await VcDraft.findById(id);
-  if (!doc) { res.status(404); throw new Error('Draft not found'); }
-  await doc.deleteOne();
-  res.json(doc);
-});
