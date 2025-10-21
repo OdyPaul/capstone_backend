@@ -78,25 +78,34 @@ exports.createRequest = asyncHandler(async (req, res) => {
 });
 // controllers/web/paymentController.js (replace markPaid)
 exports.markPaid = asyncHandler(async (req, res) => {
-  const { method = 'cash', notes = '', receipt_no, receipt_date, amount, anchorNow } = req.body;
+  const { method='cash', notes='', receipt_no, receipt_date, amount, anchorNow } = req.body;
 
   const pay = await Payment.findById(req.params.id);
   if (!pay) { res.status(404); throw new Error('Payment not found'); }
   if (pay.status !== 'pending') { res.status(409); throw new Error('Payment is not pending'); }
   if (!receipt_no) { res.status(400); throw new Error('Receipt number is required'); }
 
-  if (amount && amount > 0) pay.amount = amount;       // allow override to match cashier slip
+  if (amount && amount > 0) pay.amount = amount;
   if (typeof anchorNow === 'boolean') pay.anchorNow = anchorNow;
 
   pay.status       = 'paid';
   pay.method       = method;
   pay.paid_at      = new Date();
-  pay.confirmed_by = req.user._id;    // ← the admin user
-  pay.receipt_no   = receipt_no;
+  pay.confirmed_by = req.user._id;
+  pay.receipt_no   = String(receipt_no).trim().toUpperCase();   // 👈 normalize
   pay.receipt_date = receipt_date ? new Date(receipt_date) : pay.paid_at;
   if (notes) pay.notes = notes;
 
-  await pay.save();
+  try {
+    await pay.save();
+  } catch (e) {
+    if (e?.code === 11000 && e?.keyPattern?.receipt_no) {
+      res.status(409);
+      throw new Error('Receipt number already used');
+    }
+    throw e;
+  }
+
   res.json(pay);
 });
 
@@ -115,34 +124,19 @@ exports.markPaidByTx = asyncHandler(async (req, res) => {
   pay.method       = method;
   pay.paid_at      = new Date();
   pay.confirmed_by = req.user._id;
-  pay.receipt_no   = receipt_no;
+  pay.receipt_no   = String(receipt_no).trim().toUpperCase();   // 👈 normalize
   pay.receipt_date = receipt_date ? new Date(receipt_date) : pay.paid_at;
   if (notes) pay.notes = notes;
 
-  await pay.save();
+  try {
+    await pay.save();
+  } catch (e) {
+    if (e?.code === 11000 && e?.keyPattern?.receipt_no) {
+      res.status(409);
+      throw new Error('Receipt number already used');
+    }
+    throw e;
+  }
+
   res.json(pay);
-});
-
-exports.voidPayment = asyncHandler(async (req, res) => {
-  const pay = await Payment.findById(req.params.id);
-  if (!pay) { res.status(404); throw new Error('Payment not found'); }
-  if (pay.status === 'consumed') { res.status(409); throw new Error('Already used for issuance'); }
-
-  pay.status = 'void';
-  await pay.save();
-  res.json(pay);
-});
-
-exports.listPayments = asyncHandler(async (req, res) => {
-  const { draft, status, tx_no } = req.query;
-  const filter = {};
-  if (draft && mongoose.isValidObjectId(draft)) filter.draft = draft;
-  if (status) filter.status = status;
-  if (tx_no) filter.tx_no = tx_no;
-
-  const items = await Payment.find(filter)
-    .populate({ path: 'draft', select: 'type purpose student status payment_tx_no' })
-    .sort({ createdAt: -1 });
-
-  res.json(items);
 });

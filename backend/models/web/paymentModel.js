@@ -34,6 +34,14 @@ const paymentSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 
+paymentSchema.index(
+  { receipt_no: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { receipt_no: { $ne: null } },
+    name: 'uniq_receipt_no'
+  }
+);
 // One open 'pending' request per draft
 paymentSchema.index(
   { draft: 1, status: 1 },
