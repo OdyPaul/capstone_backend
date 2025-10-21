@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const keccak256 = require('keccak256');
 const { computeDigest, fromB64url } = require('../../utils/vcCrypto');
 const SignedVC = require('../../models/web/signedVcModel');
-const AnchorBatch = require('../../models/web/anchorBatch');        // ✅ match actual filename
+const AnchorBatch = require('../../models/web/anchorBatchModel');        // ✅ match actual filename
 const VerificationSession = require('../../models/web/verificationSessionModel'); // ✅ import model
 
 function verifyProof(leafBuf, proof, rootHex) {
