@@ -8,22 +8,32 @@ const signedVcSchema = new mongoose.Schema({
   holder_user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   template_id: { type: String, required: true },
 
-  // NEW: make space for a JWS VC
   format: { type: String, enum: ['sd-jwt-vc', 'vc+ldp', 'jws-vc'], default: 'jws-vc' },
-  jws: { type: String },       // compact JWS of the VC payload
+  jws: { type: String },
   alg: { type: String, default: 'ES256' },
   kid: { type: String, default: '' },
 
-  // keep your original payload for convenience (optional)
   vc_payload: { type: Object, required: true },
 
-  // digest & salt now computed from the JWS, not raw JSON
   digest: { type: String, required: true },    // base64url(SHA-256(...))
   salt: { type: String, required: true },
 
   status: { type: String, enum: ['active', 'revoked'], default: 'active' },
+
   anchoring: {
-    state: { type: String, enum: ['unanchored', 'anchored'], default: 'unanchored' },
+    // lifecycle
+    state: { type: String, enum: ['unanchored', 'queued', 'anchored'], default: 'unanchored' },
+
+    // queue / approvals
+    queue_mode: { type: String, enum: ['none', 'now', 'batch'], default: 'none' },
+    requested_at: { type: Date },
+    requested_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+    approved_mode: { type: String, enum: ['single', 'batch', null], default: null },
+    approved_at: { type: Date, default: null },
+    approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // finalization
     batch_id: { type: String },
     tx_hash: { type: String },
     chain_id: { type: Number, default: 137 },
@@ -34,5 +44,7 @@ const signedVcSchema = new mongoose.Schema({
 
 signedVcSchema.index({ student_id: 1 });
 signedVcSchema.index({ 'anchoring.state': 1 });
+signedVcSchema.index({ 'anchoring.queue_mode': 1 });
+signedVcSchema.index({ createdAt: -1 });
 
 module.exports = vconn.model('SignedVC', signedVcSchema);

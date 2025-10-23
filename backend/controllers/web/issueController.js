@@ -42,8 +42,6 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
   const issuerDid = process.env.ISSUER_DID || 'did:web:example.org';
   const kid = process.env.ISSUER_KID || `${issuerDid}#keys-1`;
 
-  // 🔹 Keep everything produced by template (draft.data), e.g. subjects (TOR), gwa, degreeTitle, etc.
-  // Then enforce canonical identifiers from Student + add purpose/expiration.
   const credentialSubject = {
     ...(draft.data || {}),
     studentNumber: draft.student.studentNumber,
@@ -53,9 +51,6 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     purpose:       draft.purpose || null,
     expires:       draft.expiration || null,
   };
-
-  // If you don't want the duplicate "studentId" (from defaults), uncomment:
-  // delete credentialSubject.studentId;
 
   const vcPayload = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
@@ -85,10 +80,10 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     jws,
     alg:         'ES256',
     kid,
-    vc_payload:  vcPayload,  // convenience copy for UI/filtering
+    vc_payload:  vcPayload,
     digest, salt,
     status: 'active',
-    anchoring: { state: 'unanchored' }
+    anchoring: { state: 'unanchored', queue_mode: 'none' }
   });
 
   // 5) Consume payment & flip draft → signed
@@ -104,26 +99,26 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     return res.status(409).json({ message: 'Draft is no longer in draft status' });
   }
 
-  // 6) Optional immediate anchoring
+  // 6) Optional request for immediate anchoring (queue only; NO mint here)
   const wantAnchorNow =
     String(req.query.anchorNow).toLowerCase() === 'true' || pay.anchorNow === true;
 
   if (wantAnchorNow) {
     req.params.credId = signed._id.toString();
     const anchorCtrl = require('./anchorController');
-    return anchorCtrl.mintNow(req, res);
+    return anchorCtrl.requestNow(req, res);
   }
 
   return res.status(201).json({ message: 'Issued (unanchored)', credential_id: signed._id });
 });
 
-// -------------------- LIST SIGNED (unchanged) --------------------
+// -------------------- LIST SIGNED --------------------
 exports.listSigned = asyncHandler(async (req, res) => {
   const { q, status, anchorState } = req.query;
 
   const filter = {};
   if (status) filter.status = status;                       // 'active' | 'revoked'
-  if (anchorState) filter['anchoring.state'] = anchorState; // 'unanchored' | 'anchored'
+  if (anchorState) filter['anchoring.state'] = anchorState; // 'unanchored' | 'queued' | 'anchored'
 
   let docs = await SignedVC.find(filter)
     .select('_id template_id status anchoring createdAt vc_payload')

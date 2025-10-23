@@ -1,0 +1,57 @@
+{
+  "_format": "hh3-artifact-1",
+  "contractName": "MerkleAnchor",
+  "sourceName": "contracts/MerkleAnchor.sol",
+  "abi": [
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "bytes32",
+          "name": "root",
+          "type": "bytes32"
+        },
+        {
+          "indexed": false,
+          "internalType": "string",
+          "name": "batchId",
+          "type": "string"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "sender",
+          "type": "address"
+        }
+      ],
+      "name": "Anchored",
+      "type": "event"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "root",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "string",
+          "name": "batchId",
+          "type": "string"
+        }
+      ],
+      "name": "anchor",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x608060405234801561000f575f80fd5b506101648061001d5f395ff3fe608060405234801561000f575f80fd5b5060043610610029575f3560e01c80631a8512ea1461002d575b5f80fd5b61004061003b36600461008b565b610042565b005b336001600160a01b0316837f64bef69bf20ea50cd108be47187f8c15b83bab5322044fe284826a2e6239b6e6848460405161007e929190610100565b60405180910390a3505050565b5f805f6040848603121561009d575f80fd5b83359250602084013567ffffffffffffffff808211156100bb575f80fd5b818601915086601f8301126100ce575f80fd5b8135818111156100dc575f80fd5b8760208285010111156100ed575f80fd5b6020830194508093505050509250925092565b60208152816020820152818360408301375f818301604090810191909152601f909201601f1916010191905056fea26469706673582212200fdf77c6c20a9f6ab64489ea113f0596853f5f4ca96746439bdcaa172bc4337064736f6c63430008140033",
+  "deployedBytecode": "0x608060405234801561000f575f80fd5b5060043610610029575f3560e01c80631a8512ea1461002d575b5f80fd5b61004061003b36600461008b565b610042565b005b336001600160a01b0316837f64bef69bf20ea50cd108be47187f8c15b83bab5322044fe284826a2e6239b6e6848460405161007e929190610100565b60405180910390a3505050565b5f805f6040848603121561009d575f80fd5b83359250602084013567ffffffffffffffff808211156100bb575f80fd5b818601915086601f8301126100ce575f80fd5b8135818111156100dc575f80fd5b8760208285010111156100ed575f80fd5b6020830194508093505050509250925092565b60208152816020820152818360408301375f818301604090810191909152601f909201601f1916010191905056fea26469706673582212200fdf77c6c20a9f6ab64489ea113f0596853f5f4ca96746439bdcaa172bc4337064736f6c63430008140033",
+  "linkReferences": {},
+  "deployedLinkReferences": {},
+  "immutableReferences": {},
+  "inputSourceName": "project/contracts/MerkleAnchor.sol",
+  "buildInfoId": "solc-0_8_20-3094e847737984ebdcb114730cf519bc20853eba"
+}
