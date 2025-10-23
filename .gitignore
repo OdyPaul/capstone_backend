@@ -37,3 +37,4 @@ build/
 backend/Curriculums/
 # Ignore everything inside scripts
 backend/scripts/
+contracts/
