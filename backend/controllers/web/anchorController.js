@@ -7,7 +7,7 @@ const AnchorBatch = require('../../models/web/anchorBatchModel');
 const { fromB64url } = require('../../utils/vcCrypto');
 
 // --- config + ABI (put your ABI file at backend/abi/MerkleAnchor.abi.json)
-const ABI = require('../../abi/MerkleAnchor.abi.json'); // raw array OR { abi: [...] }
+const ABI = require('../../abi/MerkleAnchor.json'); // raw array OR { abi: [...] }
 const AMOY_RPC_URL  = (process.env.AMOY_RPC_URL || '').trim();
 const CONTRACT_ADDR = (process.env.MERKLE_ANCHOR_ADDRESS || '').trim();
 const SERVER_PK     = (process.env.SERVER_PRIVATE_KEY || '').trim(); // required for server-signed
