@@ -70,6 +70,7 @@ const { errorHandler } = require('./middleware/errorMiddleware');
   app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));  // image uploads
   app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));  // mobile VC requests
   app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
+  app.use('/api/mobile', require('./routes/mobile/googleVerifyRoutes'))
 
   // Optional static files
   // app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
