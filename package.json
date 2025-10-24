@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "cloudinary": "^2.7.0",
+    "google-auth-library": "^10.4.2",
     "node-cron": "^4.2.1",
     "pdf2pic": "^3.2.0"
   }
