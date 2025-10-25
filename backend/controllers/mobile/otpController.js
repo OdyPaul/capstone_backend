@@ -22,20 +22,20 @@ exports.requestOtp = async (req, res) => {
   });
 
   try {
-      await sendMail({
-    to: email,
-    subject: "Your verification code",
-    text: `Your code is ${code}. It expires in 10 minutes.`,
-    html: `<p>Your code is <b>${code}</b>. It expires in 10 minutes.</p>`,
-  });
-
-  res.json({ success: true });
-  } catch (error) {
-    console.error("SendMail failed:", e);
-  res.status(500).json({ message: "Failed to send email" });
+    await sendMail({
+      to: email,
+      subject: "Your verification code",
+      text: `Your code is ${code}. It expires in 10 minutes.`,
+      html: `<p>Your code is <b>${code}</b>. It expires in 10 minutes.</p>`,
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("SendMail failed:", err);
+    res.status(500).json({
+      message: "Failed to send email",
+      error: err.message,
+    });
   }
-
-
 };
 
 exports.verifyOtp = async (req, res) => {
