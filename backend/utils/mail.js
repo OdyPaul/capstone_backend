@@ -1,27 +1,16 @@
-// server/mail.js
-const nodemailer = require("nodemailer");
+// utils/mail.js
+const { Resend } = require("resend");
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || "smtp.gmail.com",
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: false, // STARTTLS
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-async function sendMail({ to, subject, text, html, replyTo }) {
-  const info = await transporter.sendMail({
-    from: process.env.SMTP_FROM,
+async function sendMail({ to, subject, text, html }) {
+  const data = await resend.emails.send({
+    from: process.env.SMTP_FROM || "AAS Wallet <noreply@yourdomain.com>",
     to,
     subject,
-    text,
-    html,
-    replyTo,
+    html: html || `<p>${text}</p>`,
   });
-  console.log("✅ Email sent:", info.messageId);
-  return info;
+  console.log("✅ Email sent:", data.id);
+  return data;
 }
 
-module.exports = { sendMail, transporter };
+module.exports = { sendMail };
