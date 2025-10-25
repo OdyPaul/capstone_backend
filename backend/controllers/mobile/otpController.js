@@ -28,6 +28,7 @@ exports.requestOtp = async (req, res) => {
       text: `Your code is ${code}. It expires in 10 minutes.`,
       html: `<p>Your code is <b>${code}</b>. It expires in 10 minutes.</p>`,
     });
+
     res.json({ success: true });
   } catch (err) {
     console.error("SendMail failed:", err);
