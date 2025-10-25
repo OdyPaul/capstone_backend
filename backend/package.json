@@ -39,6 +39,7 @@
     "puppeteer-core": "^24.25.0",
     "qrcode": "^1.5.4",
     "qs": "^6.14.0",
+    "resend": "^6.2.2",
     "streamifier": "^0.1.1"
   },
   "devDependencies": {
