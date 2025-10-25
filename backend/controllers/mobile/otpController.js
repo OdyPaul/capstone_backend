@@ -21,7 +21,8 @@ exports.requestOtp = async (req, res) => {
     attempts: 0,
   });
 
-  await sendMail({
+  try {
+      await sendMail({
     to: email,
     subject: "Your verification code",
     text: `Your code is ${code}. It expires in 10 minutes.`,
@@ -29,6 +30,12 @@ exports.requestOtp = async (req, res) => {
   });
 
   res.json({ success: true });
+  } catch (error) {
+    console.error("SendMail failed:", e);
+  res.status(500).json({ message: "Failed to send email" });
+  }
+
+
 };
 
 exports.verifyOtp = async (req, res) => {

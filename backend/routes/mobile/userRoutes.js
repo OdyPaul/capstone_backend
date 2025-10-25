@@ -11,7 +11,7 @@ const {
 
 const { requestOtp, verifyOtp } = require("../../controllers/mobile/otpController");
 const requireOtpSession = require("../../middleware/requireOtpSession");
-const { protect, admin } = require("../../middleware/authMiddleware");
+const { protect } = require("../../middleware/authMiddleware");
 
 router.post("/otp/request", requestOtp);
 router.post("/otp/verify", verifyOtp);
