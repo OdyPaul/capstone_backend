@@ -1,23 +1,24 @@
 const express = require("express");
 const router = express.Router();
-const {
-  getStudentPassing,
-  getStudentTor,
-  searchStudent,
-  findStudent,
-} = require("../controllers/web/studentController");
+const { getStudentPassing, getStudentTor, searchStudent, findStudent } = require("../controllers/web/studentController");
 const { protect } = require("../middleware/authMiddleware");
-// GET /api/student/passing
-router.get("/passing", protect, getStudentPassing);
+const { rateLimitRedis } = require("../middleware/rateLimitRedis");
 
-// GET /api/student/:id/tor
+// passing: 60/min per user/IP
+router.get("/passing",
+  protect,
+  rateLimitRedis({ prefix:'rl:student:passing', windowMs:60_000, max:60, keyFn: (req)=> req.user?._id?.toString() || req.ip }),
+  getStudentPassing
+);
+
+// search: 30/min per user/IP
+router.get("/search",
+  protect,
+  rateLimitRedis({ prefix:'rl:student:search', windowMs:60_000, max:30, keyFn: (req)=> req.user?._id?.toString() || req.ip }),
+  searchStudent
+);
+
 router.get("/:id/tor", protect, getStudentTor);
-
-// GET /api/student/search?q=...
-router.get("/search", protect, searchStudent);
-
-// GET /api/student/:id
 router.get("/:id", protect, findStudent);
-
 
 module.exports = router;

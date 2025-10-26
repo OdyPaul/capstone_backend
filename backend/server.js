@@ -8,11 +8,27 @@ require('dotenv').config();
 
 const { connectAll } = require('./config/db');
 const { errorHandler } = require('./middleware/errorMiddleware');
+const { redis } = require('./lib/redis');
 
 (async () => {
   await connectAll();
 
   const app = express();
+
+  
+(async () => {
+  if (redis) {
+    try {
+      const pong = await redis.ping();
+      console.log('🟢 Redis ping:', pong); // expect "PONG"
+    } catch (e) {
+      console.error('🔴 Redis ping failed:', e.message);
+    }
+  } else {
+    console.warn('⚠️ REDIS_URL missing → running without Redis features');
+  }
+})();
+app.set('trust proxy', 1);
 
   // ---- CORS ---------------------------------------------------------------
   // Comma-separated list of allowed web origins (e.g. "http://localhost:5173")

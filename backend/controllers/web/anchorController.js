@@ -190,3 +190,5 @@ exports.mintBatch = asyncHandler(async (_req, res) => {
 
 // Legacy alias
 exports.mintNow = exports.requestNow;
+
+module.exports.commitBatch = commitBatch; // 👈 export so the worker can call it

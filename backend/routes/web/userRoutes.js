@@ -7,12 +7,23 @@ const {
   getMe,
 } = require("../../controllers/common/userController");
 const { protect, admin } = require("../../middleware/authMiddleware");
+const { rateLimitRedis } = require("../../middleware/rateLimitRedis");
+
 
 // Web: Register user (staff/admin/etc.)
 router.post("/users", registerWebUser);
 
 // Web: Login
-router.post("/users/login", loginWebUser);
+router.post(
+  "/users/login",
+  rateLimitRedis({
+    prefix: "rl:login",
+    windowMs: 60_000,
+    max: 5,
+    keyFn: (req) => req.body?.email || req.ip
+  }),
+  loginWebUser
+);
 
 // Web: Get logged-in user profile
 router.get("/users/me", protect, getMe);
