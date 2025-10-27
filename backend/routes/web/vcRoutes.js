@@ -5,30 +5,72 @@ const { protect, admin } = require('../../middleware/authMiddleware');
 const issueCtrl = require('../../controllers/web/issueController');
 const anchorCtrl = require('../../controllers/web/anchorController');
 const verifyCtrl = require('../../controllers/web/verificationController');
-const rateLimit = require('../../middleware/rateLimit'); // ✅ no braces
 const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
+const { z, validate, objectId } = require('../../middleware/validate');
 
-// 🔎 sanity logs (remove after it starts once)
-console.log('typeof verifyCtrl.createSession:', typeof verifyCtrl.createSession);
-console.log('typeof verifyCtrl.submitPresentation:', typeof verifyCtrl.submitPresentation);
-console.log('typeof rateLimit():', typeof rateLimit());
+// ---------------- VC issuance / listing ----------------
+router.get(
+  '/vc/signed',
+  protect, admin,
+  validate({
+    query: z.object({
+      q: z.string().trim().max(64).optional(),
+      status: z.enum(['active','revoked']).optional(),
+      anchorState: z.enum(['unanchored','queued','anchored']).optional(),
+    }).strip()
+  }),
+  issueCtrl.listSigned
+);
 
-// -------- VC issuance / listing --------
-router.get('/vc/signed', protect, admin, issueCtrl.listSigned);
-router.post('/vc/drafts/:id/issue', protect, admin, issueCtrl.issueFromDraft);
+router.post(
+  '/vc/drafts/:id/issue',
+  protect, admin,
+  validate({
+    params: z.object({ id: objectId() }).strict(),
+    query: z.object({ anchorNow: z.coerce.boolean().optional() }).strip(),
+  }),
+  issueCtrl.issueFromDraft
+);
 
-// -------- Anchoring --------
+// ---------------- Anchoring ----------------
 // Queue a "mint now" request (end users or admins can hit this)
-router.post('/anchor/request-now/:credId', protect, anchorCtrl.requestNow);
+router.post(
+  '/anchor/request-now/:credId',
+  protect,
+  validate({ params: z.object({ credId: objectId() }).strict() }),
+  anchorCtrl.requestNow
+);
 
 // Admin review queue
-router.get('/anchor/queue', protect, admin, anchorCtrl.listQueue);
-router.post('/anchor/approve', protect, admin, anchorCtrl.approveQueued);
+router.get(
+  '/anchor/queue',
+  protect, admin,
+  validate({
+    query: z.object({
+      mode: z.enum(['all','now','batch']).optional(),
+      approved: z.enum(['all','true','false']).optional(),
+    }).strip()
+  }),
+  anchorCtrl.listQueue
+);
 
-// Execute anchoring
+router.post(
+  '/anchor/approve',
+  protect, admin,
+  validate({
+    body: z.object({
+      credIds: z.array(objectId()).min(1).max(200),
+      approved_mode: z.enum(['single','batch'])
+    }).strict()
+  }),
+  anchorCtrl.approveQueued
+);
+
+// Execute anchoring (single)
 router.post(
   '/anchor/run-single/:credId',
   protect, admin,
+  validate({ params: z.object({ credId: objectId() }).strict() }),
   rateLimitRedis({
     prefix: 'rl:anchor:single',
     windowMs: 60_000,
@@ -38,10 +80,12 @@ router.post(
   anchorCtrl.runSingle
 );
 
-// mint-batch: 4/min per admin (tune as needed)
+// Execute anchoring (batch)
 router.post(
   '/anchor/mint-batch',
   protect, admin,
+  // no body expected; keep it explicit
+  validate({ body: z.object({}).strict().optional() }),
   rateLimitRedis({
     prefix: 'rl:anchor:batch',
     windowMs: 60_000,
@@ -51,16 +95,39 @@ router.post(
   anchorCtrl.mintBatch
 );
 
+// Back-compat: old route → queue behavior
+router.post(
+  '/anchor/mint-now/:credId',
+  protect, admin,
+  validate({ params: z.object({ credId: objectId() }).strict() }),
+  anchorCtrl.mintNow
+);
 
+// ---------------- Verification ----------------
+router.post(
+  '/present/session',
+  protect,
+  validate({
+    body: z.object({
+      org: z.string().trim().max(120),
+      contact: z.string().trim().max(120).optional(),
+      types: z.array(z.string().trim().max(40)).min(1).max(5).optional(),
+      ttlHours: z.coerce.number().int().min(1).max(72).optional(),
+    }).strip()
+  }),
+  verifyCtrl.createSession
+);
 
-// Back-compat: old route points to queue behavior
-router.post('/anchor/mint-now/:credId', protect, admin, anchorCtrl.mintNow);
-
-// -------- Verification --------
-router.post('/present/session', protect, verifyCtrl.createSession);
-// public(ish) endpoint → per-IP limit 20/min
+// Public(ish) credential presentation
 router.post(
   '/present/:sessionId',
+  validate({
+    params: z.object({ sessionId: z.string().regex(/^prs_[a-z0-9]{6,12}$/) }).strict(),
+    body: z.object({
+      credential_id: objectId(),
+      vc_payload: z.record(z.any()) // opaque VC JSON; controller recomputes digest
+    }).strict()
+  }),
   rateLimitRedis({
     prefix: 'rl:present',
     windowMs: 60_000,

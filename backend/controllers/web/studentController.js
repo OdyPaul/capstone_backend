@@ -2,7 +2,17 @@ const express = require("express");
 const router = express.Router();
 const Student = require("../../models/students/studentModel");
 const asyncHandler = require("express-async-handler");
+const escapeRegExp = require('../../utils/escapeRegExp');
 
+const q = req.query.q; // already validated & trimmed by zod
+if (q) {
+  const safe = escapeRegExp(q);
+  filter.$or = [
+    { fullName:      { $regex: safe, $options: 'i' } },
+    { studentNumber: { $regex: safe, $options: 'i' } },
+    { program:       { $regex: safe, $options: 'i' } },
+  ];
+}
 // @desc    Get Passing Students
 // @route   GET /api/student/passing
 // @access  Private (University Personnel)
@@ -42,13 +52,15 @@ const getStudentPassing = asyncHandler(async (req, res) => {
 
 
     if (q) {
-      const qUpper = q.toUpperCase();
+      const safe = escapeRegExp(q);
+      const qUpper = q.toUpperCase(); // keep your exact-match option
       filter.$or = [
-        { fullName: { $regex: q, $options: "i" } },
-        { studentNumber: { $regex: q, $options: "i" } },
-        { program: qUpper }
+        { fullName:      { $regex: safe, $options: 'i' } },
+        { studentNumber: { $regex: safe, $options: 'i' } },
+        { program: qUpper }, // exact match fallback
       ];
     }
+
 
 
     console.log("📌 Final filter:", filter);
@@ -85,13 +97,14 @@ const searchStudent = asyncHandler(async (req, res) => {
     const { q } = req.query;
     let filter = {};
 
-    if (q) {
-      filter.$or = [
-        { fullName: { $regex: q, $options: "i" } },
-        { studentNumber: { $regex: q, $options: "i" } },
-        { program: { $regex: q, $options: "i" } },
-      ];
-    }
+        if (q) {
+        const safe = escapeRegExp(q);
+        filter.$or = [
+          { fullName:      { $regex: safe, $options: 'i' } },
+          { studentNumber: { $regex: safe, $options: 'i' } },
+          { program:       { $regex: safe, $options: 'i' } },
+        ];
+      }
 
     const students = await Student.find(filter);
     res.json(students);
