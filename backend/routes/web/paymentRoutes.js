@@ -1,9 +1,11 @@
-// routes/web/paymentRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
 const ctrl = require('../../controllers/web/paymentController');
 const { z, validate, objectId } = require('../../middleware/validate');
+const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
+const requestLogger = require('../../middleware/requestLogger');
+
 const requestSchema = {
   body: z.object({
     draftId: objectId(),
@@ -13,8 +15,15 @@ const requestSchema = {
     notes: z.string().trim().max(500).optional(),
   }).strip()
 };
-// Create a payment request for a draft
-router.post('/payments/request', protect, admin, validate(requestSchema), ctrl.createRequest);
+
+router.post(
+  '/payments/request',
+  requestLogger('vc.payment.request', { db: 'vc' }),
+  protect, admin,
+  validate(requestSchema),
+  ctrl.createRequest
+);
+
 const markPaidBody = z.object({
   method: z.enum(['cash','gcash','card','other']).optional(),
   notes: z.string().trim().max(500).optional(),
@@ -24,15 +33,17 @@ const markPaidBody = z.object({
   anchorNow: z.boolean().optional(),
 }).strip();
 
-// Mark as paid (by id)
-router.patch('/payments/:id/mark-paid',
+router.patch(
+  '/payments/:id/mark-paid',
+  requestLogger('vc.payment.markPaidById', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ id: objectId() }).strict(), body: markPaidBody }),
   ctrl.markPaid
 );
 
-// Mark as paid (by tx number)
-router.post('/payments/tx/:txNo/mark-paid',
+router.post(
+  '/payments/tx/:txNo/mark-paid',
+  requestLogger('vc.payment.markPaidByTx', { db: 'vc' }),
   protect, admin,
   validate({
     params: z.object({ txNo: z.string().regex(/^TX-\d{12}-[A-Z0-9]{4}$/) }).strict(),
@@ -41,8 +52,9 @@ router.post('/payments/tx/:txNo/mark-paid',
   ctrl.markPaidByTx
 );
 
-// List payments (filters: draft, status, tx_no)
-router.get('/payments',
+router.get(
+  '/payments',
+  requestLogger('vc.payment.list', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -54,8 +66,9 @@ router.get('/payments',
   ctrl.listPayments
 );
 
-
-router.patch('/payments/:id/void',
+router.patch(
+  '/payments/:id/void',
+  requestLogger('vc.payment.void', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ id: objectId() }).strict() }),
   ctrl.voidPayment

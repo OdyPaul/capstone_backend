@@ -1,4 +1,3 @@
-// routes/web/draftVcRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
@@ -8,6 +7,8 @@ const {
   deleteDraft,
 } = require('../../controllers/web/draftVcController');
 const { z, validate, objectId } = require('../../middleware/validate');
+const requestLogger = require('../../middleware/requestLogger');
+
 const draftItem = z.object({
   studentId: objectId(),
   templateId: objectId(),
@@ -18,14 +19,17 @@ const draftItem = z.object({
   clientTx: z.string().regex(/^\d{7}$/).optional(),
 }).strip();
 
-
-router.post('/draft',
+router.post(
+  '/draft',
+  requestLogger('vc.draft.create', { db: 'vc' }),
   protect, admin,
   validate({ body: z.union([draftItem, z.array(draftItem).min(1).max(50)]) }),
   createDraft
 );
 
-router.get('/draft',
+router.get(
+  '/draft',
+  requestLogger('vc.draft.list', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -40,7 +44,9 @@ router.get('/draft',
   getDrafts
 );
 
-router.delete('/draft/:id',
+router.delete(
+  '/draft/:id',
+  requestLogger('vc.draft.delete', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ id: objectId() }).strict() }),
   deleteDraft

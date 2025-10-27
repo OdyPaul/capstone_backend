@@ -1,4 +1,3 @@
-// routes/web/vcRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
@@ -7,10 +6,12 @@ const anchorCtrl = require('../../controllers/web/anchorController');
 const verifyCtrl = require('../../controllers/web/verificationController');
 const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
 const { z, validate, objectId } = require('../../middleware/validate');
+const requestLogger = require('../../middleware/requestLogger');
 
-// ---------------- VC issuance / listing ----------------
+// -------- VC issuance / listing --------
 router.get(
   '/vc/signed',
+  requestLogger('vc.signed.list', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -24,6 +25,7 @@ router.get(
 
 router.post(
   '/vc/drafts/:id/issue',
+  requestLogger('vc.issueFromDraft', { db: 'vc' }),
   protect, admin,
   validate({
     params: z.object({ id: objectId() }).strict(),
@@ -32,18 +34,18 @@ router.post(
   issueCtrl.issueFromDraft
 );
 
-// ---------------- Anchoring ----------------
-// Queue a "mint now" request (end users or admins can hit this)
+// -------- Anchoring --------
 router.post(
   '/anchor/request-now/:credId',
+  requestLogger('vc.anchor.requestNow', { db: 'vc' }),
   protect,
   validate({ params: z.object({ credId: objectId() }).strict() }),
   anchorCtrl.requestNow
 );
 
-// Admin review queue
 router.get(
   '/anchor/queue',
+  requestLogger('vc.anchor.queue', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -56,6 +58,7 @@ router.get(
 
 router.post(
   '/anchor/approve',
+  requestLogger('vc.anchor.approve', { db: 'vc' }),
   protect, admin,
   validate({
     body: z.object({
@@ -66,9 +69,9 @@ router.post(
   anchorCtrl.approveQueued
 );
 
-// Execute anchoring (single)
 router.post(
   '/anchor/run-single/:credId',
+  requestLogger('vc.anchor.runSingle', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ credId: objectId() }).strict() }),
   rateLimitRedis({
@@ -80,11 +83,10 @@ router.post(
   anchorCtrl.runSingle
 );
 
-// Execute anchoring (batch)
 router.post(
   '/anchor/mint-batch',
+  requestLogger('vc.anchor.mintBatch', { db: 'vc' }),
   protect, admin,
-  // no body expected; keep it explicit
   validate({ body: z.object({}).strict().optional() }),
   rateLimitRedis({
     prefix: 'rl:anchor:batch',
@@ -95,17 +97,19 @@ router.post(
   anchorCtrl.mintBatch
 );
 
-// Back-compat: old route → queue behavior
+// Back-compat alias → queue behavior
 router.post(
   '/anchor/mint-now/:credId',
+  requestLogger('vc.anchor.mintNow', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ credId: objectId() }).strict() }),
   anchorCtrl.mintNow
 );
 
-// ---------------- Verification ----------------
+// -------- Verification --------
 router.post(
   '/present/session',
+  requestLogger('vc.present.createSession', { db: 'vc' }),
   protect,
   validate({
     body: z.object({
@@ -118,14 +122,13 @@ router.post(
   verifyCtrl.createSession
 );
 
-// Public(ish) credential presentation
+// Public(ish) presentation
 router.post(
   '/present/:sessionId',
+  requestLogger('vc.present.submit', { db: 'vc' }),
   validate({
     params: z.object({ sessionId: z.string().regex(/^prs_[a-z0-9]{6,12}$/) }).strict(),
-    body: z.object({
-      credential_id: objectId(),
-    }).strict()
+    body: z.object({ credential_id: objectId() }).strict()
   }),
   rateLimitRedis({
     prefix: 'rl:present',
