@@ -74,7 +74,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
         console.error('🔴 Redis ping failed:', e.message);
       }
     } else {
-      console.warn('⚠️ REDIS_URL missing → running without Redis features');
+      console.warn(' REDIS_URL missing → running without Redis features');
     }
   })();
 
