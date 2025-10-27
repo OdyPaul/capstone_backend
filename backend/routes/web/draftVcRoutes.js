@@ -1,3 +1,4 @@
+// routes/web/draftVcRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
@@ -21,15 +22,15 @@ const draftItem = z.object({
 
 router.post(
   '/draft',
-  requestLogger('vc.draft.create', { db: 'vc' }),
   protect, admin,
   validate({ body: z.union([draftItem, z.array(draftItem).min(1).max(50)]) }),
+  requestLogger('vc.draft.create', { db: 'vc' }),
   createDraft
 );
 
+// GET list — no audit log
 router.get(
   '/draft',
-  requestLogger('vc.draft.list', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -46,9 +47,9 @@ router.get(
 
 router.delete(
   '/draft/:id',
-  requestLogger('vc.draft.delete', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ id: objectId() }).strict() }),
+  requestLogger('vc.draft.delete', { db: 'vc' }),
   deleteDraft
 );
 

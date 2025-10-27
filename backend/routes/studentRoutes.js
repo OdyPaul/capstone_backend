@@ -1,12 +1,17 @@
 // routes/studentRoutes.js
 const express = require("express");
 const router = express.Router();
-const { getStudentPassing, getStudentTor, searchStudent, findStudent } = require("../controllers/web/studentController");
+const {
+  getStudentPassing,
+  getStudentTor,
+  searchStudent,
+  findStudent,
+} = require("../controllers/web/studentController");
 const { protect } = require("../middleware/authMiddleware");
 const { rateLimitRedis } = require("../middleware/rateLimitRedis");
 const { z, validate } = require('../middleware/validate');
-const requestLogger = require("../middleware/requestLogger");
-// shared query rules
+
+// Shared query rules
 const queryCommon = {
   q: z.string().trim().max(64).optional(),
   college: z.string().trim().max(64).optional(),
@@ -16,17 +21,18 @@ const queryCommon = {
   ]).optional(),
 };
 
-// passing expects year, search doesn’t strictly need it
-const passingSchema = { query: z.object({
-  ...queryCommon,
-  year: z.union([z.literal('All'), z.coerce.number().int().min(1900).max(2100)]).optional(),
-}).strip() };
+const passingSchema = {
+  query: z.object({
+    ...queryCommon,
+    year: z.union([z.literal('All'), z.coerce.number().int().min(1900).max(2100)]).optional(),
+  }).strip(),
+};
 
-const searchSchema = { query: z.object({
-  ...queryCommon,
-}).strip() };
+const searchSchema = {
+  query: z.object({ ...queryCommon }).strip(),
+};
 
-// /passing: validate → rate-limit → controller
+// GETs — no audit log here
 router.get(
   "/passing",
   protect,
@@ -35,24 +41,21 @@ router.get(
     prefix: 'rl:student:passing',
     windowMs: 60_000,
     max: 60,
-    keyFn: (req) => req.user?._id?.toString() || req.ip
+    keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
   getStudentPassing
 );
-
-// /search: validate → rate-limit → controller
 
 router.get(
   "/search",
   protect,
   validate(searchSchema),
   rateLimitRedis({
-    prefix:'rl:student:search',
-    windowMs:60_000,
-    max:30,
-    keyFn:(req)=> req.user?._id?.toString() || req.ip
+    prefix: 'rl:student:search',
+    windowMs: 60_000,
+    max: 30,
+    keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  requestLogger('student.search'),
   searchStudent
 );
 

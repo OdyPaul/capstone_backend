@@ -1,3 +1,4 @@
+// routes/web/vcRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
@@ -11,7 +12,6 @@ const requestLogger = require('../../middleware/requestLogger');
 // -------- VC issuance / listing --------
 router.get(
   '/vc/signed',
-  requestLogger('vc.signed.list', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -25,27 +25,27 @@ router.get(
 
 router.post(
   '/vc/drafts/:id/issue',
-  requestLogger('vc.issueFromDraft', { db: 'vc' }),
   protect, admin,
   validate({
     params: z.object({ id: objectId() }).strict(),
     query: z.object({ anchorNow: z.coerce.boolean().optional() }).strip(),
   }),
+  requestLogger('vc.issueFromDraft', { db: 'vc' }),
   issueCtrl.issueFromDraft
 );
 
 // -------- Anchoring --------
 router.post(
   '/anchor/request-now/:credId',
-  requestLogger('vc.anchor.requestNow', { db: 'vc' }),
   protect,
   validate({ params: z.object({ credId: objectId() }).strict() }),
+  requestLogger('vc.anchor.requestNow', { db: 'vc' }),
   anchorCtrl.requestNow
 );
 
+// ✅ keep audit log for this GET
 router.get(
   '/anchor/queue',
-  requestLogger('vc.anchor.queue', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -53,12 +53,12 @@ router.get(
       approved: z.enum(['all','true','false']).optional(),
     }).strip()
   }),
+  requestLogger('vc.anchor.queue', { db: 'vc' }),
   anchorCtrl.listQueue
 );
 
 router.post(
   '/anchor/approve',
-  requestLogger('vc.anchor.approve', { db: 'vc' }),
   protect, admin,
   validate({
     body: z.object({
@@ -66,12 +66,12 @@ router.post(
       approved_mode: z.enum(['single','batch'])
     }).strict()
   }),
+  requestLogger('vc.anchor.approve', { db: 'vc' }),
   anchorCtrl.approveQueued
 );
 
 router.post(
   '/anchor/run-single/:credId',
-  requestLogger('vc.anchor.runSingle', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ credId: objectId() }).strict() }),
   rateLimitRedis({
@@ -80,12 +80,12 @@ router.post(
     max: 10,
     keyFn: (req) => req.user?._id?.toString() || req.ip
   }),
+  requestLogger('vc.anchor.runSingle', { db: 'vc' }),
   anchorCtrl.runSingle
 );
 
 router.post(
   '/anchor/mint-batch',
-  requestLogger('vc.anchor.mintBatch', { db: 'vc' }),
   protect, admin,
   validate({ body: z.object({}).strict().optional() }),
   rateLimitRedis({
@@ -94,22 +94,22 @@ router.post(
     max: 4,
     keyFn: (req) => req.user?._id?.toString() || req.ip
   }),
+  requestLogger('vc.anchor.mintBatch', { db: 'vc' }),
   anchorCtrl.mintBatch
 );
 
 // Back-compat alias → queue behavior
 router.post(
   '/anchor/mint-now/:credId',
-  requestLogger('vc.anchor.mintNow', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ credId: objectId() }).strict() }),
+  requestLogger('vc.anchor.mintNow', { db: 'vc' }),
   anchorCtrl.mintNow
 );
 
 // -------- Verification --------
 router.post(
   '/present/session',
-  requestLogger('vc.present.createSession', { db: 'vc' }),
   protect,
   validate({
     body: z.object({
@@ -119,13 +119,13 @@ router.post(
       ttlHours: z.coerce.number().int().min(1).max(72).optional(),
     }).strip()
   }),
+  requestLogger('vc.present.createSession', { db: 'vc' }),
   verifyCtrl.createSession
 );
 
 // Public(ish) presentation
 router.post(
   '/present/:sessionId',
-  requestLogger('vc.present.submit', { db: 'vc' }),
   validate({
     params: z.object({ sessionId: z.string().regex(/^prs_[a-z0-9]{6,12}$/) }).strict(),
     body: z.object({ credential_id: objectId() }).strict()
@@ -136,6 +136,7 @@ router.post(
     max: 20,
     keyFn: (req) => req.ip
   }),
+  requestLogger('vc.present.submit', { db: 'vc' }),
   verifyCtrl.submitPresentation
 );
 

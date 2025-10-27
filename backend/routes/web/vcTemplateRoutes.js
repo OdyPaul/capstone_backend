@@ -1,31 +1,18 @@
+// routes/web/vcTemplateRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
 const ctrl = require('../../controllers/web/vcTemplateController');
 const requestLogger = require('../../middleware/requestLogger');
 
-router.post('/',
-  requestLogger('vc.template.create', { db: 'vc' }),
-  protect, admin, ctrl.createTemplate);
+// Create / Update / Delete — audited
+router.post('/',      protect, admin, requestLogger('vc.template.create', { db: 'vc' }), ctrl.createTemplate);
+router.put('/:id',    protect, admin, requestLogger('vc.template.update', { db: 'vc' }), ctrl.updateTemplate);
+router.delete('/:id', protect, admin, requestLogger('vc.template.delete', { db: 'vc' }), ctrl.deleteTemplate);
 
-router.get('/',
-  requestLogger('vc.template.list', { db: 'vc' }),
-  protect, admin, ctrl.listTemplates);
-
-router.get('/:id',
-  requestLogger('vc.template.get', { db: 'vc' }),
-  protect, admin, ctrl.getTemplate);
-
-router.put('/:id',
-  requestLogger('vc.template.update', { db: 'vc' }),
-  protect, admin, ctrl.updateTemplate);
-
-router.delete('/:id',
-  requestLogger('vc.template.delete', { db: 'vc' }),
-  protect, admin, ctrl.deleteTemplate);
-
-router.get('/:id/preview',
-  requestLogger('vc.template.preview', { db: 'vc' }),
-  protect, admin, ctrl.previewTemplate);
+// GETs — no audit log
+router.get('/',           protect, admin, ctrl.listTemplates);
+router.get('/:id',        protect, admin, ctrl.getTemplate);
+router.get('/:id/preview',protect, admin, ctrl.previewTemplate);
 
 module.exports = router;

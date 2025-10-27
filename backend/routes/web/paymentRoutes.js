@@ -1,3 +1,4 @@
+// routes/web/paymentRoutes.js
 const express = require('express');
 const router = express.Router();
 const { protect, admin } = require('../../middleware/authMiddleware');
@@ -18,9 +19,9 @@ const requestSchema = {
 
 router.post(
   '/payments/request',
-  requestLogger('vc.payment.request', { db: 'vc' }),
   protect, admin,
   validate(requestSchema),
+  requestLogger('vc.payment.request', { db: 'vc' }),
   ctrl.createRequest
 );
 
@@ -35,26 +36,26 @@ const markPaidBody = z.object({
 
 router.patch(
   '/payments/:id/mark-paid',
-  requestLogger('vc.payment.markPaidById', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ id: objectId() }).strict(), body: markPaidBody }),
+  requestLogger('vc.payment.markPaidById', { db: 'vc' }),
   ctrl.markPaid
 );
 
 router.post(
   '/payments/tx/:txNo/mark-paid',
-  requestLogger('vc.payment.markPaidByTx', { db: 'vc' }),
   protect, admin,
   validate({
     params: z.object({ txNo: z.string().regex(/^TX-\d{12}-[A-Z0-9]{4}$/) }).strict(),
     body: markPaidBody
   }),
+  requestLogger('vc.payment.markPaidByTx', { db: 'vc' }),
   ctrl.markPaidByTx
 );
 
+// GET list — no audit log
 router.get(
   '/payments',
-  requestLogger('vc.payment.list', { db: 'vc' }),
   protect, admin,
   validate({
     query: z.object({
@@ -68,9 +69,9 @@ router.get(
 
 router.patch(
   '/payments/:id/void',
-  requestLogger('vc.payment.void', { db: 'vc' }),
   protect, admin,
   validate({ params: z.object({ id: objectId() }).strict() }),
+  requestLogger('vc.payment.void', { db: 'vc' }),
   ctrl.voidPayment
 );
 
