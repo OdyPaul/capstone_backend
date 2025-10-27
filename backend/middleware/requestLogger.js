@@ -1,27 +1,43 @@
+// middleware/requestLogger.js
 const { pub } = require('../lib/redis');
-const { getAuthConn, getVcConn } = require('../config/db');
-const AuditLogSchema = require('../models/common/auditLog.schema');
+const { getAuthConn, getVcConn, getStudentsConn } = require('../config/db');
+const AuditLogSchema = require('../models/common/auditLog.schema'); // <-- schema only
 
 let AuditLogAuth = null;
 let AuditLogVc = null;
+let AuditLogStudents = null;
 
 function getAuditModel(db) {
-  if (db === 'auth') {
-    if (!AuditLogAuth) {
-      const conn = getAuthConn();
-      AuditLogAuth = conn.model('AuditLog', AuditLogSchema);
+  try {
+    if (db === 'auth') {
+      if (!AuditLogAuth) {
+        const conn = getAuthConn();
+        if (!conn) return null;
+        AuditLogAuth = conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
+      }
+      return AuditLogAuth;
     }
-    return AuditLogAuth;
+    if (db === 'students') {
+      if (!AuditLogStudents) {
+        const conn = getStudentsConn?.();
+        if (!conn) return null;
+        AuditLogStudents = conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
+      }
+      return AuditLogStudents;
+    }
+    // default: vc
+    if (!AuditLogVc) {
+      const conn = getVcConn();
+      if (!conn) return null;
+      AuditLogVc = conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
+    }
+    return AuditLogVc;
+  } catch {
+    return null; // fail-open: never break requests because of logging
   }
-  // default: vc
-  if (!AuditLogVc) {
-    const conn = getVcConn();
-    AuditLogVc = conn.model('AuditLog', AuditLogSchema);
-  }
-  return AuditLogVc;
 }
 
-/** requestLogger(routeTag, { db: 'auth' | 'vc' }) (default db = 'vc') */
+/** requestLogger(routeTag, { db: 'auth' | 'vc' | 'students' }) (default db = 'vc') */
 module.exports = function requestLogger(routeTag = '', opts = {}) {
   const db = (opts && opts.db) || 'vc';
 
@@ -31,6 +47,7 @@ module.exports = function requestLogger(routeTag = '', opts = {}) {
     res.on('finish', async () => {
       try {
         const AuditLog = getAuditModel(db);
+        if (!AuditLog) return;
 
         const doc = {
           ts: new Date(),
@@ -57,7 +74,7 @@ module.exports = function requestLogger(routeTag = '', opts = {}) {
           meta: {},
         };
 
-        // (Optional) help triage logins without a user yet
+        // Helpful on login where req.user isn't set yet
         if (db === 'auth' && typeof req.body?.email === 'string') {
           doc.meta.loginEmail = String(req.body.email).toLowerCase();
         }
@@ -74,8 +91,8 @@ module.exports = function requestLogger(routeTag = '', opts = {}) {
             ts: doc.ts,
           }));
         }
-      } catch (e) {
-        // never break main flow
+      } catch {
+        // swallow — logging must never affect the main request
       }
     });
 

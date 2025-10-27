@@ -75,6 +75,11 @@ const loginMobileUser = asyncHandler(async (req, res) => {
   }
 });
 
+const logoutWebUser = asyncHandler(async (_req, res) => {
+  // Nothing to revoke in stateless mode — just respond 204 so requestLogger can write the audit row.
+  res.status(204).end();
+});
+
 // ---------------- WEB CONTROLLERS ----------------
 
 // @desc    Register new web user (role required / defaults to staff)
@@ -195,4 +200,5 @@ module.exports = {
   getUsers,
   getMe,
   updateUserDID,
+  logoutWebUser 
 };

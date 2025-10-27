@@ -5,6 +5,7 @@ const {
   loginWebUser,
   getUsers,
   getMe,
+  logoutWebUser 
 } = require("../../controllers/common/userController");
 const { protect, admin } = require("../../middleware/authMiddleware");
 const { rateLimitRedis } = require("../../middleware/rateLimitRedis");
@@ -40,5 +41,10 @@ router.get("/users/me", protect, getMe);
 
 // Web: Get all users (admin only)
 router.get("/users", protect, admin, getUsers);
-
+router.post(
+  '/users/logout',
+  protect,
+  requestLogger('auth.logout', { db: 'auth' }),
+  logoutWebUser
+);
 module.exports = router;
