@@ -1,4 +1,5 @@
-const AuditLog = require('../models/common/auditLog');
+// middleware/requestLogger.js
+const AuditLog = require('../models/web/auditLog');
 const { pub } = require('../lib/redis');
 
 module.exports = function requestLogger(routeTag = '') {
@@ -13,7 +14,7 @@ module.exports = function requestLogger(routeTag = '') {
           ip:        req.ip,
           ua:        req.headers['user-agent'] || '',
           method:    req.method,
-          path:      req.originalUrl.split('?')[0],
+          path:      (req.originalUrl || req.url || '').split('?')[0],
           status:    res.statusCode,
           latencyMs: Date.now() - start,
           routeTag,
@@ -21,10 +22,10 @@ module.exports = function requestLogger(routeTag = '') {
           query:  req.query || {},
           params: req.params || {},
           bodyKeys: Object.keys(req.body || {}).filter(k =>
-            !['password','token','otp','authorization','jwt'].includes(k.toLowerCase())
+            !/password|token|otp|authorization|jwt|jws|salt/i.test(k)
           ),
 
-          // Optional business keys if present
+          // Optional quick-filters if present
           draftId:   req.params?.id || req.body?.draftId || null,
           paymentId: req.params?.id || req.body?.paymentId || req.params?.txNo || null,
           vcId:      req.body?.credId || req.params?.credId || null,
@@ -34,7 +35,7 @@ module.exports = function requestLogger(routeTag = '') {
 
         await AuditLog.create(doc);
 
-        // Lightweight live event (optional)
+        // Optional live “audit” ping
         if (pub) {
           pub.publish('events', JSON.stringify({
             type: 'audit',
@@ -46,8 +47,8 @@ module.exports = function requestLogger(routeTag = '') {
           }));
         }
       } catch (e) {
-        // Never break the request because of logging failures
-        console.error('AuditLog error:', e.message);
+        // never break main flow
+        // console.error('AuditLog error:', e.message);
       }
     });
     next();

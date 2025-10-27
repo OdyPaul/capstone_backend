@@ -1,4 +1,3 @@
-// utils/vcCrypto.js
 const crypto = require('crypto');
 
 function sortObjDeep(v) {
@@ -30,11 +29,16 @@ function sha256Base64Url(input) {
   return b64url(hash);
 }
 
+function digestJws(jws, salt) {
+  return sha256Base64Url(`${jws}.${salt}`);
+}
+
 function randomSalt() { return b64url(crypto.randomBytes(16)); }
 
+// Legacy (payload+salt) – keep exported in case other code still uses it.
 function computeDigest(vcPayload, salt) {
   const s = stableStringify(vcPayload);
   return sha256Base64Url(`${s}.${salt}`);
 }
 
-module.exports = { stableStringify, computeDigest, randomSalt, fromB64url };
+module.exports = { stableStringify, computeDigest, randomSalt, fromB64url, digestJws };

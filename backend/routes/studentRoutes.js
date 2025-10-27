@@ -5,7 +5,7 @@ const { getStudentPassing, getStudentTor, searchStudent, findStudent } = require
 const { protect } = require("../middleware/authMiddleware");
 const { rateLimitRedis } = require("../middleware/rateLimitRedis");
 const { z, validate } = require('../middleware/validate');
-
+const requestLogger = require("../middleware/requestLogger");
 // shared query rules
 const queryCommon = {
   q: z.string().trim().max(64).optional(),
@@ -41,6 +41,7 @@ router.get(
 );
 
 // /search: validate → rate-limit → controller
+
 router.get(
   "/search",
   protect,
@@ -51,6 +52,7 @@ router.get(
     max:30,
     keyFn:(req)=> req.user?._id?.toString() || req.ip
   }),
+  requestLogger('student.search'),
   searchStudent
 );
 

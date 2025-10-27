@@ -5,6 +5,8 @@ const keccak256 = require('keccak256');
 const SignedVC = require('../../models/web/signedVcModel');
 const AnchorBatch = require('../../models/web/anchorBatchModel');
 const { fromB64url } = require('../../utils/vcCrypto');
+const { enqueueAnchorNow } = require('../../queues/vc.queue');
+
 
 // --- config + ABI (put your ABI file at backend/abi/MerkleAnchor.abi.json)
 const ABI = require('../../abi/MerkleAnchor.json'); // raw array OR { abi: [...] }
@@ -118,17 +120,25 @@ exports.requestNow = asyncHandler(async (req, res) => {
   if (doc.anchoring?.state === 'queued' && doc.anchoring?.queue_mode === 'now') {
     return res.json({ message: 'Already queued for NOW review', credential_id: credId });
   }
+
   await SignedVC.updateOne(
     { _id: credId, 'anchoring.state': { $ne: 'anchored' } },
-    { $set: {
+    {
+      $set: {
         'anchoring.state': 'queued',
         'anchoring.queue_mode': 'now',
         'anchoring.requested_at': new Date(),
         'anchoring.requested_by': req.user?._id || null,
-    } }
+      }
+    }
   );
+
+  // enqueue the actual job so the worker can process it
+  await enqueueAnchorNow(credId);
+
   res.json({ message: 'Queued for NOW review', credential_id: credId });
 });
+
 
 // -------------------- LIST QUEUE --------------------
 exports.listQueue = asyncHandler(async (req, res) => {
@@ -173,20 +183,20 @@ exports.runSingle = asyncHandler(async (req, res) => {
 });
 
 // -------------------- MINT BATCH (cron/admin) --------------------
+// -------------------- MINT BATCH (cron/admin) --------------------
 exports.mintBatch = asyncHandler(async (_req, res) => {
-  const queuedForBatch = await SignedVC
+  // Only anchor items that were explicitly approved for batch
+  const docs = await SignedVC
     .find({ 'anchoring.state': 'queued', 'anchoring.approved_mode': 'batch', status: 'active' })
-    .select('_id digest').lean();
-  const unanchored = await SignedVC
-    .find({ 'anchoring.state': 'unanchored', status: 'active' })
-    .select('_id digest').lean();
+    .select('_id digest')
+    .lean();
 
-  const docs = [...queuedForBatch, ...unanchored];
-  if (!docs.length) return res.json({ message: 'Nothing to anchor' });
+  if (!docs.length) return res.json({ message: 'Nothing to anchor (no batch-approved items)' });
 
   const { batch_id, txHash, count } = await commitBatch(docs, 'batch');
   res.json({ message: 'Anchored (batch)', batch_id, txHash, count });
 });
+
 
 // Legacy alias
 exports.mintNow = exports.requestNow;

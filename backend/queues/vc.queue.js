@@ -1,15 +1,11 @@
-const { Queue, Worker, QueueScheduler, JobsOptions } = require('bullmq');
+const { Queue, Worker, QueueScheduler } = require('bullmq');
 const { redis } = require('../lib/redis');
 const SignedVC = require('../models/web/signedVcModel');
-const AnchorBatch = require('../models/web/anchorBatchModel');
 const { pub } = require('../lib/redis');
-
-// Reuse commitBatch from your controller (export it once, see below)
 const { commitBatch } = require('../controllers/web/anchorController');
 
-const connection = redis && redis.options && redis.options.host
-  ? { url: process.env.REDIS_URL }
-  : null;
+// Prefer the shared redis instance; fall back to REDIS_URL if present
+const connection = redis || (process.env.REDIS_URL ? { url: process.env.REDIS_URL } : null);
 
 const queueName = 'vc-requests';
 const vcQueue = connection ? new Queue(queueName, { connection }) : null;

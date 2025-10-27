@@ -1,11 +1,11 @@
 // controllers/web/verificationController.js
 const asyncHandler = require('express-async-handler');
 const keccak256 = require('keccak256');
-const { computeDigest, fromB64url } = require('../../utils/vcCrypto');
+// const { computeDigest, fromB64url } = require('../../utils/vcCrypto');
 const SignedVC = require('../../models/web/signedVcModel');
 const AnchorBatch = require('../../models/web/anchorBatchModel');        // ✅ match actual filename
 const VerificationSession = require('../../models/web/verificationSessionModel'); // ✅ import model
-
+const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 function verifyProof(leafBuf, proof, rootHex) {
   // proof: ['0x...', '0x...'] with sortPairs=true
   let hash = leafBuf;
@@ -39,7 +39,8 @@ const createSession = asyncHandler(async (req, res) => {
 
 const submitPresentation = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
-  const { credential_id, vc_payload } = req.body;
+  // Body now only needs credential_id
+  const { credential_id } = req.body;
 
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) { res.status(404); throw new Error('Session not found'); }
@@ -48,7 +49,6 @@ const submitPresentation = asyncHandler(async (req, res) => {
     await sess.save(); return res.json({ ok: false, reason: 'expired_session' });
   }
 
-  // Load stored salt/digest/anchoring info
   const signed = await SignedVC.findById(credential_id).lean();
   if (!signed || signed.status !== 'active') {
     sess.result = { valid: false, reason: 'not_found_or_revoked' };
@@ -59,14 +59,14 @@ const submitPresentation = asyncHandler(async (req, res) => {
     await sess.save(); return res.json({ ok: false, reason: 'not_anchored' });
   }
 
-  // Recompute digest using server-side salt
-  const digest = computeDigest(vc_payload, signed.salt);
+  // Recompute digest using the SAME artifact that was anchored
+  const digest = digestJws(signed.jws, signed.salt);
   if (digest !== signed.digest) {
     sess.result = { valid: false, reason: 'digest_mismatch' };
     await sess.save(); return res.json({ ok: false, reason: 'digest_mismatch' });
   }
 
-  // Verify Merkle inclusion
+  // Merkle inclusion
   const batch = await AnchorBatch.findOne({ batch_id: signed.anchoring.batch_id }).lean();
   if (!batch) {
     sess.result = { valid: false, reason: 'batch_missing' };

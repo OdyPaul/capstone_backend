@@ -9,6 +9,7 @@ const {
 const { protect, admin } = require("../../middleware/authMiddleware");
 const { rateLimitRedis } = require("../../middleware/rateLimitRedis");
 const { z, validate } = require('../../middleware/validate');
+const requestLogger = require('../../middleware/requestLogger');
 
 const loginSchema = {
   body: z.object({
@@ -23,14 +24,15 @@ router.post("/users", registerWebUser);
 
 router.post(
   "/users/login",
-  validate(loginSchema),                      // 1) validate & normalize
-  rateLimitRedis({                           // 2) limiter sees normalized email
+  validate(loginSchema),
+  rateLimitRedis({
     prefix: "rl:login",
     windowMs: 60_000,
     max: 5,
     keyFn: (req) => `${req.body.email}|${req.ip}`
   }),
-  loginWebUser                                // 3) controller
+  requestLogger('auth.login'),
+  loginWebUser
 );
 
 // Web: Get logged-in user profile

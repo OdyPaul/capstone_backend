@@ -125,7 +125,6 @@ router.post(
     params: z.object({ sessionId: z.string().regex(/^prs_[a-z0-9]{6,12}$/) }).strict(),
     body: z.object({
       credential_id: objectId(),
-      vc_payload: z.record(z.any()) // opaque VC JSON; controller recomputes digest
     }).strict()
   }),
   rateLimitRedis({

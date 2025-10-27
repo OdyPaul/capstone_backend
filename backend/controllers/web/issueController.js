@@ -4,12 +4,9 @@ const UnsignedVC = require('../../models/web/vcDraft');
 const SignedVC   = require('../../models/web/signedVcModel');
 const Payment    = require('../../models/web/paymentModel');
 const Student    = require('../../models/students/studentModel');
-const { randomSalt, stableStringify } = require('../../utils/vcCrypto');
-const crypto = require('crypto');
+const { randomSalt, stableStringify, digestJws } = require('../../utils/vcCrypto');
 
-const sha256b64url = (s) =>
-  crypto.createHash('sha256').update(s).digest('base64')
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+
 
 // --- JWS signing helpers (jose is ESM-only) ---
 let ISSUER_KEY_PROMISE = null;
@@ -66,7 +63,7 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
 
   // 2) Compute digest over the signed artifact + salt
   const salt = randomSalt();
-  const digest = sha256b64url(`${jws}.${salt}`);
+  const digest = digestJws(jws, salt);
 
   // 3) Require a paid & unused payment
   const pay = await Payment.findOne({ draft: draft._id, status: 'paid', consumed_at: null });
