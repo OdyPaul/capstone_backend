@@ -1,5 +1,5 @@
 // middleware/requestLogger.js
-const AuditLog = require('../models/web/auditLog');
+const AuditLog = require('../models/common/auditLog');
 const { pub } = require('../lib/redis');
 
 module.exports = function requestLogger(routeTag = '') {
