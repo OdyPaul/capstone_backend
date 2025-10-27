@@ -12,7 +12,7 @@ const { redis } = require('./lib/redis');
 
 const helmet = require('helmet');
 const mongoSanitize = require('express-mongo-sanitize');
-const hpp = require('hpp');
+const paramPollutionGuard = require('./middleware/paramPollutionGuard');
 
 (async () => {
   await connectAll();
@@ -63,7 +63,7 @@ const hpp = require('hpp');
 
   // ---- Request sanitizers ----
   app.use(mongoSanitize());                 // strips $/.
-  app.use(hpp({ whitelist: ['programs'] })); // keep arrays for specific keys
+  app.use(paramPollutionGuard(['programs']));// keep arrays for specific keys
 
   // ---- Redis ping (optional visibility) ----
   (async () => {
