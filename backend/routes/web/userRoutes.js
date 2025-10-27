@@ -31,7 +31,7 @@ router.post(
     max: 5,
     keyFn: (req) => `${req.body.email}|${req.ip}`
   }),
-  requestLogger('auth.login'),
+  requestLogger('auth.login',{ db: 'auth' }),
   loginWebUser
 );
 

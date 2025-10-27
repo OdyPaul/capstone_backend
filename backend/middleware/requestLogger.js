@@ -1,12 +1,37 @@
-// middleware/requestLogger.js
-const AuditLog = require('../models/common/auditLog');
 const { pub } = require('../lib/redis');
+const { getAuthConn, getVcConn } = require('../config/db');
+const AuditLogSchema = require('../models/common/auditLog.schema');
 
-module.exports = function requestLogger(routeTag = '') {
+let AuditLogAuth = null;
+let AuditLogVc = null;
+
+function getAuditModel(db) {
+  if (db === 'auth') {
+    if (!AuditLogAuth) {
+      const conn = getAuthConn();
+      AuditLogAuth = conn.model('AuditLog', AuditLogSchema);
+    }
+    return AuditLogAuth;
+  }
+  // default: vc
+  if (!AuditLogVc) {
+    const conn = getVcConn();
+    AuditLogVc = conn.model('AuditLog', AuditLogSchema);
+  }
+  return AuditLogVc;
+}
+
+/** requestLogger(routeTag, { db: 'auth' | 'vc' }) (default db = 'vc') */
+module.exports = function requestLogger(routeTag = '', opts = {}) {
+  const db = (opts && opts.db) || 'vc';
+
   return function (req, res, next) {
     const start = Date.now();
+
     res.on('finish', async () => {
       try {
+        const AuditLog = getAuditModel(db);
+
         const doc = {
           ts: new Date(),
           actorId:   req.user?._id || null,
@@ -25,7 +50,6 @@ module.exports = function requestLogger(routeTag = '') {
             !/password|token|otp|authorization|jwt|jws|salt/i.test(k)
           ),
 
-          // Optional quick-filters if present
           draftId:   req.params?.id || req.body?.draftId || null,
           paymentId: req.params?.id || req.body?.paymentId || req.params?.txNo || null,
           vcId:      req.body?.credId || req.params?.credId || null,
@@ -33,9 +57,13 @@ module.exports = function requestLogger(routeTag = '') {
           meta: {},
         };
 
+        // (Optional) help triage logins without a user yet
+        if (db === 'auth' && typeof req.body?.email === 'string') {
+          doc.meta.loginEmail = String(req.body.email).toLowerCase();
+        }
+
         await AuditLog.create(doc);
 
-        // Optional live “audit” ping
         if (pub) {
           pub.publish('events', JSON.stringify({
             type: 'audit',
@@ -48,9 +76,9 @@ module.exports = function requestLogger(routeTag = '') {
         }
       } catch (e) {
         // never break main flow
-        // console.error('AuditLog error:', e.message);
       }
     });
+
     next();
   };
 };
