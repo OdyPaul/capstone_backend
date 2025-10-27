@@ -11,7 +11,7 @@ const { errorHandler } = require('./middleware/errorMiddleware');
 const { redis } = require('./lib/redis');
 
 const helmet = require('helmet');
-const mongoSanitize = require('express-mongo-sanitize');
+const { mongoSanitizeSafe } = require('./middleware/mongoSanitizeSafe');
 const paramPollutionGuard = require('./middleware/paramPollutionGuard');
 
 (async () => {
@@ -62,7 +62,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use(express.urlencoded({ extended: false, limit: '200kb' }));
 
   // ---- Request sanitizers ----
-  app.use(mongoSanitize());                 // strips $/.
+  app.use(mongoSanitizeSafe({ replaceWith: '_' }));               // strips $/.
   app.use(paramPollutionGuard(['programs']));// keep arrays for specific keys
 
   // ---- Redis ping (optional visibility) ----
