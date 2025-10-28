@@ -218,11 +218,59 @@ exports.getDrafts = asyncHandler(async (req, res) => {
   res.json(drafts);
 });
 
+
 exports.deleteDraft = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid draft id'); }
-  const doc = await VcDraft.findById(id);
-  if (!doc) { res.status(404); throw new Error('Draft not found'); }
-  await doc.deleteOne();
-  res.json(doc);
+  const draftId = req.params.id;
+
+  // 1) Basic existence + status check (only allow deleting true "draft")
+  const draft = await UnsignedVC.findById(draftId).select('_id status').lean();
+  if (!draft) { res.status(404); throw new Error('Draft not found'); }
+  if (draft.status !== 'draft') {
+    res.status(409);
+    throw new Error('Cannot delete: draft is no longer in "draft" status');
+  }
+
+  // 2) Transaction to avoid race conditions with payments being marked paid
+  const session = await UnsignedVC.db.startSession();
+  try {
+    let pendingDeleted = 0;
+
+    await session.withTransaction(async () => {
+      // 2a) Block if any non-pending payments exist
+      const blocking = await Payment
+        .countDocuments({ draft: draftId, status: { $in: ['paid', 'consumed'] } })
+        .session(session);
+
+      if (blocking > 0) {
+        res.status(409);
+        throw new Error('Draft has paid/consumed payments. Void/refund first before deleting.');
+      }
+
+      // 2b) Remove any pending payments tied to this draft
+      const delRes = await Payment
+        .deleteMany({ draft: draftId, status: 'pending' })
+        .session(session);
+
+      pendingDeleted = delRes.deletedCount || 0;
+
+      // 2c) Delete the draft (still ensure it’s in "draft" state inside the txn)
+      const dRes = await UnsignedVC
+        .deleteOne({ _id: draftId, status: 'draft' })
+        .session(session);
+
+      if (dRes.deletedCount !== 1) {
+        res.status(409);
+        throw new Error('Draft was not deleted (status changed or already removed).');
+      }
+    });
+
+    // 3) Success
+    res.json({
+      message: 'Draft deleted',
+      draft_id: draftId,
+      pending_payments_deleted: pendingDeleted
+    });
+  } finally {
+    await session.endSession();
+  }
 });
