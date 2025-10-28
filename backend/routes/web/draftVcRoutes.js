@@ -39,7 +39,10 @@ router.get(
       program: z.string().trim().max(80).optional(),
       q: z.string().trim().max(64).optional(),
       template: objectId().optional(),
-      clientTx: z.string().regex(/^\d{7}$/).optional(),
+      // NEW:
+      status: z.enum(['All','draft','signed','anchored']).optional(),
+      tx: z.string().trim().max(64).optional(),
+      clientTx: z.string().regex(/^\d{7}$/).optional(), // keep supporting old param
     }).strip()
   }),
   getDrafts
