@@ -171,20 +171,39 @@ exports.createDraft = asyncHandler(async (req, res) => {
   }
   res.status(201).json(result.draft);
 });
-
+// controllers/web/draftVcController.js
 exports.getDrafts = asyncHandler(async (req, res) => {
-  const { type, range, program, q, template, clientTx } = req.query;
+  const { type, range, program, q, template, clientTx, tx, status } = req.query;
+
+  // --- base filter ---
   const filter = {};
+
   if (type && type !== 'All') filter.type = type;
   if (template && mongoose.isValidObjectId(template)) filter.template = template;
-  if (clientTx) filter.client_tx = String(clientTx);
 
+  // 🔹 STATUS: default to 'draft' when not provided; ignore when 'All'
+  if (typeof status === 'string') {
+    if (status !== 'All') filter.status = status;      // 'draft' | 'signed' | 'anchored'
+  } else {
+    filter.status = 'draft';                            // default
+  }
+
+  // 🔹 TX: accept either ?clientTx=1234567 OR ?tx=1234567 and match either client_tx or payment_tx_no
+  const txValue = (clientTx || tx) ? String(clientTx || tx).trim() : '';
+  if (txValue) {
+    filter.$or = [
+      { client_tx: txValue },
+      { payment_tx_no: txValue },
+    ];
+  }
+
+  // 🔹 Range
   if (range && range !== 'All') {
     let start = null;
     if (range === 'today') { start = new Date(); start.setHours(0, 0, 0, 0); }
-    if (range === '1w')   { start = new Date(Date.now() - 7 * 864e5); }
-    if (range === '1m')   { start = new Date(); start.setMonth(start.getMonth() - 1); }
-    if (range === '6m')   { start = new Date(); start.setMonth(start.getMonth() - 6); }
+    if (range === '1w')    { start = new Date(Date.now() - 7 * 864e5); }
+    if (range === '1m')    { start = new Date(); start.setMonth(start.getMonth() - 1); }
+    if (range === '6m')    { start = new Date(); start.setMonth(start.getMonth() - 6); }
     if (start) filter.createdAt = { $gte: start };
   }
 
@@ -200,6 +219,7 @@ exports.getDrafts = asyncHandler(async (req, res) => {
 
   if (program && program !== 'All') drafts = drafts.filter(d => d.student);
 
+  // 🔹 q-search (client-side)
   if (q) {
     const needle = q.toLowerCase();
     drafts = drafts.filter(d => {
@@ -210,6 +230,7 @@ exports.getDrafts = asyncHandler(async (req, res) => {
         (d.type || '').toLowerCase().includes(needle) ||
         (d.purpose || '').toLowerCase().includes(needle) ||
         (d.client_tx || '').toLowerCase().includes(needle) ||
+        (d.payment_tx_no || '').toLowerCase().includes(needle) ||
         (d.template?.name || '').toLowerCase().includes(needle)
       );
     });
