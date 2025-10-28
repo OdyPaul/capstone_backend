@@ -181,11 +181,11 @@ exports.getDrafts = asyncHandler(async (req, res) => {
   if (type && type !== 'All') filter.type = type;
   if (template && mongoose.isValidObjectId(template)) filter.template = template;
 
-  // 🔹 STATUS: default to 'draft' when not provided; ignore when 'All'
-  if (typeof status === 'string') {
-    if (status !== 'All') filter.status = status;      // 'draft' | 'signed' | 'anchored'
-  } else {
-    filter.status = 'draft';                            // default
+    // ✅ NEW: do NOT default to 'draft' when status is missing.
+  // Only apply a status filter if the caller explicitly sent one and it isn't "All".
+  const hasStatusParam = Object.prototype.hasOwnProperty.call(req.query, 'status');
+  if (hasStatusParam && status !== 'All') {
+    filter.status = status;  // 'draft' | 'signed' | 'anchored'
   }
 
   // 🔹 TX: accept either ?clientTx=1234567 OR ?tx=1234567 and match either client_tx or payment_tx_no
