@@ -219,24 +219,25 @@ exports.getDrafts = asyncHandler(async (req, res) => {
 });
 
 
+
 exports.deleteDraft = asyncHandler(async (req, res) => {
   const draftId = req.params.id;
 
-  // 1) Basic existence + status check (only allow deleting true "draft")
-  const draft = await UnsignedVC.findById(draftId).select('_id status').lean();
+  // 1) Only allow deleting true "draft"
+  const draft = await VcDraft.findById(draftId).select('_id status').lean();
   if (!draft) { res.status(404); throw new Error('Draft not found'); }
   if (draft.status !== 'draft') {
     res.status(409);
     throw new Error('Cannot delete: draft is no longer in "draft" status');
   }
 
-  // 2) Transaction to avoid race conditions with payments being marked paid
-  const session = await UnsignedVC.db.startSession();
-  try {
-    let pendingDeleted = 0;
+  // 2) Transaction to avoid races with payment state changes
+  const session = await VcDraft.db.startSession();
+  let pendingDeleted = 0;
 
+  try {
     await session.withTransaction(async () => {
-      // 2a) Block if any non-pending payments exist
+      // Block deletion if any paid/consumed payments exist
       const blocking = await Payment
         .countDocuments({ draft: draftId, status: { $in: ['paid', 'consumed'] } })
         .session(session);
@@ -246,15 +247,14 @@ exports.deleteDraft = asyncHandler(async (req, res) => {
         throw new Error('Draft has paid/consumed payments. Void/refund first before deleting.');
       }
 
-      // 2b) Remove any pending payments tied to this draft
+      // Remove any pending payments tied to this draft
       const delRes = await Payment
         .deleteMany({ draft: draftId, status: 'pending' })
         .session(session);
-
       pendingDeleted = delRes.deletedCount || 0;
 
-      // 2c) Delete the draft (still ensure it’s in "draft" state inside the txn)
-      const dRes = await UnsignedVC
+      // Delete the draft (still ensure it’s in "draft" state)
+      const dRes = await VcDraft
         .deleteOne({ _id: draftId, status: 'draft' })
         .session(session);
 
@@ -264,11 +264,12 @@ exports.deleteDraft = asyncHandler(async (req, res) => {
       }
     });
 
-    // 3) Success
-    res.json({
-      message: 'Draft deleted',
-      draft_id: draftId,
-      pending_payments_deleted: pendingDeleted
+    // 3) Success — return shape your reducer expects
+    return res.json({
+      _id: draftId,
+      deleted: true,
+      pending_payments_deleted: pendingDeleted,
+      message: 'Draft deleted'
     });
   } finally {
     await session.endSession();
