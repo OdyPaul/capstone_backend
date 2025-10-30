@@ -1,10 +1,11 @@
 // controllers/web/claimController.js
 // Offline UR QR for VC delivery + claim ticket CRUD.
-// - Smaller default UR part size for easier scanning
-// - Proper QR quiet zone & low ECL
-// - Deterministic per-index frames (no encoder.isComplete())
-// - ?txt=1 switch to return the raw "ur:bytes/..." text for debugging
-// - Admin (id) and Public (token) endpoints
+//
+// ✓ Smaller default UR part size for easier scanning
+// ✓ Proper quiet zone & low ECL (more capacity per symbol)
+// ✓ Deterministic per-index frames (no encoder.isComplete())
+// ✓ ?txt=1 switch returns raw "ur:bytes/..." for debugging
+// ✓ Admin (id) and Public (token) endpoints
 
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
@@ -14,22 +15,31 @@ const { UR, UREncoder } = require('@ngraveio/bc-ur');
 const QRCode = require('qrcode');
 
 const ClaimTicket = require('../../models/web/claimTicket');
-const SignedVC    = require('../../models/web/signedVcModel');
+const SignedVC = require('../../models/web/signedVcModel');
 const { randomToken } = require('../../utils/tokens');
 
 // ---------- tunables (override via env) ----------
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-const DEFAULT_PART_BYTES   = Number(process.env.QR_PART_BYTES   || 220); // 120..300
-const MIN_PART_BYTES       = 120;
-const MAX_PART_BYTES       = Number(process.env.QR_MAX_PART_BYTES || 1200);
+const DEFAULT_PART_BYTES = Number(process.env.QR_PART_BYTES || 220); // good range: 120..300
+const MIN_PART_BYTES = 120;
+const MAX_PART_BYTES = Number(process.env.QR_MAX_PART_BYTES || 1200);
 
-const DEFAULT_QR_SIZE      = Number(process.env.QR_DEFAULT_SIZE || 360); // px
-const MIN_QR_SIZE          = 160;
-const MAX_QR_SIZE          = 560;
+const DEFAULT_QR_SIZE = Number(process.env.QR_DEFAULT_SIZE || 360);
+const MIN_QR_SIZE = 160;
+const MAX_QR_SIZE = 560;
 
-const QR_MARGIN            = Number(process.env.QR_MARGIN ?? 4);   // quiet zone modules
-const QR_ECL               = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
+const QR_MARGIN = Number(process.env.QR_MARGIN ?? 4); // quiet zone modules
+const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
+
+// For HTML pages that need absolute links (some hosts proxy / origin)
+function baseUrl(req) {
+  // Prefer explicit BASE_URL, else compute from request
+  return (
+    process.env.BASE_URL ||
+    `${req.protocol}://${req.get('host')}`
+  );
+}
 
 // ---------- helpers ----------
 function buildVcPayload(vc) {
@@ -61,8 +71,7 @@ async function loadVcForTicketOr404(ticket) {
   const vc = await SignedVC.findById(ticket.cred_id)
     .select('jws alg kid digest salt anchoring status')
     .lean();
-
-  if (!vc)     return { error: { code: 404, msg: 'Credential not found' } };
+  if (!vc) return { error: { code: 404, msg: 'Credential not found' } };
   if (!vc.jws) return { error: { code: 409, msg: 'VC has no JWS payload' } };
   if (vc.status && vc.status !== 'active') {
     return { error: { code: 409, msg: 'Credential not active' } };
@@ -71,14 +80,15 @@ async function loadVcForTicketOr404(ticket) {
 }
 
 /**
- * Build UR meta with deterministic per-index frame generation.
- * We estimate a frame count from deflated size & target part size,
- * and generate exactly one part for index i by seeding firstSeqNum = i+1.
+ * Deterministic per-index UR frame generation.
+ * - Deflate (raw) the CBOR payload → bytes
+ * - Estimate frame count from deflated size and partBytes
+ * - Generate part string for index i by seeding firstSeqNum = i+1
  */
 function prepareUrMeta(vc, partBytesOverride) {
-  const payload   = buildVcPayload(vc);
+  const payload = buildVcPayload(vc);
   const cborBytes = cbor.encode(payload);
-  const deflated  = deflateRawSync(cborBytes);
+  const deflated = deflateRawSync(cborBytes);
 
   const partBytes = clamp(
     Number(partBytesOverride) || DEFAULT_PART_BYTES,
@@ -86,16 +96,16 @@ function prepareUrMeta(vc, partBytesOverride) {
     MAX_PART_BYTES
   );
 
-  // UI estimate (UR has overhead/redundancy)
+  // Estimate for UI (UR fountain has overhead; this is approximate)
   const framesCount = Math.max(
     1,
     Math.ceil(deflated.length / Math.max(1, partBytes - 8))
   );
 
   function frameStringAt(i /* 0-based */) {
-    const ur  = UR.fromBuffer(deflated);                      // UR type "bytes" containing raw deflated bytes
-    const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1)); // deterministic
-    return enc.nextPart();                                    // single part for this seq number
+    const ur = UR.fromBuffer(deflated); // UR type "bytes"
+    const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1));
+    return enc.nextPart();
   }
 
   return { framesCount, frameStringAt };
@@ -122,19 +132,13 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const i    = Math.max(0, Number(req.query.i) || 0);
+  const i = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
 
-  const meta   = prepareUrMeta(vcRes.vc, req.query.part);
+  const meta = prepareUrMeta(vcRes.vc, req.query.part);
   const urPart = meta.frameStringAt(i);
 
-  // 🔎 DEBUG: return the raw UR string instead of a PNG when ?txt=1
-  if (String(req.query.txt) === '1') {
-    res.set('Cache-Control', 'no-store');
-    return res.type('text/plain').send(urPart);
-  }
-
-   // ⬇️ Debug: return raw UR string when txt=1
+  // text mode for debugging
   if (String(req.query.txt) === '1') {
     res.set('Cache-Control', 'no-store');
     return res.type('text/plain').send(urPart);
@@ -143,7 +147,7 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   const buf = await QRCode.toBuffer(urPart, {
     width: size,
     margin: QR_MARGIN,
-    errorCorrectionLevel: QR_ECL, // 'L' recommended for UR parts
+    errorCorrectionLevel: QR_ECL,
     color: { dark: '#000000', light: '#FFFFFF' },
   });
 
@@ -155,7 +159,7 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
 exports.qrEmbedPage = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps  = clamp(Number(req.query.fps)  || 2,                1,              8);
+  const fps = clamp(Number(req.query.fps) || 2, 1, 8);
   const intervalMs = Math.round(1000 / fps);
   const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
 
@@ -214,14 +218,59 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
 });
 
 // ---------- PUBLIC (token-based, no auth) ----------
+exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const { ticket, error } = await loadTicketByTokenOr404(token);
+  if (error) return res.status(error.code).json({ message: error.msg });
+
+  const vcRes = await loadVcForTicketOr404(ticket);
+  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+
+  const meta = prepareUrMeta(vcRes.vc, req.query.part);
+  res.json({ scheme: 'ur', framesCount: meta.framesCount });
+});
+
+exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const { ticket, error } = await loadTicketByTokenOr404(token);
+  if (error) return res.status(error.code).json({ message: error.msg });
+
+  const vcRes = await loadVcForTicketOr404(ticket);
+  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+
+  const i = Math.max(0, Number(req.query.i) || 0);
+  const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
+
+  const meta = prepareUrMeta(vcRes.vc, req.query.part);
+  const urPart = meta.frameStringAt(i);
+
+  // text mode for debugging
+  if (String(req.query.txt) === '1') {
+    res.set('Cache-Control', 'no-store');
+    return res.type('text/plain').send(urPart);
+  }
+
+  const buf = await QRCode.toBuffer(urPart, {
+    width: size,
+    margin: QR_MARGIN,
+    errorCorrectionLevel: QR_ECL,
+    color: { dark: '#000000', light: '#FFFFFF' },
+  });
+
+  res.set('Content-Type', 'image/png');
+  // Deterministic frames → allow short caching to avoid 429s on public pages
+  res.set('Cache-Control', 'public, max-age=300, immutable');
+  res.send(buf);
+});
+
 exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
   const { token } = req.params;
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps = clamp(Number(req.query.fps) || 1, 1, 8); // slower = easier to scan
+  const fps = clamp(Number(req.query.fps) || 1, 1, 8); // slower is easier to scan
   const intervalMs = Math.round(1000 / fps);
   const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
 
-  const base = process.env.BASE_URL || 'https://capstone-backend-s80k.onrender.com';
+  const base = baseUrl(req); // absolute to avoid cross-origin issues
 
   const html = `<!doctype html>
 <html lang="en">
@@ -257,8 +306,7 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
     let N = 0, i = 0, timer = null;
 
     async function start() {
-      const framesUrl = base + '/c/' + tok + '/qr-embed/frames' + part;
-      const r = await fetch(framesUrl);
+      const r = await fetch(base + '/c/'+tok+'/qr-embed/frames' + part);
       const j = await r.json();
       if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
       N = j.framesCount || 1;
@@ -266,115 +314,10 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
       timer = setInterval(tick, intervalMs);
       tick();
     }
-
-    async function tick() {
-      document.getElementById('pos').textContent = (i + 1);
-      const img = document.getElementById('qr');
-      const frameUrl = base + '/c/' + tok + '/qr-embed/frame?i=' + i + '&size=' + size + part + '&_t=' + Date.now();
-      img.src = frameUrl;
-      i = (i + 1) % N;
-    }
-
-    start();
-  </script>
-</body>
-</html>`;
-  res.set('Cache-Control', 'no-store');
-  res.type('html').send(html);
-});
-
-
-exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
-  const { token } = req.params;
-  const { ticket, error } = await loadTicketByTokenOr404(token);
-  if (error) return res.status(error.code).json({ message: error.msg });
-
-  const vcRes = await loadVcForTicketOr404(ticket);
-  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
-
-  const i    = Math.max(0, Number(req.query.i) || 0);
-  const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-
-  const meta   = prepareUrMeta(vcRes.vc, req.query.part);
-  const urPart = meta.frameStringAt(i);
-
-  // 🔎 DEBUG text mode: ?txt=1
-  if (String(req.query.txt) === '1') {
-    res.set('Cache-Control', 'no-store');
-    return res.type('text/plain').send(urPart);
-  }
-
-  if (String(req.query.txt) === '1') {
-    res.set('Cache-Control', 'no-store');
-    return res.type('text/plain').send(urPart);
-  }
-
-  const buf = await QRCode.toBuffer(urPart, {
-    width: size,
-    margin: QR_MARGIN,
-    errorCorrectionLevel: QR_ECL,
-    color: { dark: '#000000', light: '#FFFFFF' },
-  });
-
-  // Deterministic frames → allow short caching to avoid 429s
-  res.set('Content-Type', 'image/png');
-  res.set('Cache-Control', 'public, max-age=300, immutable');
-  res.send(buf);
-});
-
-exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
-  const { token } = req.params;
-  const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps  = clamp(Number(req.query.fps)  || 2,                1,              8);
-  const intervalMs = Math.round(1000 / fps);
-  const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
-
-  const html = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Offline VC QR</title>
-<style>
-  body { font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:#0b1020; color:#eee; margin:0; display:grid; place-items:center; height:100vh; }
-  .wrap { display:flex; gap:24px; align-items:center; flex-direction:column; }
-  .card { background:#121836; border-radius:16px; padding:18px 18px 8px 18px; box-shadow: 0 8px 20px rgba(0,0,0,.5); }
-  img { width:${size}px; height:${size}px; image-rendering:pixelated; background:#fff; }
-  .muted { opacity:.7; font-size:12px; }
-  .row { display:flex; gap:14px; align-items:center; }
-  code { background:#0f142b; padding:4px 8px; border-radius:6px; }
-</style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card"><img id="qr" alt="QR frame"/></div>
-    <div class="row">
-      <div>Frame: <code id="pos">—</code>/<code id="len">—</code></div>
-      <div class="muted">FPS: ${fps}</div>
-    </div>
-    <div class="muted">Keep the phone steady; the wallet will reconstruct offline.</div>
-  </div>
-  <script>
-    const tok = ${JSON.stringify(token)};
-    const size = ${size};
-    const intervalMs = ${intervalMs};
-    let N = 0, i = 0, timer = null;
-
-    async function start() {
-      const r = await fetch('/c/'+tok+'/qr-embed/frames${part}');
-      const j = await r.json();
-      if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
-      N = j.framesCount || 50;
-      document.getElementById('len').textContent = N;
-      timer = setInterval(tick, intervalMs);
-      tick();
-    }
     async function tick() {
       document.getElementById('pos').textContent = (i+1);
       const img = document.getElementById('qr');
-      const base = window.location.origin;
-      img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size+'${part}'+'&_t='+(Date.now());
-
+      img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size + part + '&_t=' + Date.now();
       i = (i+1) % N;
     }
     start();
@@ -393,20 +336,20 @@ exports.createClaim = asyncHandler(async (req, res) => {
   if (vc.status !== 'active') return res.status(409).json({ message: 'VC not active' });
 
   const now = new Date();
-
   if (singleActive) {
-    const existing = await ClaimTicket
-      .findOne({ cred_id: vc._id, expires_at: { $gt: now } })
-      .sort({ createdAt: -1 });
+    const existing = await ClaimTicket.findOne({
+      cred_id: vc._id,
+      expires_at: { $gt: now },
+    }).sort({ createdAt: -1 });
 
     if (existing) {
-      const base = process.env.BASE_URL || 'https://issuer.example.edu';
+      const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
       return res.status(200).json({
-        claim_id:  existing._id.toString(),
-        token:     existing.token,
+        claim_id: existing._id.toString(),
+        token: existing.token,
         claim_url: `${base}/c/${existing.token}`,
         expires_at: existing.expires_at,
-        reused:    true,
+        reused: true,
       });
     }
   }
@@ -421,7 +364,7 @@ exports.createClaim = asyncHandler(async (req, res) => {
     created_by: req.user?._id || null,
   });
 
-  const base = process.env.BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
   res.status(201).json({
     claim_id: created._id.toString(),
     token,
@@ -464,9 +407,9 @@ exports.listClaims = asyncHandler(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
-  const base = process.env.BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
 
-  let rows = tickets.map(t => {
+  let rows = tickets.map((t) => {
     const vc = t.cred_id || {};
     const subj = vc.vc_payload?.credentialSubject || {};
     const computedStatus = t.expires_at < now ? 'expired' : (t.used_at ? 'used' : 'active');
@@ -488,16 +431,17 @@ exports.listClaims = asyncHandler(async (req, res) => {
     };
   });
 
-  if (status && ['active','used','expired'].includes(status)) {
-    rows = rows.filter(r => r.status === status);
+  if (status && ['active', 'used', 'expired'].includes(status)) {
+    rows = rows.filter((r) => r.status === status);
   }
   if (q) {
     const needle = String(q).toLowerCase();
-    rows = rows.filter(r =>
-      (r.token || '').toLowerCase().includes(needle) ||
-      (r.credential?.subjectName || '').toLowerCase().includes(needle) ||
-      (r.credential?.studentNumber || '').toLowerCase().includes(needle) ||
-      (r.credential?.template_id || '').toLowerCase().includes(needle)
+    rows = rows.filter(
+      (r) =>
+        (r.token || '').toLowerCase().includes(needle) ||
+        (r.credential?.subjectName || '').toLowerCase().includes(needle) ||
+        (r.credential?.studentNumber || '').toLowerCase().includes(needle) ||
+        (r.credential?.template_id || '').toLowerCase().includes(needle)
     );
   }
 
@@ -514,7 +458,7 @@ exports.getClaim = asyncHandler(async (req, res) => {
 
   if (!t) return res.status(404).json({ message: 'Claim not found' });
 
-  const base = process.env.BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
   const now = new Date();
   const computedStatus = t.expires_at < now ? 'expired' : (t.used_at ? 'used' : 'active');
   const subj = t.cred_id?.vc_payload?.credentialSubject || {};
@@ -541,11 +485,10 @@ exports.qrPng = asyncHandler(async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid claim id' });
   }
-
   const t = await ClaimTicket.findById(req.params.id).lean();
   if (!t) return res.status(404).json({ message: 'Claim not found' });
 
-  const base = process.env.BASE_URL || 'https://issuer.example.edu';
+  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
   const claimUrl = `${base}/c/${t.token}`;
 
   const size = clamp(Number(req.query.size) || 256, 120, 1024);
