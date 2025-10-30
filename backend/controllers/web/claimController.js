@@ -198,16 +198,16 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
       const r = await fetch('/api/web/claims/'+id+'/qr-embed/frames${part}');
       const j = await r.json();
       if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
-      N = j.framesCount || 50;
+      N = j.framesCount || 50; // for UI only; not a hard cap
       document.getElementById('len').textContent = N;
       timer = setInterval(tick, intervalMs);
       tick();
     }
     async function tick() {
-      document.getElementById('pos').textContent = (i+1);
+      document.getElementById('pos').textContent = ((i % N) + 1); // cosmetic only
       const img = document.getElementById('qr');
       img.src = '/api/web/claims/'+id+'/qr-embed/frame?i='+i+'&size='+size+'${part}'+'&_t='+(Date.now());
-      i = (i+1) % N;
+      i++; // IMPORTANT: keep increasing; do NOT modulo
     }
     start();
   </script>
@@ -216,6 +216,7 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'private, no-store, max-age=0');
   res.type('html').send(html);
 });
+
 
 // ---------- PUBLIC (token-based, no auth) ----------
 exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
