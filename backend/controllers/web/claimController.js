@@ -283,9 +283,7 @@ exports.getClaim = asyncHandler(async (req, res) => {
   });
 });
 
-// ⬇️ ADD: serve a QR image for the modal
-// npm i qrcode
-const QRCode = require('qrcode');
+
 
 exports.qrPng = asyncHandler(async (req, res) => {
   const t = await ClaimTicket.findById(req.params.id).lean();
