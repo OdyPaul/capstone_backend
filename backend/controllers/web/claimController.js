@@ -12,9 +12,25 @@ const QRCode = require('qrcode');
 // ---------- helpers ----------
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-async function buildEmbedFrames(claimId) {
-  // Validate claimId to avoid CastError → 500
-  if (!mongoose.Types.ObjectId.isValid(claimId)) {
+function ensureObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
+
+function vcToPayload(vc) {
+  return {
+    format: 'vc+jws',
+    jws: vc.jws,
+    kid: vc.kid,
+    alg: vc.alg,
+    salt: vc.salt,
+    digest: vc.digest,
+    anchoring: vc.anchoring,
+  };
+}
+
+// Build only the *count* of UR frames (lighter & faster)
+async function buildEmbedMeta(claimId) {
+  if (!ensureObjectId(claimId)) {
     return { error: { code: 400, msg: 'Invalid claim id' } };
   }
 
@@ -24,31 +40,70 @@ async function buildEmbedFrames(claimId) {
   const vc = await SignedVC.findById(t.cred_id)
     .select('jws alg kid digest salt anchoring status')
     .lean();
+
   if (!vc) return { error: { code: 404, msg: 'Credential not found' } };
   if (!vc.jws) return { error: { code: 409, msg: 'VC has no JWS payload' } };
   if (vc.status && vc.status !== 'active') {
     return { error: { code: 409, msg: 'Credential not active' } };
   }
 
-  const payload = {
-    format: 'vc+jws',
-    jws: vc.jws,
-    kid: vc.kid,
-    alg: vc.alg,
-    salt: vc.salt,
-    digest: vc.digest,
-    anchoring: vc.anchoring,
-  };
+  try {
+    const payload = vcToPayload(vc);
+    const cborBytes = cbor.encode(payload);
+    const deflated  = deflateRawSync(cborBytes);
+    const ur        = UR.fromBuffer(deflated);
+    const encoder   = new UREncoder(ur, 400);
+
+    let framesCount = 0;
+    while (!encoder.isComplete()) { encoder.nextPart(); framesCount++; }
+
+    if (process.env.DEBUG_QR === '1') {
+      console.log('[qrMeta]', {
+        claimId: String(claimId),
+        vcId: String(vc?._id || ''),
+        jwsLen: String(vc?.jws?.length || 0),
+        cborBytes: cborBytes.length,
+        deflated: deflated.length,
+        framesCount,
+      });
+    }
+
+    if (!framesCount) return { error: { code: 500, msg: 'Failed to compute framesCount' } };
+    return { framesCount };
+  } catch (e) {
+    return { error: { code: 500, msg: `Meta build failed: ${e.message || e}` } };
+  }
+}
+
+// Materialize the actual UR part strings (one-time per request)
+async function buildEmbedFrames(claimId) {
+  if (!ensureObjectId(claimId)) {
+    return { error: { code: 400, msg: 'Invalid claim id' } };
+  }
+
+  const t = await ClaimTicket.findById(claimId).lean();
+  if (!t) return { error: { code: 404, msg: 'Claim not found' } };
+
+  const vc = await SignedVC.findById(t.cred_id)
+    .select('jws alg kid digest salt anchoring status')
+    .lean();
+
+  if (!vc) return { error: { code: 404, msg: 'Credential not found' } };
+  if (!vc.jws) return { error: { code: 409, msg: 'VC has no JWS payload' } };
+  if (vc.status && vc.status !== 'active') {
+    return { error: { code: 409, msg: 'Credential not active' } };
+  }
 
   try {
+    const payload = vcToPayload(vc);
     const cborBytes = cbor.encode(payload);
-    const deflated = deflateRawSync(cborBytes);
-    const ur = UR.fromBuffer(deflated);
-    const encoder = new UREncoder(ur, 400);
+    const deflated  = deflateRawSync(cborBytes);
+    const ur        = UR.fromBuffer(deflated);
+    const encoder   = new UREncoder(ur, 400);
 
     const frames = [];
     while (!encoder.isComplete()) frames.push(encoder.nextPart());
-    // Safety: ensure at least 1 frame
+
     if (!frames.length) return { error: { code: 500, msg: 'Failed to build QR frames' } };
     return { frames };
   } catch (e) {
@@ -56,24 +111,22 @@ async function buildEmbedFrames(claimId) {
   }
 }
 
-// ---------- public JSON for frames count (+optional frames) ----------
+// ---------- public/admin JSON for frames count ----------
 exports.qrEmbedFrames = asyncHandler(async (req, res) => {
   try {
     const id = req.params.id;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      return res.status(400).json({ message: 'Invalid claim id' });
+    const meta = await buildEmbedMeta(id);
+    if (meta.error) {
+      return res.status(meta.error.code).json({ message: meta.error.msg });
     }
-
-    const built = await buildEmbedFrames(id);
-    if (built.error) {
-      return res.status(built.error.code).json({ message: built.error.msg });
-    }
-
-    // Return both count and frames (your client reads either framesCount or frames.length)
-    return res.json({ scheme: 'ur', framesCount: built.frames.length, frames: built.frames });
+    // Count only (client fetches actual PNG frames separately)
+    return res.json({ scheme: 'ur', framesCount: meta.framesCount });
   } catch (err) {
     console.error('qr-embed/frames error', req.params.id, err);
-    return res.status(500).json({ message: 'qr-embed/frames failed', detail: String(err?.message || err) });
+    return res.status(500).json({
+      message: 'qr-embed/frames failed',
+      detail: String(err?.message || err),
+    });
   }
 });
 
@@ -81,7 +134,7 @@ exports.qrEmbedFrames = asyncHandler(async (req, res) => {
 exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!ensureObjectId(id)) {
       return res.status(400).json({ message: 'Invalid claim id' });
     }
 
@@ -108,7 +161,7 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   }
 });
 
-// ---------- simple full-page animator (note: will only work if your auth model allows it) ----------
+// ---------- simple full-page animator (may 401 if your auth requires headers) ----------
 exports.qrEmbedPage = asyncHandler(async (req, res) => {
   try {
     const { id } = req.params;
@@ -149,8 +202,9 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
 
     async function start() {
       const res = await fetch('/api/web/claims/'+id+'/qr-embed/frames');
-      const meta = await res.json();
-      if (!res.ok) { alert('Failed: '+(meta.message||res.status)); return; }
+      const text = await res.text();
+      if (!res.ok) { alert('Failed: '+(text||res.status)); return; }
+      const meta = JSON.parse(text);
       N = meta.framesCount || (meta.frames?.length ?? 0);
       document.getElementById('len').textContent = N;
       if (!N) { alert('No frames'); return; }
@@ -177,9 +231,10 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   }
 });
 
-// ---------- create a claim ticket ----------
+// ---------- create a claim ticket (admin) ----------
 exports.createClaim = asyncHandler(async (req, res) => {
   const { credId, ttlDays = 7, singleActive = true } = req.body;
+
   const vc = await SignedVC.findById(credId).select('_id status');
   if (!vc) { return res.status(404).json({ message: 'Credential not found' }); }
   if (vc.status !== 'active') { return res.status(409).json({ message: 'VC not active' }); }
@@ -225,7 +280,7 @@ exports.createClaim = asyncHandler(async (req, res) => {
   });
 });
 
-// ---------- redeem claim by public token ----------
+// ---------- redeem claim by public token (no auth) ----------
 exports.redeemClaim = asyncHandler(async (req, res) => {
   const { token } = req.params;
   const now = new Date();
@@ -238,10 +293,11 @@ exports.redeemClaim = asyncHandler(async (req, res) => {
 
   const vc = await SignedVC.findById(ticket.cred_id)
     .select('jws alg kid digest salt anchoring status');
+
   if (!vc) { return res.status(404).json({ message: 'Credential not found' }); }
   if (vc.status !== 'active') { return res.status(409).json({ message: 'Credential not active' }); }
 
-  if (!ticket.used_at) { ticket.used_at = now; await ticket.save(); }
+  if (!ticket.used_at) { ticket.used_at = now; await ticket.save(); } // idempotent
 
   res.set('Cache-Control', 'no-store');
   return res.json({
@@ -294,7 +350,7 @@ exports.listClaims = asyncHandler(async (req, res) => {
     };
   });
 
-  if (status && ['active','used','expired'].includes(status)) {
+  if (status && ['active', 'used', 'expired'].includes(status)) {
     rows = rows.filter(r => r.status === status);
   }
 
@@ -313,11 +369,12 @@ exports.listClaims = asyncHandler(async (req, res) => {
 
 // ---------- get claim (admin) ----------
 exports.getClaim = asyncHandler(async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+  const id = req.params.id;
+  if (!ensureObjectId(id)) {
     return res.status(400).json({ message: 'Invalid claim id' });
   }
 
-  const t = await ClaimTicket.findById(req.params.id)
+  const t = await ClaimTicket.findById(id)
     .populate({ path: 'cred_id', model: SignedVC, select: 'template_id student_id vc_payload createdAt' });
 
   if (!t) { return res.status(404).json({ message: 'Claim not found' }); }
@@ -348,11 +405,12 @@ exports.getClaim = asyncHandler(async (req, res) => {
 
 // ---------- QR for claim URL (admin) ----------
 exports.qrPng = asyncHandler(async (req, res) => {
-  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+  const id = req.params.id;
+  if (!ensureObjectId(id)) {
     return res.status(400).json({ message: 'Invalid claim id' });
   }
 
-  const t = await ClaimTicket.findById(req.params.id).lean();
+  const t = await ClaimTicket.findById(id).lean();
   if (!t) { return res.status(404).json({ message: 'Claim not found' }); }
 
   const base = process.env.BASE_URL || 'https://issuer.example.edu';

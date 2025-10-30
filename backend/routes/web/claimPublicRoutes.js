@@ -1,9 +1,11 @@
+// routes/web/claimPublicRoutes.js
 const express = require('express');
 const router = express.Router();
 const claimCtrl = require('../../controllers/web/claimController');
 const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
 const { z, validate } = require('../../middleware/validate');
 
+// Public: redeem a claim token → returns VC payload JSON
 router.get(
   '/c/:token',
   validate({
