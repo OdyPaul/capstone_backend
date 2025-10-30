@@ -314,7 +314,9 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
     async function tick() {
       document.getElementById('pos').textContent = (i+1);
       const img = document.getElementById('qr');
-      img.src = '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size+'${part}'+'&_t='+(Date.now());
+      const base = window.location.origin;
+      img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size+'${part}'+'&_t='+(Date.now());
+
       i = (i+1) % N;
     }
     start();
