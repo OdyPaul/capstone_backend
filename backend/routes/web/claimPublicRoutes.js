@@ -3,52 +3,37 @@ const express = require('express');
 const router = express.Router();
 const claimCtrl = require('../../controllers/web/claimController');
 
-// Try loading optional middlewares. If not present / mis-exported, we degrade gracefully.
-let rateLimitRedis;
-try {
-  ({ rateLimitRedis } = require('../../middleware/rateLimitRedis'));
-} catch (e) {
-  rateLimitRedis = null;
-}
-
-let z, validate;
-try {
-  ({ z, validate } = require('../../middleware/validate'));
-} catch (e) {
-  z = null;
-  validate = null;
-}
+// Optional middlewares (defensive wrap so Express never crashes if missing)
+let rateLimitRedis, z, validate;
+try { ({ rateLimitRedis } = require('../../middleware/rateLimitRedis')); } catch {}
+try { ({ z, validate } = require('../../middleware/validate')); } catch {}
 
 const passthru = (_req, _res, next) => next();
-
-function makeValidator() {
+const makeValidator = () => {
   try {
-    if (typeof validate === 'function' && z && typeof z.object === 'function') {
-      const mw = validate({
-        params: z.object({ token: z.string().min(8).max(200) }).strict(),
-      });
+    if (typeof validate === 'function' && z) {
+      const mw = validate({ params: z.object({ token: z.string().min(8).max(200) }).strict() });
       return typeof mw === 'function' ? mw : passthru;
     }
-  } catch (_) {}
+  } catch {}
   return passthru;
-}
-
-function makeRateLimit() {
+};
+const makeRateLimit = () => {
   try {
     if (typeof rateLimitRedis === 'function') {
-      const mw = rateLimitRedis({
-        prefix: 'rl:claim',
-        windowMs: 60_000,
-        max: 30,
-        keyFn: (req) => req.ip,
-      });
+      const mw = rateLimitRedis({ prefix: 'rl:claim', windowMs: 60_000, max: 30, keyFn: (req) => req.ip });
       return typeof mw === 'function' ? mw : passthru;
     }
-  } catch (_) {}
+  } catch {}
   return passthru;
-}
+};
 
-// IMPORTANT: each arg must be a function; we wrap them to guarantee that.
+// Public redeem (JSON VC)
 router.get('/c/:token', makeValidator(), makeRateLimit(), claimCtrl.redeemClaim);
+
+// Public animated UR frames/page (no JWT)
+router.get('/c/:token/qr-embed/frames', makeValidator(), makeRateLimit(), claimCtrl.qrEmbedFramesByToken);
+router.get('/c/:token/qr-embed/frame',  makeValidator(), makeRateLimit(), claimCtrl.qrEmbedFramePngByToken);
+router.get('/c/:token/qr-embed/page',   makeValidator(), makeRateLimit(), claimCtrl.qrEmbedPageByToken);
 
 module.exports = router;

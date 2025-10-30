@@ -2,35 +2,19 @@
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const ClaimTicket = require('../../models/web/claimTicket');
-const SignedVC = require('../../models/web/signedVcModel');
+const SignedVC   = require('../../models/web/signedVcModel');
 const { randomToken } = require('../../utils/tokens');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-const { UR, UrFountainEncoder } = require('@ngraveio/bc-ur');
+const { UR, UREncoder } = require('@ngraveio/bc-ur');
 const QRCode = require('qrcode');
 
+// ---------- helpers ----------
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+const PART_BYTES = Number(process.env.QR_UR_PART_BYTES || 400); // UR fragment target bytes
 
-// ---------- shared: load claim + vc and turn into UR(bytes) ----------
-async function loadClaimAndUr(claimId) {
-  if (!mongoose.Types.ObjectId.isValid(claimId)) {
-    return { error: { code: 400, msg: 'Invalid claim id' } };
-  }
-
-  const ticket = await ClaimTicket.findById(claimId).lean();
-  if (!ticket) return { error: { code: 404, msg: 'Claim not found' } };
-
-  const vc = await SignedVC.findById(ticket.cred_id)
-    .select('jws alg kid digest salt anchoring status')
-    .lean();
-  if (!vc) return { error: { code: 404, msg: 'Credential not found' } };
-  if (!vc.jws) return { error: { code: 409, msg: 'VC has no JWS payload' } };
-  if (vc.status && vc.status !== 'active') {
-    return { error: { code: 409, msg: 'Credential not active' } };
-  }
-
-  // Pack the JWS VC into CBOR → deflate → UR(bytes)
-  const payload = {
+function buildVcPayload(vc) {
+  return {
     format: 'vc+jws',
     jws: vc.jws,
     kid: vc.kid,
@@ -39,119 +23,112 @@ async function loadClaimAndUr(claimId) {
     digest: vc.digest,
     anchoring: vc.anchoring,
   };
-
-  try {
-    const cborBytes = cbor.encode(payload);
-    const deflated = deflateRawSync(cborBytes);
-
-    // UR payload expects a Uint8Array for generic “bytes”
-    const bytes = new Uint8Array(deflated.buffer, deflated.byteOffset, deflated.byteLength);
-    const ur = UR.fromData({ type: 'bytes', payload: bytes });
-
-    if (process.env.DEBUG_QR === '1') {
-      console.log('[qrUR]', {
-        claimId: String(claimId),
-        vcId: String(vc?._id || ''),
-        jwsLen: String(vc?.jws?.length || 0),
-        cborBytes: cborBytes.length,
-        deflated: deflated.length,
-      });
-    }
-
-    return { ur };
-  } catch (e) {
-    return { error: { code: 500, msg: `UR build failed: ${e.message || e}` } };
-  }
 }
 
-// Build all frames (UR parts) — use small redundancy ratio for robustness
-async function buildEmbedFrames(claimId, { fragLen = 400, ratio = 1.7 } = {}) {
-  const base = await loadClaimAndUr(claimId);
-  if (base.error) return base;
-
-  try {
-    const enc = new UrFountainEncoder(base.ur, fragLen);
-    const frames = enc.getAllPartsUr(ratio); // array of 'ur:bytes/...' strings
-    if (!frames.length) return { error: { code: 500, msg: 'Failed to build QR frames' } };
-    return { frames };
-  } catch (e) {
-    return { error: { code: 500, msg: `Frame build failed: ${e.message || e}` } };
+async function loadTicketByIdOr404(id) {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return { error: { code: 400, msg: 'Invalid claim id' } };
   }
+  const t = await ClaimTicket.findById(id).lean();
+  return t ? { ticket: t } : { error: { code: 404, msg: 'Claim not found' } };
 }
 
-// Build just the count (exact), using minimal redundancy
-async function buildEmbedMeta(claimId, { fragLen = 400 } = {}) {
-  const base = await loadClaimAndUr(claimId);
-  if (base.error) return base;
-
-  try {
-    const enc = new UrFountainEncoder(base.ur, fragLen);
-    const parts = enc.getAllPartsUr(1); // minimal redundancy → exact part count
-    const framesCount = parts.length;
-    if (!framesCount) return { error: { code: 500, msg: 'Failed to compute framesCount' } };
-
-    if (process.env.DEBUG_QR === '1') {
-      console.log('[qrMeta]', { claimId, framesCount });
-    }
-
-    return { framesCount };
-  } catch (e) {
-    return { error: { code: 500, msg: `Meta build failed: ${e.message || e}` } };
-  }
+async function loadTicketByTokenOr404(token) {
+  const t = await ClaimTicket.findOne({ token }).lean();
+  return t ? { ticket: t } : { error: { code: 404, msg: 'Claim token not found' } };
 }
 
-// ---------- JSON: return ONLY the count (lighter/saner) ----------
+async function loadVcForTicketOr404(ticket) {
+  const vc = await SignedVC.findById(ticket.cred_id)
+    .select('jws alg kid digest salt anchoring status')
+    .lean();
+  if (!vc)   return { error: { code: 404, msg: 'Credential not found' } };
+  if (!vc.jws) return { error: { code: 409, msg: 'VC has no JWS payload' } };
+  if (vc.status && vc.status !== 'active') {
+    return { error: { code: 409, msg: 'Credential not active' } };
+  }
+  return { vc };
+}
+
+/**
+ * Prepares deflated CBOR and helpers.
+ * We avoid encoder.isComplete(). Instead:
+ *  - framesCount is an estimate based on deflated size and PART_BYTES
+ *  - a specific frame string for index i is obtained by re-seeding UREncoder with seq=i+1
+ */
+function prepareUrMeta(vc) {
+  const payload   = buildVcPayload(vc);
+  const cborBytes = cbor.encode(payload);
+  const deflated  = deflateRawSync(cborBytes);
+  const partBytes = PART_BYTES;
+
+  // Rough estimate (UR fountain is variable/overcomplete; this is for UI only)
+  const framesCount = Math.max(1, Math.ceil(deflated.length / Math.max(1, partBytes - 8)));
+
+  function frameStringAt(i /* 0-based */) {
+    // Deterministic by using firstSeqNum = i+1
+    const ur  = UR.fromBuffer(deflated);
+    const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1));
+    return enc.nextPart(); // one part for this sequence number
+  }
+
+  return { framesCount, frameStringAt };
+}
+
+// ---------- ADMIN (id-based) endpoints ----------
 exports.qrEmbedFrames = asyncHandler(async (req, res) => {
-  const meta = await buildEmbedMeta(req.params.id);
-  if (meta.error) return res.status(meta.error.code).json({ message: meta.error.msg });
+  const { id } = req.params;
+  const { ticket, error } = await loadTicketByIdOr404(id);
+  if (error) return res.status(error.code).json({ message: error.msg });
+
+  const vcRes = await loadVcForTicketOr404(ticket);
+  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+
+  const meta = prepareUrMeta(vcRes.vc);
   res.json({ scheme: 'ur', framesCount: meta.framesCount });
 });
 
-// ---------- PNG: return a single QR frame by index ----------
 exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
-  const i = Number(req.query.i ?? 0);
+  const { id } = req.params;
+  const { ticket, error } = await loadTicketByIdOr404(id);
+  if (error) return res.status(error.code).json({ message: error.msg });
+
+  const vcRes = await loadVcForTicketOr404(ticket);
+  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+
+  const i    = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || 280, 160, 560);
 
-  const built = await buildEmbedFrames(req.params.id);
-  if (built.error) return res.status(built.error.code).json({ message: built.error.msg });
+  const meta = prepareUrMeta(vcRes.vc);
+  const urPart = meta.frameStringAt(i);
+  const buf = await QRCode.toBuffer(urPart, { width: size, margin: 0, errorCorrectionLevel: 'M' });
 
-  const { frames } = built;
-  if (!Number.isInteger(i) || i < 0 || i >= frames.length) {
-    return res.status(400).json({ message: `frame index out of range 0..${frames.length - 1}` });
-  }
-
-  const buf = await QRCode.toBuffer(frames[i], {
-    width: size,
-    margin: 0,
-    errorCorrectionLevel: 'M',
-  });
   res.set('Content-Type', 'image/png');
   res.set('Cache-Control', 'no-store');
   res.send(buf);
 });
 
-// ---------- simple full-screen page (no auth; it fetches public endpoints) ----------
 exports.qrEmbedPage = asyncHandler(async (req, res) => {
+  const { id } = req.params;
   const size = clamp(Number(req.query.size) || 320, 160, 560);
-  const fps = clamp(Number(req.query.fps) || 2, 1, 8);
+  const fps  = clamp(Number(req.query.fps)  || 2,   1,   8);
   const intervalMs = Math.round(1000 / fps);
-  const id = req.params.id;
 
   const html = `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Offline VC QR</title>
-  <style>
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:#0b1020; color:#eee; margin:0; display:grid; place-items:center; height:100vh; }
-    .wrap { display:flex; gap:24px; align-items:center; flex-direction:column; }
-    .card { background:#121836; border-radius:16px; padding:18px 18px 8px 18px; box-shadow: 0 8px 20px rgba(0,0,0,.5); }
-    img { width:${size}px; height:${size}px; image-rendering:pixelated; }
-    .muted { opacity:.7; font-size:12px; }
-    .row { display:flex; gap:14px; align-items:center; }
-    code { background:#0f142b; padding:4px 8px; border-radius:6px; }
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Offline VC QR</title>
+<style>
+  body { font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:#0b1020; color:#eee; margin:0; display:grid; place-items:center; height:100vh; }
+  .wrap { display:flex; gap:24px; align-items:center; flex-direction:column; }
+  .card { background:#121836; border-radius:16px; padding:18px 18px 8px 18px; box-shadow: 0 8px 20px rgba(0,0,0,.5); }
+  img { width:${size}px; height:${size}px; image-rendering:pixelated; }
+  .muted { opacity:.7; font-size:12px; }
+  .row { display:flex; gap:14px; align-items:center; }
+  code { background:#0f142b; padding:4px 8px; border-radius:6px; }
+</style>
 </head>
 <body>
   <div class="wrap">
@@ -160,7 +137,7 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
       <div>Frame: <code id="pos">—</code>/<code id="len">—</code></div>
       <div class="muted">FPS: ${fps}</div>
     </div>
-    <div class="muted">Keep the phone camera steady; it will auto-assemble the credential offline.</div>
+    <div class="muted">Keep the phone steady; the wallet will reconstruct offline.</div>
   </div>
   <script>
     const id = ${JSON.stringify(id)};
@@ -169,12 +146,11 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
     let N = 0, i = 0, timer = null;
 
     async function start() {
-      const res = await fetch('/api/web/claims/'+id+'/qr-embed/frames');
-      const meta = await res.json();
-      if (!res.ok) { alert('Failed: '+(meta.message||res.status)); return; }
-      N = meta.framesCount || 0;
+      const r = await fetch('/api/web/claims/'+id+'/qr-embed/frames');
+      const j = await r.json();
+      if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
+      N = j.framesCount || 50; // fallback
       document.getElementById('len').textContent = N;
-      if (!N) { alert('No frames'); return; }
       timer = setInterval(tick, intervalMs);
       tick();
     }
@@ -192,7 +168,100 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   res.type('html').send(html);
 });
 
-// ---------- create a claim ticket ----------
+// ---------- PUBLIC (token-based) endpoints ----------
+exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const { ticket, error } = await loadTicketByTokenOr404(token);
+  if (error) return res.status(error.code).json({ message: error.msg });
+
+  const vcRes = await loadVcForTicketOr404(ticket);
+  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+
+  const meta = prepareUrMeta(vcRes.vc);
+  res.json({ scheme: 'ur', framesCount: meta.framesCount });
+});
+
+exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const { ticket, error } = await loadTicketByTokenOr404(token);
+  if (error) return res.status(error.code).json({ message: error.msg });
+
+  const vcRes = await loadVcForTicketOr404(ticket);
+  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+
+  const i    = Math.max(0, Number(req.query.i) || 0);
+  const size = clamp(Number(req.query.size) || 280, 160, 560);
+
+  const meta = prepareUrMeta(vcRes.vc);
+  const urPart = meta.frameStringAt(i);
+  const buf = await QRCode.toBuffer(urPart, { width: size, margin: 0, errorCorrectionLevel: 'M' });
+
+  res.set('Content-Type', 'image/png');
+  res.set('Cache-Control', 'no-store');
+  res.send(buf);
+});
+
+exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
+  const { token } = req.params;
+  const size = clamp(Number(req.query.size) || 320, 160, 560);
+  const fps  = clamp(Number(req.query.fps)  || 2,   1,   8);
+  const intervalMs = Math.round(1000 / fps);
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Offline VC QR</title>
+<style>
+  body { font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:#0b1020; color:#eee; margin:0; display:grid; place-items:center; height:100vh; }
+  .wrap { display:flex; gap:24px; align-items:center; flex-direction:column; }
+  .card { background:#121836; border-radius:16px; padding:18px 18px 8px 18px; box-shadow: 0 8px 20px rgba(0,0,0,.5); }
+  img { width:${size}px; height:${size}px; image-rendering:pixelated; }
+  .muted { opacity:.7; font-size:12px; }
+  .row { display:flex; gap:14px; align-items:center; }
+  code { background:#0f142b; padding:4px 8px; border-radius:6px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card"><img id="qr" alt="QR frame"/></div>
+    <div class="row">
+      <div>Frame: <code id="pos">—</code>/<code id="len">—</code></div>
+      <div class="muted">FPS: ${fps}</div>
+    </div>
+    <div class="muted">Keep the phone steady; the wallet will reconstruct offline.</div>
+  </div>
+  <script>
+    const tok = ${JSON.stringify(token)};
+    const size = ${size};
+    const intervalMs = ${intervalMs};
+    let N = 0, i = 0, timer = null;
+
+    async function start() {
+      const r = await fetch('/c/'+tok+'/qr-embed/frames');
+      const j = await r.json();
+      if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
+      N = j.framesCount || 50; // fallback
+      document.getElementById('len').textContent = N;
+      timer = setInterval(tick, intervalMs);
+      tick();
+    }
+    async function tick() {
+      document.getElementById('pos').textContent = (i+1);
+      const img = document.getElementById('qr');
+      img.src = '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size+'&_t='+(Date.now());
+      i = (i+1) % N;
+    }
+    start();
+  </script>
+</body>
+</html>`;
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send(html);
+});
+
+// ---------- create / redeem / admin list as you already had ----------
 exports.createClaim = asyncHandler(async (req, res) => {
   const { credId, ttlDays = 7, singleActive = true } = req.body;
   const vc = await SignedVC.findById(credId).select('_id status');
@@ -200,19 +269,15 @@ exports.createClaim = asyncHandler(async (req, res) => {
   if (vc.status !== 'active') return res.status(409).json({ message: 'VC not active' });
 
   const now = new Date();
-
   if (singleActive) {
-    const existing = await ClaimTicket
-      .findOne({ cred_id: vc._id, expires_at: { $gt: now } })
+    const existing = await ClaimTicket.findOne({ cred_id: vc._id, expires_at: { $gt: now } })
       .sort({ createdAt: -1 });
-
     if (existing) {
       const base = process.env.BASE_URL || 'https://issuer.example.edu';
-      const claim_url = `${base}/c/${existing.token}`;
       return res.status(200).json({
         claim_id: existing._id.toString(),
         token: existing.token,
-        claim_url,
+        claim_url: `${base}/c/${existing.token}`,
         expires_at: existing.expires_at,
         reused: true,
       });
@@ -222,25 +287,19 @@ exports.createClaim = asyncHandler(async (req, res) => {
   const token = randomToken();
   const expires_at = new Date(now.getTime() + Number(ttlDays) * 864e5);
   const created = await ClaimTicket.create({
-    token,
-    cred_id: vc._id,
-    expires_at,
-    created_by: req.user?._id || null,
+    token, cred_id: vc._id, expires_at, created_by: req.user?._id || null,
   });
 
   const base = process.env.BASE_URL || 'https://issuer.example.edu';
-  const claim_url = `${base}/c/${token}`;
-
-  res.status(201).json({
+  return res.status(201).json({
     claim_id: created._id.toString(),
     token,
-    claim_url,
+    claim_url: `${base}/c/${token}`,
     expires_at,
     reused: false,
   });
 });
 
-// ---------- redeem claim by public token ----------
 exports.redeemClaim = asyncHandler(async (req, res) => {
   const { token } = req.params;
   const now = new Date();
@@ -259,22 +318,13 @@ exports.redeemClaim = asyncHandler(async (req, res) => {
   if (!ticket.used_at) { ticket.used_at = now; await ticket.save(); }
 
   res.set('Cache-Control', 'no-store');
-  res.json({
-    format: 'vc+jws',
-    jws: vc.jws,
-    kid: vc.kid,
-    alg: vc.alg,
-    salt: vc.salt,
-    digest: vc.digest,
-    anchoring: vc.anchoring,
-  });
+  res.json(buildVcPayload(vc));
 });
 
-// ---------- list / get / qr.png (admin) ----------
+// listClaims / getClaim / qrPng remain unchanged...
 exports.listClaims = asyncHandler(async (req, res) => {
   const { status, credId, q } = req.query;
   const now = new Date();
-
   const filter = {};
   if (credId) filter.cred_id = credId;
 
@@ -289,7 +339,6 @@ exports.listClaims = asyncHandler(async (req, res) => {
     const vc = t.cred_id || {};
     const subj = vc.vc_payload?.credentialSubject || {};
     const computedStatus = t.expires_at < now ? 'expired' : (t.used_at ? 'used' : 'active');
-
     return {
       _id: t._id,
       token: t.token,
@@ -311,7 +360,6 @@ exports.listClaims = asyncHandler(async (req, res) => {
   if (status && ['active','used','expired'].includes(status)) {
     rows = rows.filter(r => r.status === status);
   }
-
   if (q) {
     const needle = String(q).toLowerCase();
     rows = rows.filter(r =>
@@ -321,7 +369,6 @@ exports.listClaims = asyncHandler(async (req, res) => {
       (r.credential?.template_id || '').toLowerCase().includes(needle)
     );
   }
-
   res.json(rows);
 });
 
@@ -329,16 +376,13 @@ exports.getClaim = asyncHandler(async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid claim id' });
   }
-
   const t = await ClaimTicket.findById(req.params.id)
     .populate({ path: 'cred_id', model: SignedVC, select: 'template_id student_id vc_payload createdAt' });
-
   if (!t) return res.status(404).json({ message: 'Claim not found' });
 
   const base = process.env.BASE_URL || 'https://issuer.example.edu';
   const now = new Date();
   const computedStatus = t.expires_at < now ? 'expired' : (t.used_at ? 'used' : 'active');
-
   const subj = t.cred_id?.vc_payload?.credentialSubject || {};
   res.json({
     _id: t._id,
@@ -362,14 +406,12 @@ exports.qrPng = asyncHandler(async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
     return res.status(400).json({ message: 'Invalid claim id' });
   }
-
   const t = await ClaimTicket.findById(req.params.id).lean();
   if (!t) return res.status(404).json({ message: 'Claim not found' });
 
   const base = process.env.BASE_URL || 'https://issuer.example.edu';
   const claimUrl = `${base}/c/${t.token}`;
-
-  const size = Math.max(120, Math.min(1024, Number(req.query.size) || 256));
+  const size = clamp(Number(req.query.size) || 256, 120, 1024);
   const buf = await QRCode.toBuffer(claimUrl, { width: size, margin: 1 });
 
   res.set('Content-Type', 'image/png');
