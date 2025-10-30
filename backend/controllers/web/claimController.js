@@ -214,17 +214,75 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
 });
 
 // ---------- PUBLIC (token-based, no auth) ----------
-exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
+exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
   const { token } = req.params;
-  const { ticket, error } = await loadTicketByTokenOr404(token);
-  if (error) return res.status(error.code).json({ message: error.msg });
+  const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
+  const fps = clamp(Number(req.query.fps) || 1, 1, 8); // slower = easier to scan
+  const intervalMs = Math.round(1000 / fps);
+  const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
 
-  const vcRes = await loadVcForTicketOr404(ticket);
-  if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
+  const base = process.env.BASE_URL || 'https://capstone-backend-s80k.onrender.com';
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part);
-  res.json({ scheme: 'ur', framesCount: meta.framesCount });
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Offline VC QR</title>
+<style>
+  body { font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:#0b1020; color:#eee; margin:0; display:grid; place-items:center; height:100vh; }
+  .wrap { display:flex; gap:24px; align-items:center; flex-direction:column; }
+  .card { background:#121836; border-radius:16px; padding:18px 18px 8px 18px; box-shadow: 0 8px 20px rgba(0,0,0,.5); }
+  img { width:${size}px; height:${size}px; image-rendering:pixelated; background:#fff; }
+  .muted { opacity:.7; font-size:12px; }
+  .row { display:flex; gap:14px; align-items:center; }
+  code { background:#0f142b; padding:4px 8px; border-radius:6px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card"><img id="qr" alt="QR frame"/></div>
+    <div class="row">
+      <div>Frame: <code id="pos">—</code>/<code id="len">—</code></div>
+      <div class="muted">FPS: ${fps}</div>
+    </div>
+    <div class="muted">Keep the phone steady; the wallet will reconstruct offline.</div>
+  </div>
+  <script>
+    const tok = ${JSON.stringify(token)};
+    const base = ${JSON.stringify(base)};
+    const size = ${size};
+    const intervalMs = ${intervalMs};
+    const part = ${JSON.stringify(part)};
+    let N = 0, i = 0, timer = null;
+
+    async function start() {
+      const framesUrl = base + '/c/' + tok + '/qr-embed/frames' + part;
+      const r = await fetch(framesUrl);
+      const j = await r.json();
+      if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
+      N = j.framesCount || 1;
+      document.getElementById('len').textContent = N;
+      timer = setInterval(tick, intervalMs);
+      tick();
+    }
+
+    async function tick() {
+      document.getElementById('pos').textContent = (i + 1);
+      const img = document.getElementById('qr');
+      const frameUrl = base + '/c/' + tok + '/qr-embed/frame?i=' + i + '&size=' + size + part + '&_t=' + Date.now();
+      img.src = frameUrl;
+      i = (i + 1) % N;
+    }
+
+    start();
+  </script>
+</body>
+</html>`;
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send(html);
 });
+
 
 exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
   const { token } = req.params;
