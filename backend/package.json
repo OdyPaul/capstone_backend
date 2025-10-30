@@ -17,6 +17,7 @@
     "@sparticuz/chromium": "^141.0.0",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.61.2",
+    "cbor": "^10.0.11",
     "cloudinary": "^2.7.0",
     "colors": "^1.4.0",
     "cors": "^2.8.5",
