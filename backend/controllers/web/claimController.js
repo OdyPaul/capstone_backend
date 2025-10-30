@@ -22,7 +22,7 @@ const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
 const DEFAULT_PART_BYTES   = Number(process.env.QR_PART_BYTES   || 220); // 120..300
 const MIN_PART_BYTES       = 120;
-const MAX_PART_BYTES       = 300;
+const MAX_PART_BYTES       = Number(process.env.QR_MAX_PART_BYTES || 1200);
 
 const DEFAULT_QR_SIZE      = Number(process.env.QR_DEFAULT_SIZE || 360); // px
 const MIN_QR_SIZE          = 160;
@@ -134,6 +134,12 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
     return res.type('text/plain').send(urPart);
   }
 
+   // ⬇️ Debug: return raw UR string when txt=1
+  if (String(req.query.txt) === '1') {
+    res.set('Cache-Control', 'no-store');
+    return res.type('text/plain').send(urPart);
+  }
+
   const buf = await QRCode.toBuffer(urPart, {
     width: size,
     margin: QR_MARGIN,
@@ -235,6 +241,11 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
   const urPart = meta.frameStringAt(i);
 
   // 🔎 DEBUG text mode: ?txt=1
+  if (String(req.query.txt) === '1') {
+    res.set('Cache-Control', 'no-store');
+    return res.type('text/plain').send(urPart);
+  }
+
   if (String(req.query.txt) === '1') {
     res.set('Cache-Control', 'no-store');
     return res.type('text/plain').send(urPart);
