@@ -13,9 +13,9 @@ router.get(
   rateLimitRedis({ prefix: 'rl:claim', windowMs: 60_000, max: 30, keyFn: (req) => req.ip }),
   claimCtrl.redeemClaim
 );
+router.post('/claims', claimCtrl.createClaim);
 router.get('/claims/:id/qr-embed/frames', claimCtrl.qrEmbedFrames);
-router.get('/claims/:id/qr-embed/frame',  claimCtrl.qrEmbedFramePng);  // <— NEW
-router.get('/claims/:id/qr-embed/page',   claimCtrl.qrEmbedPage); 
-// AND (for creating the claim ticket used by your UI)
-router.post('/claims', claimCtrl.createClaim);    
+router.get('/claims/:id/qr-embed/frame',  claimCtrl.qrEmbedFramePng);
+router.get('/claims/:id/qr-embed/page',   claimCtrl.qrEmbedPage);
+
 module.exports = router;
