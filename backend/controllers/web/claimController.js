@@ -1,12 +1,10 @@
 // controllers/web/claimController.js
 // Offline UR QR for VC delivery + claim ticket CRUD.
-//
-// Improvements vs prior version:
-// - Smaller default UR part size (denser → lighter to scan).
-// - Proper quiet zone (margin=4) and ECL default 'L' for capacity.
-// - Deterministic single-part generation by index (no encoder.isComplete()).
-// - Public (token) + Admin (id) variants.
-// - Light caching on public PNG frames to reduce 429s.
+// - Smaller default UR part size for easier scanning
+// - Proper QR quiet zone & low ECL
+// - Deterministic per-index frames (no encoder.isComplete())
+// - ?txt=1 switch to return the raw "ur:bytes/..." text for debugging
+// - Admin (id) and Public (token) endpoints
 
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
@@ -22,7 +20,7 @@ const { randomToken } = require('../../utils/tokens');
 // ---------- tunables (override via env) ----------
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
-const DEFAULT_PART_BYTES   = Number(process.env.QR_PART_BYTES   || 220); // 120..300 is a good range
+const DEFAULT_PART_BYTES   = Number(process.env.QR_PART_BYTES   || 220); // 120..300
 const MIN_PART_BYTES       = 120;
 const MAX_PART_BYTES       = 300;
 
@@ -30,7 +28,7 @@ const DEFAULT_QR_SIZE      = Number(process.env.QR_DEFAULT_SIZE || 360); // px
 const MIN_QR_SIZE          = 160;
 const MAX_QR_SIZE          = 560;
 
-const QR_MARGIN            = Number(process.env.QR_MARGIN ?? 4);         // quiet zone modules
+const QR_MARGIN            = Number(process.env.QR_MARGIN ?? 4);   // quiet zone modules
 const QR_ECL               = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 
 // ---------- helpers ----------
@@ -74,9 +72,8 @@ async function loadVcForTicketOr404(ticket) {
 
 /**
  * Build UR meta with deterministic per-index frame generation.
- * We DO NOT iterate encoder completeness; instead we:
- *  - estimate frame count from deflated size and target part bytes
- *  - generate a single part for a given index by seeding firstSeqNum = i+1
+ * We estimate a frame count from deflated size & target part size,
+ * and generate exactly one part for index i by seeding firstSeqNum = i+1.
  */
 function prepareUrMeta(vc, partBytesOverride) {
   const payload   = buildVcPayload(vc);
@@ -89,17 +86,16 @@ function prepareUrMeta(vc, partBytesOverride) {
     MAX_PART_BYTES
   );
 
-  // Rough estimate (UR fountain has overhead; this is UI-friendly)
+  // UI estimate (UR has overhead/redundancy)
   const framesCount = Math.max(
     1,
     Math.ceil(deflated.length / Math.max(1, partBytes - 8))
   );
 
   function frameStringAt(i /* 0-based */) {
-    const ur  = UR.fromBuffer(deflated);
-    // deterministically choose a sequence number so each i produces a stable part
-    const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1));
-    return enc.nextPart();
+    const ur  = UR.fromBuffer(deflated);                      // UR type "bytes" containing raw deflated bytes
+    const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1)); // deterministic
+    return enc.nextPart();                                    // single part for this seq number
   }
 
   return { framesCount, frameStringAt };
@@ -132,10 +128,16 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   const meta   = prepareUrMeta(vcRes.vc, req.query.part);
   const urPart = meta.frameStringAt(i);
 
+  // 🔎 DEBUG: return the raw UR string instead of a PNG when ?txt=1
+  if (String(req.query.txt) === '1') {
+    res.set('Cache-Control', 'no-store');
+    return res.type('text/plain').send(urPart);
+  }
+
   const buf = await QRCode.toBuffer(urPart, {
     width: size,
-    margin: QR_MARGIN,                 // essential quiet zone
-    errorCorrectionLevel: QR_ECL,      // 'L' gives more capacity → fewer modules
+    margin: QR_MARGIN,
+    errorCorrectionLevel: QR_ECL, // 'L' recommended for UR parts
     color: { dark: '#000000', light: '#FFFFFF' },
   });
 
@@ -232,6 +234,12 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
   const meta   = prepareUrMeta(vcRes.vc, req.query.part);
   const urPart = meta.frameStringAt(i);
 
+  // 🔎 DEBUG text mode: ?txt=1
+  if (String(req.query.txt) === '1') {
+    res.set('Cache-Control', 'no-store');
+    return res.type('text/plain').send(urPart);
+  }
+
   const buf = await QRCode.toBuffer(urPart, {
     width: size,
     margin: QR_MARGIN,
@@ -239,8 +247,8 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
     color: { dark: '#000000', light: '#FFFFFF' },
   });
 
+  // Deterministic frames → allow short caching to avoid 429s
   res.set('Content-Type', 'image/png');
-  // Public frames are deterministic → allow short caching to reduce 429s
   res.set('Cache-Control', 'public, max-age=300, immutable');
   res.send(buf);
 });
