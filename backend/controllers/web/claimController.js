@@ -7,6 +7,35 @@ const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
 const { UR, UREncoder } = require('@ngraveio/bc-ur');
 const QRCode = require('qrcode');
+// controllers/web/claimController.js (top of file)
+async function buildEmbedFrames(claimId) {
+  const t = await ClaimTicket.findById(claimId).lean();
+  if (!t) return { error: { code: 404, msg: 'Claim not found' } };
+
+  const vc = await SignedVC.findById(t.cred_id)
+    .select('jws alg kid digest salt anchoring')
+    .lean();
+  if (!vc) return { error: { code: 404, msg: 'Credential not found' } };
+
+  const payload = {
+    format: 'vc+jws',
+    jws: vc.jws,
+    kid: vc.kid,
+    alg: vc.alg,
+    salt: vc.salt,
+    digest: vc.digest,
+    anchoring: vc.anchoring,
+  };
+
+  const cborBytes = cbor.encode(payload);
+  const deflated  = deflateRawSync(cborBytes);
+  const ur        = UR.fromBuffer(deflated);
+  const encoder   = new UREncoder(ur, 400);
+
+  const frames = [];
+  while (!encoder.isComplete()) frames.push(encoder.nextPart());
+  return { frames };
+}
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
@@ -33,6 +62,7 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   const fps  = clamp(Number(req.query.fps) || 2, 1, 8); // 2 fps default
   const intervalMs = Math.round(1000 / fps);
 
+  
   // We’ll fetch frames count client-side; no heavy work here.
   const html = `<!doctype html>
 <html lang="en">
@@ -90,35 +120,12 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.type('html').send(html);
 });
-
 exports.qrEmbedFrames = asyncHandler(async (req, res) => {
-  const t = await ClaimTicket.findById(req.params.id).lean();
-  if (!t) { res.status(404); throw new Error('Claim not found'); }
-
-  const vc = await SignedVC.findById(t.cred_id)
-    .select('jws alg kid digest salt anchoring')
-    .lean();
-
-  const payload = {
-    format: 'vc+jws',
-    jws: vc.jws,
-    kid: vc.kid,
-    alg: vc.alg,
-    salt: vc.salt,
-    digest: vc.digest,
-    anchoring: vc.anchoring,
-  };
-
-  // encode -> compress -> UR-encode
-  const cborBytes = cbor.encode(payload);
-  const deflated = deflateRawSync(cborBytes);
-  const ur = UR.fromBuffer(deflated);
-  const encoder = new UREncoder(ur, 400); // 400 B/frame ≈ reliable size
-
-  const frames = [];
-  while (!encoder.isComplete()) frames.push(encoder.nextPart());
-  res.json({ scheme: 'ur', framesCount: frames.length, frames });
+  const built = await buildEmbedFrames(req.params.id);
+  if (built.error) { res.status(built.error.code); throw new Error(built.error.msg); }
+  res.json({ scheme: 'ur', framesCount: built.frames.length, frames: built.frames });
 });
+
 exports.createClaim = asyncHandler(async (req, res) => {
   const { credId, ttlDays = 7, singleActive = true } = req.body; // optional knobs
   const vc = await SignedVC.findById(credId).select('_id status');

@@ -15,5 +15,7 @@ router.get(
 );
 router.get('/claims/:id/qr-embed/frames', claimCtrl.qrEmbedFrames);
 router.get('/claims/:id/qr-embed/frame',  claimCtrl.qrEmbedFramePng);  // <— NEW
-router.get('/claims/:id/qr-embed/page',   claimCtrl.qrEmbedPage);     
+router.get('/claims/:id/qr-embed/page',   claimCtrl.qrEmbedPage); 
+// AND (for creating the claim ticket used by your UI)
+router.post('/claims', claimCtrl.createClaim);    
 module.exports = router;
