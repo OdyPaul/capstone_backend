@@ -18,4 +18,8 @@ router.get('/claims/:id/qr-embed/frames', claimCtrl.qrEmbedFrames);
 router.get('/claims/:id/qr-embed/frame',  claimCtrl.qrEmbedFramePng);
 router.get('/claims/:id/qr-embed/page',   claimCtrl.qrEmbedPage);
 
+router.get('/claims/test', async (req, res) => {
+  res.json({ msg: "Claim routes reachable" });
+});
+
 module.exports = router;
