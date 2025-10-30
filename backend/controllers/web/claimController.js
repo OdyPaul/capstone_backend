@@ -96,20 +96,21 @@ function prepareUrMeta(vc, partBytesOverride) {
     MAX_PART_BYTES
   );
 
-  // Estimate for UI (UR fountain has overhead; this is approximate)
+  // Estimate for UI (UR fountain has overhead; add ~15% + a few extra)
   const framesCount = Math.max(
     1,
-    Math.ceil(deflated.length / Math.max(1, partBytes - 8))
+    Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
   );
 
   function frameStringAt(i /* 0-based */) {
     const ur = UR.fromBuffer(deflated); // UR type "bytes"
     const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1));
-    return enc.nextPart();
+    return enc.nextPart(); // deterministic first frame seeded by i+1
   }
 
   return { framesCount, frameStringAt };
 }
+
 
 // ---------- ADMIN (id-based, protected) ----------
 exports.qrEmbedFrames = asyncHandler(async (req, res) => {
