@@ -35,10 +35,7 @@ const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 // For HTML pages that need absolute links (some hosts proxy / origin)
 function baseUrl(req) {
   // Prefer explicit BASE_URL, else compute from request
-  return (
-    process.env.BASE_URL ||
-    `${req.protocol}://${req.get('host')}`
-  );
+  return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
 }
 
 // ---------- helpers ----------
@@ -110,7 +107,6 @@ function prepareUrMeta(vc, partBytesOverride) {
 
   return { framesCount, frameStringAt };
 }
-
 
 // ---------- ADMIN (id-based, protected) ----------
 exports.qrEmbedFrames = asyncHandler(async (req, res) => {
@@ -218,7 +214,6 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   res.type('html').send(html);
 });
 
-
 // ---------- PUBLIC (token-based, no auth) ----------
 exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
   const { token } = req.params;
@@ -311,16 +306,16 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
       const r = await fetch(base + '/c/'+tok+'/qr-embed/frames' + part);
       const j = await r.json();
       if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
-      N = j.framesCount || 1;
+      N = j.framesCount || 1; // UI only
       document.getElementById('len').textContent = N;
       timer = setInterval(tick, intervalMs);
       tick();
     }
     async function tick() {
-      document.getElementById('pos').textContent = (i+1);
+      document.getElementById('pos').textContent = ((i % N) + 1); // cosmetic only
       const img = document.getElementById('qr');
       img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size + part + '&_t=' + Date.now();
-      i = (i+1) % N;
+      i++; // IMPORTANT: keep increasing; do NOT modulo
     }
     start();
   </script>
@@ -391,7 +386,10 @@ exports.redeemClaim = asyncHandler(async (req, res) => {
   if (!vc) return res.status(404).json({ message: 'Credential not found' });
   if (vc.status !== 'active') return res.status(409).json({ message: 'Credential not active' });
 
-  if (!ticket.used_at) { ticket.used_at = now; await ticket.save(); }
+  if (!ticket.used_at) {
+    ticket.used_at = now;
+    await ticket.save();
+  }
 
   res.set('Cache-Control', 'no-store');
   res.json(buildVcPayload(vc));
