@@ -26,6 +26,20 @@ const MAX_QR_SIZE = 560;
 const QR_MARGIN = Number(process.env.QR_MARGIN ?? 4); // quiet zone modules
 const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 
+
+function rewriteSeqHeader(s, seq) {
+  if (seq === 'of') {
+    // 1-4 -> 1of4
+    return s.replace(/^(ur:[a-z0-9-]+\/)(\d+)-(\d+)\//i, '$1$2of$3/');
+  }
+  if (seq === 'dash') {
+    // 1of4 -> 1-4
+    return s.replace(/^(ur:[a-z0-9-]+\/)(\d+)of(\d+)\//i, '$1$2-$3/');
+  }
+  return s;
+}
+
+
 function baseUrl(req) {
   return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
 }
@@ -114,12 +128,13 @@ function prepareUrMeta(vc, { partBytesOverride, mode = 'legacy', seq = 'of' } = 
     if (!parts.length) throw new Error('Failed to encode legacy UR parts');
 
     const framesCount = parts.length;
-    function frameStringAt(i) {
-      const raw = parts[(Number(i) || 0) % framesCount];
-      if (seq === 'dash') return ofToDash(raw);
-      return raw; // default 'of'
-    }
-    return { framesCount, frameStringAt };
+  function frameStringAt(i) {
+    const local = new UrFountainEncoder(ur, partBytes);
+    for (let k = 0; k < i; k++) local.nextPartUr();
+    const part = local.nextPartUr().toString();
+    return rewriteSeqHeader(part, seq);  // <— enforce header shape
+  }
+  return { framesCount, frameStringAt };
   }
 
   // FOUNTAIN (dash by default, deterministic per-index reseed)
