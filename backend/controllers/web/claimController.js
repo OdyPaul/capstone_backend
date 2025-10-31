@@ -1,19 +1,22 @@
 // controllers/web/claimController.js
 // Offline UR QR for VC delivery + claim ticket CRUD.
 //
-// ✓ Legacy + Fountain compatibility (mode=legacy|fountain; default legacy)
 // ✓ Smaller default UR part size for easier scanning
 // ✓ Proper quiet zone & low ECL (more capacity per symbol)
-// ✓ Deterministic per-index frames (no encoder.isComplete())
-// ✓ ?txt=1 returns raw "ur:bytes/..." for debugging
+// ✓ Deterministic per-index frames without invalid indices
+// ✓ ?txt=1 switch returns raw "ur:bytes/..." for debugging
 // ✓ Admin (id) and Public (token) endpoints
 
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-const BCUR = require('@ngraveio/bc-ur');
+const BCUR = require('@ngraveio/bc-ur'); // keep the whole namespace
 const QRCode = require('qrcode');
+
+const { UR } = BCUR; // available in all versions
+// UrFountainEncoder exists in >=1.1.x; UREncoder exists in older versions
+const HasFountain = typeof BCUR.UrFountainEncoder === 'function';
 
 const ClaimTicket = require('../../models/web/claimTicket');
 const SignedVC = require('../../models/web/signedVcModel');
@@ -33,15 +36,13 @@ const MAX_QR_SIZE = 560;
 const QR_MARGIN = Number(process.env.QR_MARGIN ?? 4); // quiet zone modules
 const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 
-const UR = BCUR.UR;
-const HasFountainEncoder = !!BCUR.UrFountainEncoder;
-
-// Env default: choose legacy unless explicitly asked for fountain
-const DEFAULT_MODE = String(process.env.QR_UR_MODE || 'legacy').toLowerCase(); // 'legacy' | 'fountain'
-const DEFAULT_SEQ  = String(process.env.QR_SEQ_STYLE || 'of').toLowerCase();   // 'of' | 'dash'
+// defaults for encoding flavor
+const DEFAULT_MODE = String(process.env.QR_MODE || 'legacy'); // 'legacy' | 'fountain'
+const DEFAULT_SEQ  = String(process.env.QR_SEQ  || 'of');     // 'of' | 'dash'
 
 // For HTML pages that need absolute links (some hosts proxy / origin)
 function baseUrl(req) {
+  // Prefer explicit BASE_URL, else compute from request
   return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
 }
 
@@ -83,12 +84,82 @@ async function loadVcForTicketOr404(ticket) {
   return { vc };
 }
 
+// ---------- UR helpers (NEW) ----------
+
+function toSeqStyle(s, seq /* 'of' | 'dash' */) {
+  if (seq === 'of') {
+    // "a-b" -> "aofb"
+    return s.replace(
+      /^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i,
+      (_m, pfx, a, b, slash) => `${pfx}${a}of${b}${slash}`
+    );
+  }
+  if (seq === 'dash') {
+    // "aofb" -> "a-b"
+    return s.replace(
+      /^(ur:[a-z0-9-]+\/)(\d+)of(\d+)(\/)/i,
+      (_m, pfx, a, b, slash) => `${pfx}${a}-${b}${slash}`
+    );
+  }
+  return s;
+}
+
+function parseSeqAB(str) {
+  // returns { a, b } for "aofb" or "a-b" forms, else null
+  const m = /^ur:[a-z0-9-]+\/(\d+)(?:of|-)(\d+)\//i.exec(str);
+  if (!m) return null;
+  return { a: Number(m[1]), b: Number(m[2]) };
+}
+
+// Build all legacy parts (1..Y) once with UREncoder, return array indexed 0..Y-1
+function legacyEncodeAllParts(ur, partBytes, seqStyle) {
+  if (typeof BCUR.UREncoder !== 'function') {
+    throw new Error('No UREncoder available for legacy mode');
+  }
+
+  // Seed with 1 so we can iterate deterministically
+  const enc = new BCUR.UREncoder(ur, partBytes, 1);
+
+  const seen = new Map(); // key = a (1..Y), value = full string
+  let total = null;
+
+  // try enough cycles to capture all parts safely
+  for (let guard = 0; guard < 10000; guard++) {
+    const raw = enc.nextPart(); // string like "ur:bytes/1of4/..."
+    const str = toSeqStyle(raw, seqStyle);
+    const ab = parseSeqAB(str);
+
+    // Single-part UR (no sequence) — just return one item
+    if (!ab) {
+      return [str];
+    }
+
+    if (total == null) total = ab.b;
+    if (ab.a >= 1 && ab.a <= total) {
+      if (!seen.has(ab.a)) seen.set(ab.a, str);
+    }
+
+    if (seen.size === total) break;
+
+    if (guard > total * 3) break; // safety net
+  }
+
+  if (!total || seen.size === 0) {
+    throw new Error('Failed to build legacy UR parts');
+  }
+
+  const out = new Array(total);
+  for (let i = 1; i <= total; i++) out[i - 1] = seen.get(i) || '';
+  return out;
+}
+
 /**
- * Prepare encoder that matches requested mode/seq.
- * - mode: 'legacy' (UREncoder) | 'fountain' (UrFountainEncoder)
- * - seq:  'of' | 'dash' (only affects string formatting)
- *
- * NOTE: When mode='legacy' we produce **real legacy parts** that work with URDecoder.
+ * Deterministic per-index UR frame generation.
+ * - Deflate (raw) the CBOR payload → bytes
+ * - Either:
+ *    Legacy: prebuild valid 1..Y parts and cycle (perfectly stable)
+ *    Fountain: recreate encoder and step i times, then normalize tag style
+ * - Estimate frame count (UI hint only) when in fountain mode
  */
 function prepareUrMeta(vc, opts = {}) {
   const {
@@ -110,12 +181,12 @@ function prepareUrMeta(vc, opts = {}) {
   const ur = UR.fromBuffer(deflated); // type "bytes"
 
   // LEGACY: precompute valid "1ofY..YofY" parts once; serve by index modulo Y
-  if (mode === 'legacy' || !BCUR.UrFountainEncoder) {
-    const parts = legacyEncodeAllParts(BCUR, ur, partBytes, seq);
+  if (mode === 'legacy' || !HasFountain) {
+    const parts = legacyEncodeAllParts(ur, partBytes, seq);
     const framesCount = parts.length;
 
     function frameStringAt(i /* 0-based */) {
-      if (framesCount === 1) return parts[0]; // single part
+      if (framesCount === 1) return parts[0];
       const idx = Math.max(0, Number(i) || 0) % framesCount;
       return parts[idx];
     }
@@ -133,7 +204,7 @@ function prepareUrMeta(vc, opts = {}) {
     return toSeqStyle(s, seq);
   }
 
-  // Rough estimate for UI only
+  // Rough estimate for UI only (fountain adds overhead)
   const framesCount = Math.max(
     1,
     Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
@@ -151,11 +222,16 @@ exports.qrEmbedFrames = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
-  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
-
-  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
-  res.json({ scheme: 'ur', framesCount: meta.framesCount, mode, seq });
+  try {
+    const meta = prepareUrMeta(vcRes.vc, {
+      partBytesOverride: req.query.part,
+      mode: (req.query.mode || DEFAULT_MODE).toLowerCase(),
+      seq: (req.query.seq || DEFAULT_SEQ).toLowerCase(),
+    });
+    res.json({ scheme: 'ur', framesCount: meta.framesCount });
+  } catch (e) {
+    return res.status(500).json({ message: String(e?.message || e), stack: null });
+  }
 });
 
 exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
@@ -166,42 +242,48 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const i    = Math.max(0, Number(req.query.i) || 0);
+  const i = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
-  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
 
-  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
-  const urPart = meta.frameStringAt(i);
+  try {
+    const meta = prepareUrMeta(vcRes.vc, {
+      partBytesOverride: req.query.part,
+      mode: (req.query.mode || DEFAULT_MODE).toLowerCase(),
+      seq: (req.query.seq || DEFAULT_SEQ).toLowerCase(),
+    });
+    const urPart = meta.frameStringAt(i);
 
-  // text mode for debugging
-  if (String(req.query.txt) === '1') {
-    res.set('Cache-Control', 'no-store');
-    return res.type('text/plain').send(urPart);
+    // text mode for debugging
+    if (String(req.query.txt) === '1') {
+      res.set('Cache-Control', 'no-store');
+      return res.type('text/plain').send(urPart);
+    }
+
+    const buf = await QRCode.toBuffer(urPart, {
+      width: size,
+      margin: QR_MARGIN,
+      errorCorrectionLevel: QR_ECL,
+      color: { dark: '#000000', light: '#FFFFFF' },
+    });
+
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'private, no-store, max-age=0');
+    res.send(buf);
+  } catch (e) {
+    return res.status(500).json({ message: String(e?.message || e), stack: null });
   }
-
-  const buf = await QRCode.toBuffer(urPart, {
-    width: size,
-    margin: QR_MARGIN,
-    errorCorrectionLevel: QR_ECL,
-    color: { dark: '#000000', light: '#FFFFFF' },
-  });
-
-  res.set('Content-Type', 'image/png');
-  res.set('Cache-Control', 'private, no-store, max-age=0');
-  res.send(buf);
 });
 
 exports.qrEmbedPage = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps  = clamp(Number(req.query.fps)  || 2, 1, 8);
+  const fps = clamp(Number(req.query.fps) || 2, 1, 8);
   const intervalMs = Math.round(1000 / fps);
-
-  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
-  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
-  const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
-  const qs   = `?mode=${encodeURIComponent(mode)}&seq=${encodeURIComponent(seq)}${part}`;
+  const qs = new URLSearchParams({
+    mode: String(req.query.mode || DEFAULT_MODE),
+    seq: String(req.query.seq || DEFAULT_SEQ),
+    ...(req.query.part ? { part: String(req.query.part) } : {}),
+  }).toString();
 
   const html = `<!doctype html>
 <html lang="en">
@@ -232,25 +314,22 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
     const id = ${JSON.stringify(id)};
     const size = ${size};
     const intervalMs = ${intervalMs};
-    const qs = ${JSON.stringify(qs)}; // e.g., "?mode=legacy&seq=of&part=..."
-    let N = 0, i = 0;
+    let N = 0, i = 0, timer = null;
 
     async function start() {
-      const r = await fetch('/api/web/claims/' + id + '/qr-embed/frames' + qs);
+      const r = await fetch('/api/web/claims/' + id + '/qr-embed/frames?${qs}');
       const j = await r.json();
-      if (!r.ok) { alert('Failed: ' + (j.message || r.status)); return; }
-      N = j.framesCount || 50;
+      if (!r.ok) { alert('Failed: ' + (j.message||r.status)); return; }
+      N = j.framesCount || 50; // UI only; not a hard cap
       document.getElementById('len').textContent = N;
-      setInterval(tick, intervalMs);
+      timer = setInterval(tick, intervalMs);
       tick();
     }
     async function tick() {
       document.getElementById('pos').textContent = ((i % N) + 1);
       const img = document.getElementById('qr');
-      // append qs after &size=...; remove leading "?" when appending
-      const extra = qs ? '&' + qs.slice(1) : '';
-      img.src = '/api/web/claims/' + id + '/qr-embed/frame?i=' + i + '&size=' + size + extra + '&_t=' + Date.now();
-      i++;
+      img.src = '/api/web/claims/' + id + '/qr-embed/frame?i=' + i + '&size=' + size + '&${qs}' + '&_t=' + Date.now();
+      i++; // IMPORTANT: keep increasing; do NOT modulo
     }
     start();
   </script>
@@ -269,10 +348,16 @@ exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
-  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
-  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
-  res.json({ scheme: 'ur', framesCount: meta.framesCount, mode, seq });
+  try {
+    const meta = prepareUrMeta(vcRes.vc, {
+      partBytesOverride: req.query.part,
+      mode: (req.query.mode || DEFAULT_MODE).toLowerCase(),
+      seq: (req.query.seq || DEFAULT_SEQ).toLowerCase(),
+    });
+    res.json({ scheme: 'ur', framesCount: meta.framesCount });
+  } catch (e) {
+    return res.status(500).json({ message: String(e?.message || e), stack: null });
+  }
 });
 
 exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
@@ -283,43 +368,52 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const i    = Math.max(0, Number(req.query.i) || 0);
+  const i = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
-  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
 
-  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
-  const urPart = meta.frameStringAt(i);
+  try {
+    const meta = prepareUrMeta(vcRes.vc, {
+      partBytesOverride: req.query.part,
+      mode: (req.query.mode || DEFAULT_MODE).toLowerCase(),
+      seq: (req.query.seq || DEFAULT_SEQ).toLowerCase(),
+    });
+    const urPart = meta.frameStringAt(i);
 
-  if (String(req.query.txt) === '1') {
-    res.set('Cache-Control', 'no-store');
-    return res.type('text/plain').send(urPart);
+    // text mode for debugging
+    if (String(req.query.txt) === '1') {
+      res.set('Cache-Control', 'no-store');
+      return res.type('text/plain').send(urPart);
+    }
+
+    const buf = await QRCode.toBuffer(urPart, {
+      width: size,
+      margin: QR_MARGIN,
+      errorCorrectionLevel: QR_ECL,
+      color: { dark: '#000000', light: '#FFFFFF' },
+    });
+
+    res.set('Content-Type', 'image/png');
+    // Deterministic frames → allow short caching to avoid 429s on public pages
+    res.set('Cache-Control', 'public, max-age=300, immutable');
+    res.send(buf);
+  } catch (e) {
+    return res.status(500).json({ message: String(e?.message || e), stack: null });
   }
-
-  const buf = await QRCode.toBuffer(urPart, {
-    width: size,
-    margin: QR_MARGIN,
-    errorCorrectionLevel: QR_ECL,
-    color: { dark: '#000000', light: '#FFFFFF' },
-  });
-
-  res.set('Content-Type', 'image/png');
-  res.set('Cache-Control', 'public, max-age=300, immutable');
-  res.send(buf);
 });
 
 exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
   const { token } = req.params;
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps  = clamp(Number(req.query.fps)  || 1, 1, 8);
+  const fps = clamp(Number(req.query.fps) || 1, 1, 8); // slower is easier to scan
   const intervalMs = Math.round(1000 / fps);
 
-  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
-  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
-  const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
-  const qs   = `?mode=${encodeURIComponent(mode)}&seq=${encodeURIComponent(seq)}${part}`;
+  const qs = new URLSearchParams({
+    mode: String(req.query.mode || DEFAULT_MODE),
+    seq: String(req.query.seq || DEFAULT_SEQ),
+    ...(req.query.part ? { part: String(req.query.part) } : {}),
+  }).toString();
 
-  const base = baseUrl(req);
+  const base = baseUrl(req); // absolute to avoid cross-origin issues
 
   const html = `<!doctype html>
 <html lang="en">
@@ -351,25 +445,22 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
     const base = ${JSON.stringify(base)};
     const size = ${size};
     const intervalMs = ${intervalMs};
-    const qs = ${JSON.stringify(qs)}; // e.g., "?mode=legacy&seq=of&part=..."
-    let N = 0, i = 0;
+    let N = 0, i = 0, timer = null;
 
     async function start() {
-      const r = await fetch(base + '/c/' + tok + '/qr-embed/frames' + qs);
+      const r = await fetch(base + '/c/' + tok + '/qr-embed/frames?${qs}');
       const j = await r.json();
-      if (!r.ok) { alert('Failed: ' + (j.message || r.status)); return; }
-      N = j.framesCount || 1;
+      if (!r.ok) { alert('Failed: ' + (j.message||r.status)); return; }
+      N = j.framesCount || 1; // UI only
       document.getElementById('len').textContent = N;
-      setInterval(tick, intervalMs);
+      timer = setInterval(tick, intervalMs);
       tick();
     }
     async function tick() {
       document.getElementById('pos').textContent = ((i % N) + 1);
       const img = document.getElementById('qr');
-      // append qs after &size=...; remove leading "?" when appending
-      const extra = qs ? '&' + qs.slice(1) : '';
-      img.src = base + '/c/' + tok + '/qr-embed/frame?i=' + i + '&size=' + size + extra + '&_t=' + Date.now();
-      i++;
+      img.src = base + '/c/' + tok + '/qr-embed/frame?i=' + i + '&size=' + size + '&${qs}' + '&_t=' + Date.now();
+      i++; // IMPORTANT: keep increasing; do NOT modulo
     }
     start();
   </script>
