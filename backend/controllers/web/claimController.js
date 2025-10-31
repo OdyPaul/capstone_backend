@@ -4,14 +4,15 @@
 // ✓ Smaller default UR part size for easier scanning
 // ✓ Proper quiet zone & low ECL (more capacity per symbol)
 // ✓ Deterministic per-index frames (no encoder.isComplete())
-// ✓ ?txt=1 switch returns raw "ur:bytes/..." for debugging
+// ✓ ?txt=1 returns raw "ur:bytes/..." for debugging
+// ✓ ?seq=of forces legacy "2of14" sequence style for older scanners
 // ✓ Admin (id) and Public (token) endpoints
 
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-// IMPORTANT: don't destructure from bc-ur at top-level; we load it compatibly below
+const BCUR = require('@ngraveio/bc-ur'); // use one import; feature-detect below
 const QRCode = require('qrcode');
 
 const ClaimTicket = require('../../models/web/claimTicket');
@@ -32,38 +33,13 @@ const MAX_QR_SIZE = 560;
 const QR_MARGIN = Number(process.env.QR_MARGIN ?? 4); // quiet zone modules
 const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 
+// Prefer new Fountain classes; gracefully fall back to older names
+const HasFountainEncoder = !!BCUR.UrFountainEncoder;
+const URClass = BCUR.UR;
+
 // For HTML pages that need absolute links (some hosts proxy / origin)
 function baseUrl(req) {
-  // Prefer explicit BASE_URL, else compute from request
   return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-}
-
-// ---------- bc-ur loader (works for CJS/ESM and multiple versions) ----------
-let BCUR = null;
-function resolveBcUr(mod) {
-  if (mod?.UR || mod?.UrFountainEncoder || mod?.UREncoder) return mod;
-  if (mod?.default && (mod.default.UR || mod.default.UrFountainEncoder || mod.default.UREncoder)) {
-    return mod.default;
-  }
-  return mod || {};
-}
-function getBcUr() {
-  if (!BCUR) {
-    try {
-      // Try CJS first
-      // eslint-disable-next-line import/no-extraneous-dependencies
-      BCUR = resolveBcUr(require('@ngraveio/bc-ur'));
-    } catch {
-      // Node can require ESM too in many cases; if not, you can switch to async import.
-      try {
-        // eslint-disable-next-line global-require
-        BCUR = resolveBcUr(require('@ngraveio/bc-ur/dist/index.cjs')); // some builds expose this
-      } catch {
-        throw new Error('Cannot load @ngraveio/bc-ur. Please install it on the server.');
-      }
-    }
-  }
-  return BCUR;
 }
 
 // ---------- helpers ----------
@@ -105,14 +81,15 @@ async function loadVcForTicketOr404(ticket) {
 }
 
 /**
- * Deterministic per-index UR frame generation (compat across bc-ur versions).
+ * Deterministic per-index UR frame generation.
  * - Deflate (raw) the CBOR payload → bytes
- * - Prefer UrFountainEncoder when available (dash multipart, `nextPartUr().toString()`)
- * - Fallback to legacy UREncoder with seeded first sequence number (i+1)
+ * - Estimate frame count from deflated size and partBytes
+ * - Generate part string for index i
+ *   * New API (UrFountainEncoder): consume i frames → nextPartUr().toString()
+ *   * Old API (UREncoder): seed first sequence number = i+1 → nextPart()
+ * - Optional seq style: "2-14" (default) or force "2of14" via seqStyle='of'
  */
-function prepareUrMeta(vc, partBytesOverride) {
-  const { UR, UrFountainEncoder, UREncoder } = getBcUr();
-
+function prepareUrMeta(vc, partBytesOverride, seqStyle = 'dash') {
   const payload = buildVcPayload(vc);
   const cborBytes = cbor.encode(payload);
   const deflated = deflateRawSync(cborBytes);
@@ -123,42 +100,42 @@ function prepareUrMeta(vc, partBytesOverride) {
     MAX_PART_BYTES
   );
 
-  // Build a UR object from deflated bytes
-  let ur;
-  if (UR && typeof UR.fromBuffer === 'function') {
-    ur = UR.fromBuffer(deflated); // common in many versions
-  } else if (UR && typeof UR.fromData === 'function') {
-    ur = UR.fromData({ type: 'bytes', payload: deflated });
-  } else {
-    throw new Error('bc-ur UR factory not found');
-  }
+  const ur = URClass.fromBuffer(deflated); // type "bytes"
 
-  // Estimate for UI (UR fountain has overhead; add ~15% + a few extra)
+  // Rough estimate for UI only (fountain overhead ~15% + a few extra)
   const framesCount = Math.max(
     1,
     Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
   );
 
+  function normalizeSequenceStyle(s) {
+    if (seqStyle !== 'of') return s;
+    // Convert "ur:TYPE/<a>-<b>/" → "ur:TYPE/<a>of<b>/"
+    return s.replace(
+      /^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i,
+      (_m, pfx, a, b, slash) => `${pfx}${a}of${b}${slash}`
+    );
+  }
+
   function frameStringAt(i /* 0-based */) {
-    const idx = Math.max(0, Number(i) || 0);
-
-    // Preferred modern path
-    if (typeof UrFountainEncoder === 'function') {
-      const enc = new UrFountainEncoder(ur, partBytes);
+    // New fountain API (preferred)
+    if (HasFountainEncoder) {
+      const enc = new BCUR.UrFountainEncoder(ur, partBytes);
       // deterministically advance to the i-th frame
-      for (let k = 0; k < idx; k++) enc.nextPartUr();
-      const partUr = enc.nextPartUr(); // returns a UR object
-      return typeof partUr?.toString === 'function' ? partUr.toString() : String(partUr);
+      for (let k = 0; k < i; k++) enc.nextPartUr();
+      const partUr = enc.nextPartUr(); // UR object
+      return normalizeSequenceStyle(partUr.toString());
     }
 
-    // Legacy fallback
-    if (typeof UREncoder === 'function') {
-      // UREncoder(ur, maxFragmentLen, firstSeqNum)
-      const enc = new UREncoder(ur, partBytes, Math.max(1, idx + 1));
-      return enc.nextPart(); // returns string, often "ur:bytes/3of5/..."
+    // Legacy encoder API
+    if (BCUR.UREncoder) {
+      const enc = new BCUR.UREncoder(ur, partBytes, Math.max(1, Number(i) + 1));
+      const s = enc.nextPart(); // already a string
+      // enc.nextPart() may already be "of" style; normalize only if asked
+      return seqStyle === 'of' ? s.replace(/(\d+)-(\d+)/, '$1of$2') : s;
     }
 
-    throw new Error('No compatible UR encoder available in @ngraveio/bc-ur');
+    throw new Error('No compatible UR encoder found in @ngraveio/bc-ur');
   }
 
   return { framesCount, frameStringAt };
@@ -173,7 +150,8 @@ exports.qrEmbedFrames = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part);
+  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
+  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
   res.json({ scheme: 'ur', framesCount: meta.framesCount });
 });
 
@@ -187,8 +165,9 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
 
   const i = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
+  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part);
+  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
   const urPart = meta.frameStringAt(i);
 
   // text mode for debugging
@@ -214,6 +193,7 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
   const fps = clamp(Number(req.query.fps) || 2, 1, 8);
   const intervalMs = Math.round(1000 / fps);
+  const seq = req.query.seq === 'of' ? '&seq=of' : '';
   const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
 
   const html = `<!doctype html>
@@ -245,22 +225,23 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
     const id = ${JSON.stringify(id)};
     const size = ${size};
     const intervalMs = ${intervalMs};
-    let N = 0, i = 0, timer = null;
+    const qs = ${JSON.stringify(seq + part)};
+    let N = 0, i = 0;
 
     async function start() {
-      const r = await fetch('/api/web/claims/'+id+'/qr-embed/frames${part}');
+      const r = await fetch('/api/web/claims/'+id+'/qr-embed/frames' + qs);
       const j = await r.json();
       if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
-      N = j.framesCount || 50; // for UI only; not a hard cap
+      N = j.framesCount || 50; // UI only
       document.getElementById('len').textContent = N;
-      timer = setInterval(tick, intervalMs);
+      setInterval(tick, intervalMs);
       tick();
     }
     async function tick() {
-      document.getElementById('pos').textContent = ((i % N) + 1); // cosmetic only
+      document.getElementById('pos').textContent = ((i % N) + 1);
       const img = document.getElementById('qr');
-      img.src = '/api/web/claims/'+id+'/qr-embed/frame?i='+i+'&size='+size+'${part}'+'&_t='+(Date.now());
-      i++; // IMPORTANT: keep increasing; do NOT modulo
+      img.src = '/api/web/claims/'+id+'/qr-embed/frame?i='+i+'&size='+size + qs + '&_t=' + Date.now();
+      i++;
     }
     start();
   </script>
@@ -279,7 +260,8 @@ exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part);
+  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
+  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
   res.json({ scheme: 'ur', framesCount: meta.framesCount });
 });
 
@@ -293,8 +275,9 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
 
   const i = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
+  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part);
+  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
   const urPart = meta.frameStringAt(i);
 
   // text mode for debugging
@@ -321,6 +304,7 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
   const fps = clamp(Number(req.query.fps) || 1, 1, 8); // slower is easier to scan
   const intervalMs = Math.round(1000 / fps);
+  const seq = req.query.seq === 'of' ? '&seq=of' : '';
   const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
 
   const base = baseUrl(req); // absolute to avoid cross-origin issues
@@ -355,23 +339,23 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
     const base = ${JSON.stringify(base)};
     const size = ${size};
     const intervalMs = ${intervalMs};
-    const part = ${JSON.stringify(part)};
-    let N = 0, i = 0, timer = null;
+    const qs = ${JSON.stringify(seq + part)};
+    let N = 0, i = 0;
 
     async function start() {
-      const r = await fetch(base + '/c/'+tok+'/qr-embed/frames' + part);
+      const r = await fetch(base + '/c/'+tok+'/qr-embed/frames' + qs);
       const j = await r.json();
       if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
       N = j.framesCount || 1; // UI only
       document.getElementById('len').textContent = N;
-      timer = setInterval(tick, intervalMs);
+      setInterval(tick, intervalMs);
       tick();
     }
     async function tick() {
-      document.getElementById('pos').textContent = ((i % N) + 1); // cosmetic only
+      document.getElementById('pos').textContent = ((i % N) + 1);
       const img = document.getElementById('qr');
-      img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size + part + '&_t=' + Date.now();
-      i++; // IMPORTANT: keep increasing; do NOT modulo
+      img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size + qs + '&_t=' + Date.now();
+      i++;
     }
     start();
   </script>
