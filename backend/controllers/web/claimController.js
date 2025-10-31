@@ -11,7 +11,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-const { UR, UrFountainEncoder } = require('@ngraveio/bc-ur');
+// IMPORTANT: don't destructure from bc-ur at top-level; we load it compatibly below
 const QRCode = require('qrcode');
 
 const ClaimTicket = require('../../models/web/claimTicket');
@@ -36,6 +36,34 @@ const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 function baseUrl(req) {
   // Prefer explicit BASE_URL, else compute from request
   return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+}
+
+// ---------- bc-ur loader (works for CJS/ESM and multiple versions) ----------
+let BCUR = null;
+function resolveBcUr(mod) {
+  if (mod?.UR || mod?.UrFountainEncoder || mod?.UREncoder) return mod;
+  if (mod?.default && (mod.default.UR || mod.default.UrFountainEncoder || mod.default.UREncoder)) {
+    return mod.default;
+  }
+  return mod || {};
+}
+function getBcUr() {
+  if (!BCUR) {
+    try {
+      // Try CJS first
+      // eslint-disable-next-line import/no-extraneous-dependencies
+      BCUR = resolveBcUr(require('@ngraveio/bc-ur'));
+    } catch {
+      // Node can require ESM too in many cases; if not, you can switch to async import.
+      try {
+        // eslint-disable-next-line global-require
+        BCUR = resolveBcUr(require('@ngraveio/bc-ur/dist/index.cjs')); // some builds expose this
+      } catch {
+        throw new Error('Cannot load @ngraveio/bc-ur. Please install it on the server.');
+      }
+    }
+  }
+  return BCUR;
 }
 
 // ---------- helpers ----------
@@ -77,30 +105,60 @@ async function loadVcForTicketOr404(ticket) {
 }
 
 /**
- * Deterministic per-index UR frame generation.
+ * Deterministic per-index UR frame generation (compat across bc-ur versions).
  * - Deflate (raw) the CBOR payload → bytes
- * - Estimate frame count from deflated size and partBytes
- * - Generate part string for index i by seeding firstSeqNum = i+1
+ * - Prefer UrFountainEncoder when available (dash multipart, `nextPartUr().toString()`)
+ * - Fallback to legacy UREncoder with seeded first sequence number (i+1)
  */
 function prepareUrMeta(vc, partBytesOverride) {
+  const { UR, UrFountainEncoder, UREncoder } = getBcUr();
+
   const payload = buildVcPayload(vc);
   const cborBytes = cbor.encode(payload);
   const deflated = deflateRawSync(cborBytes);
 
-  const partBytes = clamp(Number(partBytesOverride) || DEFAULT_PART_BYTES, MIN_PART_BYTES, MAX_PART_BYTES);
+  const partBytes = clamp(
+    Number(partBytesOverride) || DEFAULT_PART_BYTES,
+    MIN_PART_BYTES,
+    MAX_PART_BYTES
+  );
 
-  // Create UR and fountain encoder
-  const ur = UR.fromBuffer(deflated); // type "bytes"
-  const enc = new UrFountainEncoder(ur, partBytes);
+  // Build a UR object from deflated bytes
+  let ur;
+  if (UR && typeof UR.fromBuffer === 'function') {
+    ur = UR.fromBuffer(deflated); // common in many versions
+  } else if (UR && typeof UR.fromData === 'function') {
+    ur = UR.fromData({ type: 'bytes', payload: deflated });
+  } else {
+    throw new Error('bc-ur UR factory not found');
+  }
 
-  // Rough estimate for UI (unchanged)
-  const framesCount = Math.max(1, Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3);
+  // Estimate for UI (UR fountain has overhead; add ~15% + a few extra)
+  const framesCount = Math.max(
+    1,
+    Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
+  );
 
-  function frameStringAt(i) {
-    // reseed by consuming i parts
-    const local = new UrFountainEncoder(ur, partBytes);
-    for (let k = 0; k < i; k++) local.nextPartUr();
-    return local.nextPartUr().toString(); // dash format e.g. ur:bytes/3-2/...
+  function frameStringAt(i /* 0-based */) {
+    const idx = Math.max(0, Number(i) || 0);
+
+    // Preferred modern path
+    if (typeof UrFountainEncoder === 'function') {
+      const enc = new UrFountainEncoder(ur, partBytes);
+      // deterministically advance to the i-th frame
+      for (let k = 0; k < idx; k++) enc.nextPartUr();
+      const partUr = enc.nextPartUr(); // returns a UR object
+      return typeof partUr?.toString === 'function' ? partUr.toString() : String(partUr);
+    }
+
+    // Legacy fallback
+    if (typeof UREncoder === 'function') {
+      // UREncoder(ur, maxFragmentLen, firstSeqNum)
+      const enc = new UREncoder(ur, partBytes, Math.max(1, idx + 1));
+      return enc.nextPart(); // returns string, often "ur:bytes/3of5/..."
+    }
+
+    throw new Error('No compatible UR encoder available in @ngraveio/bc-ur');
   }
 
   return { framesCount, frameStringAt };
