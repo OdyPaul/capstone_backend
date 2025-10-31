@@ -93,8 +93,8 @@ async function loadVcForTicketOr404(ticket) {
 function prepareUrMeta(vc, opts = {}) {
   const {
     partBytesOverride,
-    mode = DEFAULT_MODE, // default to legacy to match the app
-    seq = DEFAULT_SEQ,   // default 'of'
+    mode = DEFAULT_MODE, // 'legacy' | 'fountain'
+    seq = DEFAULT_SEQ,   // 'of' | 'dash'
   } = opts;
 
   const payload = buildVcPayload(vc);
@@ -109,48 +109,35 @@ function prepareUrMeta(vc, opts = {}) {
 
   const ur = UR.fromBuffer(deflated); // type "bytes"
 
-  // Rough estimate for UI only (fountain overhead ~15% + a few extra)
+  // LEGACY: precompute valid "1ofY..YofY" parts once; serve by index modulo Y
+  if (mode === 'legacy' || !BCUR.UrFountainEncoder) {
+    const parts = legacyEncodeAllParts(BCUR, ur, partBytes, seq);
+    const framesCount = parts.length;
+
+    function frameStringAt(i /* 0-based */) {
+      if (framesCount === 1) return parts[0]; // single part
+      const idx = Math.max(0, Number(i) || 0) % framesCount;
+      return parts[idx];
+    }
+
+    return { framesCount, frameStringAt };
+  }
+
+  // FOUNTAIN: reproducible stepping by consuming i frames on a fresh encoder
+  function frameStringAt(i /* 0-based */) {
+    const enc = new BCUR.UrFountainEncoder(ur, partBytes);
+    const steps = Math.max(0, Number(i) || 0);
+    for (let k = 0; k < steps; k++) enc.nextPartUr();
+    const partUr = enc.nextPartUr();
+    const s = typeof partUr?.toString === 'function' ? partUr.toString() : String(partUr || '');
+    return toSeqStyle(s, seq);
+  }
+
+  // Rough estimate for UI only
   const framesCount = Math.max(
     1,
     Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
   );
-
-  function toSeqStyle(s) {
-    if (seq === 'of') {
-      // Convert "a-b" -> "aofb"
-      return s.replace(
-        /^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i,
-        (_m, pfx, a, b, slash) => `${pfx}${a}of${b}${slash}`
-      );
-    }
-    if (seq === 'dash') {
-      // Convert "aofb" -> "a-b"
-      return s.replace(
-        /^(ur:[a-z0-9-]+\/)(\d+)of(\d+)(\/)/i,
-        (_m, pfx, a, b, slash) => `${pfx}${a}-${b}${slash}`
-      );
-    }
-    return s;
-  }
-
-  function frameStringAt(i /* 0-based */) {
-    const idx = Math.max(0, Number(i) || 0);
-
-    // LEGACY ENCODER (works with old URDecoder)
-    if (mode === 'legacy' || !HasFountainEncoder) {
-      if (!BCUR.UREncoder) throw new Error('No UREncoder available for legacy mode');
-      const enc = new BCUR.UREncoder(ur, partBytes, Math.max(1, idx + 1)); // seed = i+1
-      const s = enc.nextPart(); // typically already "of" style
-      return toSeqStyle(s);
-    }
-
-    // FOUNTAIN ENCODER (modern)
-    const enc = new BCUR.UrFountainEncoder(ur, partBytes);
-    for (let k = 0; k < idx; k++) enc.nextPartUr();
-    const partUr = enc.nextPartUr();
-    const s = typeof partUr?.toString === 'function' ? partUr.toString() : String(partUr || '');
-    return toSeqStyle(s);
-  }
 
   return { framesCount, frameStringAt };
 }
