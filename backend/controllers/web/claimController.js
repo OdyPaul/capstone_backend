@@ -11,7 +11,7 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-const { UR, UREncoder } = require('@ngraveio/bc-ur');
+const { UR, UrFountainEncoder } = require('@ngraveio/bc-ur');
 const QRCode = require('qrcode');
 
 const ClaimTicket = require('../../models/web/claimTicket');
@@ -87,22 +87,20 @@ function prepareUrMeta(vc, partBytesOverride) {
   const cborBytes = cbor.encode(payload);
   const deflated = deflateRawSync(cborBytes);
 
-  const partBytes = clamp(
-    Number(partBytesOverride) || DEFAULT_PART_BYTES,
-    MIN_PART_BYTES,
-    MAX_PART_BYTES
-  );
+  const partBytes = clamp(Number(partBytesOverride) || DEFAULT_PART_BYTES, MIN_PART_BYTES, MAX_PART_BYTES);
 
-  // Estimate for UI (UR fountain has overhead; add ~15% + a few extra)
-  const framesCount = Math.max(
-    1,
-    Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
-  );
+  // Create UR and fountain encoder
+  const ur = UR.fromBuffer(deflated); // type "bytes"
+  const enc = new UrFountainEncoder(ur, partBytes);
 
-  function frameStringAt(i /* 0-based */) {
-    const ur = UR.fromBuffer(deflated); // UR type "bytes"
-    const enc = new UREncoder(ur, partBytes, Math.max(1, (Number(i) || 0) + 1));
-    return enc.nextPart(); // deterministic first frame seeded by i+1
+  // Rough estimate for UI (unchanged)
+  const framesCount = Math.max(1, Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3);
+
+  function frameStringAt(i) {
+    // reseed by consuming i parts
+    const local = new UrFountainEncoder(ur, partBytes);
+    for (let k = 0; k < i; k++) local.nextPartUr();
+    return local.nextPartUr().toString(); // dash format e.g. ur:bytes/3-2/...
   }
 
   return { framesCount, frameStringAt };
