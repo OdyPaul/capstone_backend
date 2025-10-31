@@ -5,7 +5,12 @@ const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-const { UR, UREncoder, UrFountainEncoder } = require('@ngraveio/bc-ur');
+const {
+  UR,
+  UREncoder,
+  UrFountainEncoder,
+  URFountainEncoder,
+} = require('@ngraveio/bc-ur');
 const QRCode = require('qrcode');
 
 const ClaimTicket = require('../../models/web/claimTicket');
@@ -26,19 +31,14 @@ const MAX_QR_SIZE = 560;
 const QR_MARGIN = Number(process.env.QR_MARGIN ?? 4); // quiet zone modules
 const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 
+// Handle both possible class names from @ngraveio/bc-ur
+const FountainEncoder = UrFountainEncoder || URFountainEncoder;
 
-function rewriteSeqHeader(s, seq) {
-  if (seq === 'of') {
-    // 1-4 -> 1of4
-    return s.replace(/^(ur:[a-z0-9-]+\/)(\d+)-(\d+)\//i, '$1$2of$3/');
-  }
-  if (seq === 'dash') {
-    // 1of4 -> 1-4
-    return s.replace(/^(ur:[a-z0-9-]+\/)(\d+)of(\d+)\//i, '$1$2-$3/');
-  }
-  return s;
-}
-
+// ---- header shims (style only; payload is identical) ----
+const ofToDash = (s) =>
+  s.replace(/^(ur:[a-z0-9-]+\/)(\d+)of(\d+)(\/)/i, (_m, p, a, b, sl) => `${p}${a}-${b}${sl}`);
+const dashToOf = (s) =>
+  s.replace(/^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i, (_m, p, a, b, sl) => `${p}${a}of${b}${sl}`);
 
 function baseUrl(req) {
   return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
@@ -82,75 +82,77 @@ async function loadVcForTicketOr404(ticket) {
   return { vc };
 }
 
-// ---- string shims (header style) ----
-const ofToDash = (s) =>
-  s.replace(/^(ur:[a-z0-9-]+\/)(\d+)of(\d+)(\/)/i, (_m, p, a, b, sl) => `${p}${a}-${b}${sl}`);
-const dashToOf = (s) =>
-  s.replace(/^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i, (_m, p, a, b, sl) => `${p}${a}of${b}${sl}`);
-
 // ---------- UR meta / frame generation ----------
-// mode: 'legacy' (UREncoder 1ofN) | 'fountain' (UrFountainEncoder, dash)
-// seq:  'of' | 'dash'   -> only affects the emitted text header; payload is identical
-function prepareUrMeta(vc, { partBytesOverride, mode = 'legacy', seq = 'of' } = {}) {
+// prepareUrMeta(vc, { partBytesOverride, mode: 'legacy'|'fountain', seq: 'of'|'dash' })
+function prepareUrMeta(vc, opts = {}) {
+  const {
+    partBytesOverride,
+    mode = 'legacy',
+    seq = 'of',
+  } = opts;
+
   const payload = buildVcPayload(vc);
   const cborBytes = cbor.encode(payload);
   const deflated = deflateRawSync(cborBytes);
 
-  const partBytes = clamp(Number(partBytesOverride) || DEFAULT_PART_BYTES, MIN_PART_BYTES, MAX_PART_BYTES);
+  const partBytes = clamp(
+    Number(partBytesOverride) || DEFAULT_PART_BYTES,
+    MIN_PART_BYTES,
+    MAX_PART_BYTES
+  );
   const ur = UR.fromBuffer(deflated); // type "bytes"
 
-  // LEGACY 1ofN (deterministic, finite)
+  // ---- LEGACY 1ofN (deterministic, finite) ----
   if (String(mode) === 'legacy') {
     if (typeof UREncoder !== 'function') {
       throw new Error('UREncoder missing: install @ngraveio/bc-ur >= 1.1.13');
     }
     const enc = new UREncoder(ur, partBytes);
 
-    // Generate all parts once so we know exact N and can index deterministically.
+    // Generate all parts up-front so we know exact N
     const parts = [];
     const MAX_GUARD = 8192;
     let guard = 0;
     while (guard++ < MAX_GUARD) {
-      const p = enc.nextPart(); // returns a UR object
-      const s = String(p.toString());
+      const p = enc.nextPart();          // UR object
+      const s = String(p.toString());    // "ur:bytes/1of4/..."
       parts.push(s);
 
-      // Parse "aofb" to know N; stop when we’ve seen b parts.
       const m = s.match(/\/(\d+)of(\d+)\//i);
-      if (m) {
-        const a = Number(m[1]), b = Number(m[2]);
-        if (parts.length >= b) break; // we now have all parts 1..b
-      } else {
-        // single-part; stop immediately
-        break;
-      }
+      if (!m) break;                     // single-part
+      const b = Number(m[2]);
+      if (parts.length >= b) break;      // collected 1..b
     }
     if (!parts.length) throw new Error('Failed to encode legacy UR parts');
 
     const framesCount = parts.length;
-  function frameStringAt(i) {
-    const local = new UrFountainEncoder(ur, partBytes);
-    for (let k = 0; k < i; k++) local.nextPartUr();
-    const part = local.nextPartUr().toString();
-    return rewriteSeqHeader(part, seq);  // <— enforce header shape
-  }
-  return { framesCount, frameStringAt };
+    function frameStringAt(i) {
+      const idx = Math.max(0, Number(i) || 0) % framesCount;
+      let out = parts[idx];              // always "aofb" from UREncoder
+      if (seq === 'dash') out = ofToDash(out); // convert to "a-b" if requested
+      return out;
+    }
+
+    return { framesCount, frameStringAt };
   }
 
-  // FOUNTAIN (dash by default, deterministic per-index reseed)
-  const enc = new UrFountainEncoder(ur, partBytes);
+  // ---- FOUNTAIN (dash by default; deterministic by reseeding per index) ----
+  if (typeof FountainEncoder !== 'function') {
+    throw new Error('Fountain encoder missing: install @ngraveio/bc-ur >= 1.1.13');
+  }
 
-  // Rough estimate for UI (unchanged)
+  // Estimate for UI; actual frames are streamed
   const framesCount = Math.max(
     1,
     Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
   );
 
   function frameStringAt(i) {
-    const local = new UrFountainEncoder(ur, partBytes);
+    const local = new FountainEncoder(ur, partBytes);
     for (let k = 0; k < (Number(i) || 0); k++) local.nextPartUr();
-    const s = local.nextPartUr().toString(); // "ur:bytes/3-10/..."
-    return seq === 'of' ? dashToOf(s) : s;
+    let s = local.nextPartUr().toString(); // "ur:bytes/3-10/..."
+    if (seq === 'of') s = dashToOf(s);     // style cast to "aofb" if requested
+    return s;
   }
 
   return { framesCount, frameStringAt };
@@ -192,7 +194,7 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   if (String(req.query.txt) === '1') {
     res.set('Cache-Control', 'no-store');
     return res.type('text/plain').send(urPart);
-    }
+  }
 
   const buf = await QRCode.toBuffer(urPart, {
     width: size,
@@ -378,7 +380,7 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
   res.type('html').send(html);
 });
 
-// ---------- create / redeem / admin list (unchanged from your version) ----------
+// ---------- create / redeem / admin list ----------
 exports.createClaim = asyncHandler(async (req, res) => {
   const { credId, ttlDays = 7, singleActive = true } = req.body;
   const vc = await SignedVC.findById(credId).select('_id status');
