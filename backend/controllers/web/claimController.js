@@ -1,18 +1,18 @@
 // controllers/web/claimController.js
 // Offline UR QR for VC delivery + claim ticket CRUD.
 //
+// ✓ Legacy + Fountain compatibility (mode=legacy|fountain; default legacy)
 // ✓ Smaller default UR part size for easier scanning
 // ✓ Proper quiet zone & low ECL (more capacity per symbol)
 // ✓ Deterministic per-index frames (no encoder.isComplete())
 // ✓ ?txt=1 returns raw "ur:bytes/..." for debugging
-// ✓ ?seq=of forces legacy "2of14" sequence style for older scanners
 // ✓ Admin (id) and Public (token) endpoints
 
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const cbor = require('cbor');
 const { deflateRawSync } = require('zlib');
-const BCUR = require('@ngraveio/bc-ur'); // use one import; feature-detect below
+const BCUR = require('@ngraveio/bc-ur');
 const QRCode = require('qrcode');
 
 const ClaimTicket = require('../../models/web/claimTicket');
@@ -33,9 +33,12 @@ const MAX_QR_SIZE = 560;
 const QR_MARGIN = Number(process.env.QR_MARGIN ?? 4); // quiet zone modules
 const QR_ECL = String(process.env.QR_ECL || 'L').toUpperCase(); // L|M|Q|H
 
-// Prefer new Fountain classes; gracefully fall back to older names
+const UR = BCUR.UR;
 const HasFountainEncoder = !!BCUR.UrFountainEncoder;
-const URClass = BCUR.UR;
+
+// Env default: choose legacy unless explicitly asked for fountain
+const DEFAULT_MODE = String(process.env.QR_UR_MODE || 'legacy').toLowerCase(); // 'legacy' | 'fountain'
+const DEFAULT_SEQ  = String(process.env.QR_SEQ_STYLE || 'of').toLowerCase();   // 'of' | 'dash'
 
 // For HTML pages that need absolute links (some hosts proxy / origin)
 function baseUrl(req) {
@@ -81,15 +84,19 @@ async function loadVcForTicketOr404(ticket) {
 }
 
 /**
- * Deterministic per-index UR frame generation.
- * - Deflate (raw) the CBOR payload → bytes
- * - Estimate frame count from deflated size and partBytes
- * - Generate part string for index i
- *   * New API (UrFountainEncoder): consume i frames → nextPartUr().toString()
- *   * Old API (UREncoder): seed first sequence number = i+1 → nextPart()
- * - Optional seq style: "2-14" (default) or force "2of14" via seqStyle='of'
+ * Prepare encoder that matches requested mode/seq.
+ * - mode: 'legacy' (UREncoder) | 'fountain' (UrFountainEncoder)
+ * - seq:  'of' | 'dash' (only affects string formatting)
+ *
+ * NOTE: When mode='legacy' we produce **real legacy parts** that work with URDecoder.
  */
-function prepareUrMeta(vc, partBytesOverride, seqStyle = 'dash') {
+function prepareUrMeta(vc, opts = {}) {
+  const {
+    partBytesOverride,
+    mode = DEFAULT_MODE, // default to legacy to match the app
+    seq = DEFAULT_SEQ,   // default 'of'
+  } = opts;
+
   const payload = buildVcPayload(vc);
   const cborBytes = cbor.encode(payload);
   const deflated = deflateRawSync(cborBytes);
@@ -100,7 +107,7 @@ function prepareUrMeta(vc, partBytesOverride, seqStyle = 'dash') {
     MAX_PART_BYTES
   );
 
-  const ur = URClass.fromBuffer(deflated); // type "bytes"
+  const ur = UR.fromBuffer(deflated); // type "bytes"
 
   // Rough estimate for UI only (fountain overhead ~15% + a few extra)
   const framesCount = Math.max(
@@ -108,34 +115,41 @@ function prepareUrMeta(vc, partBytesOverride, seqStyle = 'dash') {
     Math.ceil((deflated.length / Math.max(1, partBytes - 8)) * 1.15) + 3
   );
 
-  function normalizeSequenceStyle(s) {
-    if (seqStyle !== 'of') return s;
-    // Convert "ur:TYPE/<a>-<b>/" → "ur:TYPE/<a>of<b>/"
-    return s.replace(
-      /^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i,
-      (_m, pfx, a, b, slash) => `${pfx}${a}of${b}${slash}`
-    );
+  function toSeqStyle(s) {
+    if (seq === 'of') {
+      // Convert "a-b" -> "aofb"
+      return s.replace(
+        /^(ur:[a-z0-9-]+\/)(\d+)-(\d+)(\/)/i,
+        (_m, pfx, a, b, slash) => `${pfx}${a}of${b}${slash}`
+      );
+    }
+    if (seq === 'dash') {
+      // Convert "aofb" -> "a-b"
+      return s.replace(
+        /^(ur:[a-z0-9-]+\/)(\d+)of(\d+)(\/)/i,
+        (_m, pfx, a, b, slash) => `${pfx}${a}-${b}${slash}`
+      );
+    }
+    return s;
   }
 
   function frameStringAt(i /* 0-based */) {
-    // New fountain API (preferred)
-    if (HasFountainEncoder) {
-      const enc = new BCUR.UrFountainEncoder(ur, partBytes);
-      // deterministically advance to the i-th frame
-      for (let k = 0; k < i; k++) enc.nextPartUr();
-      const partUr = enc.nextPartUr(); // UR object
-      return normalizeSequenceStyle(partUr.toString());
+    const idx = Math.max(0, Number(i) || 0);
+
+    // LEGACY ENCODER (works with old URDecoder)
+    if (mode === 'legacy' || !HasFountainEncoder) {
+      if (!BCUR.UREncoder) throw new Error('No UREncoder available for legacy mode');
+      const enc = new BCUR.UREncoder(ur, partBytes, Math.max(1, idx + 1)); // seed = i+1
+      const s = enc.nextPart(); // typically already "of" style
+      return toSeqStyle(s);
     }
 
-    // Legacy encoder API
-    if (BCUR.UREncoder) {
-      const enc = new BCUR.UREncoder(ur, partBytes, Math.max(1, Number(i) + 1));
-      const s = enc.nextPart(); // already a string
-      // enc.nextPart() may already be "of" style; normalize only if asked
-      return seqStyle === 'of' ? s.replace(/(\d+)-(\d+)/, '$1of$2') : s;
-    }
-
-    throw new Error('No compatible UR encoder found in @ngraveio/bc-ur');
+    // FOUNTAIN ENCODER (modern)
+    const enc = new BCUR.UrFountainEncoder(ur, partBytes);
+    for (let k = 0; k < idx; k++) enc.nextPartUr();
+    const partUr = enc.nextPartUr();
+    const s = typeof partUr?.toString === 'function' ? partUr.toString() : String(partUr || '');
+    return toSeqStyle(s);
   }
 
   return { framesCount, frameStringAt };
@@ -150,9 +164,11 @@ exports.qrEmbedFrames = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
-  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
-  res.json({ scheme: 'ur', framesCount: meta.framesCount });
+  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
+  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
+
+  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
+  res.json({ scheme: 'ur', framesCount: meta.framesCount, mode, seq });
 });
 
 exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
@@ -163,11 +179,12 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const i = Math.max(0, Number(req.query.i) || 0);
+  const i    = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
+  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
+  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
+  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
   const urPart = meta.frameStringAt(i);
 
   // text mode for debugging
@@ -191,10 +208,13 @@ exports.qrEmbedFramePng = asyncHandler(async (req, res) => {
 exports.qrEmbedPage = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps = clamp(Number(req.query.fps) || 2, 1, 8);
+  const fps  = clamp(Number(req.query.fps)  || 2, 1, 8);
   const intervalMs = Math.round(1000 / fps);
-  const seq = req.query.seq === 'of' ? '&seq=of' : '';
+
+  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
+  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
   const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
+  const qs   = `?mode=${encodeURIComponent(mode)}&seq=${encodeURIComponent(seq)}${part}`;
 
   const html = `<!doctype html>
 <html lang="en">
@@ -225,14 +245,14 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
     const id = ${JSON.stringify(id)};
     const size = ${size};
     const intervalMs = ${intervalMs};
-    const qs = ${JSON.stringify(seq + part)};
+    const qs = ${JSON.stringify(qs)}; // e.g., "?mode=legacy&seq=of&part=..."
     let N = 0, i = 0;
 
     async function start() {
-      const r = await fetch('/api/web/claims/'+id+'/qr-embed/frames' + qs);
+      const r = await fetch('/api/web/claims/' + id + '/qr-embed/frames' + qs);
       const j = await r.json();
-      if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
-      N = j.framesCount || 50; // UI only
+      if (!r.ok) { alert('Failed: ' + (j.message || r.status)); return; }
+      N = j.framesCount || 50;
       document.getElementById('len').textContent = N;
       setInterval(tick, intervalMs);
       tick();
@@ -240,7 +260,9 @@ exports.qrEmbedPage = asyncHandler(async (req, res) => {
     async function tick() {
       document.getElementById('pos').textContent = ((i % N) + 1);
       const img = document.getElementById('qr');
-      img.src = '/api/web/claims/'+id+'/qr-embed/frame?i='+i+'&size='+size + qs + '&_t=' + Date.now();
+      // append qs after &size=...; remove leading "?" when appending
+      const extra = qs ? '&' + qs.slice(1) : '';
+      img.src = '/api/web/claims/' + id + '/qr-embed/frame?i=' + i + '&size=' + size + extra + '&_t=' + Date.now();
       i++;
     }
     start();
@@ -260,9 +282,10 @@ exports.qrEmbedFramesByToken = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
-  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
-  res.json({ scheme: 'ur', framesCount: meta.framesCount });
+  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
+  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
+  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
+  res.json({ scheme: 'ur', framesCount: meta.framesCount, mode, seq });
 });
 
 exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
@@ -273,14 +296,14 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
   const vcRes = await loadVcForTicketOr404(ticket);
   if (vcRes.error) return res.status(vcRes.error.code).json({ message: vcRes.error.msg });
 
-  const i = Math.max(0, Number(req.query.i) || 0);
+  const i    = Math.max(0, Number(req.query.i) || 0);
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const seqStyle = (req.query.seq === 'of') ? 'of' : 'dash';
+  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
+  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
 
-  const meta = prepareUrMeta(vcRes.vc, req.query.part, seqStyle);
+  const meta = prepareUrMeta(vcRes.vc, { partBytesOverride: req.query.part, mode, seq });
   const urPart = meta.frameStringAt(i);
 
-  // text mode for debugging
   if (String(req.query.txt) === '1') {
     res.set('Cache-Control', 'no-store');
     return res.type('text/plain').send(urPart);
@@ -294,7 +317,6 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
   });
 
   res.set('Content-Type', 'image/png');
-  // Deterministic frames → allow short caching to avoid 429s on public pages
   res.set('Cache-Control', 'public, max-age=300, immutable');
   res.send(buf);
 });
@@ -302,12 +324,15 @@ exports.qrEmbedFramePngByToken = asyncHandler(async (req, res) => {
 exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
   const { token } = req.params;
   const size = clamp(Number(req.query.size) || DEFAULT_QR_SIZE, MIN_QR_SIZE, MAX_QR_SIZE);
-  const fps = clamp(Number(req.query.fps) || 1, 1, 8); // slower is easier to scan
+  const fps  = clamp(Number(req.query.fps)  || 1, 1, 8);
   const intervalMs = Math.round(1000 / fps);
-  const seq = req.query.seq === 'of' ? '&seq=of' : '';
-  const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
 
-  const base = baseUrl(req); // absolute to avoid cross-origin issues
+  const mode = (req.query.mode || DEFAULT_MODE).toLowerCase();
+  const seq  = (req.query.seq  || DEFAULT_SEQ ).toLowerCase();
+  const part = req.query.part ? `&part=${encodeURIComponent(req.query.part)}` : '';
+  const qs   = `?mode=${encodeURIComponent(mode)}&seq=${encodeURIComponent(seq)}${part}`;
+
+  const base = baseUrl(req);
 
   const html = `<!doctype html>
 <html lang="en">
@@ -339,14 +364,14 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
     const base = ${JSON.stringify(base)};
     const size = ${size};
     const intervalMs = ${intervalMs};
-    const qs = ${JSON.stringify(seq + part)};
+    const qs = ${JSON.stringify(qs)}; // e.g., "?mode=legacy&seq=of&part=..."
     let N = 0, i = 0;
 
     async function start() {
-      const r = await fetch(base + '/c/'+tok+'/qr-embed/frames' + qs);
+      const r = await fetch(base + '/c/' + tok + '/qr-embed/frames' + qs);
       const j = await r.json();
-      if (!r.ok) { alert('Failed: '+(j.message||r.status)); return; }
-      N = j.framesCount || 1; // UI only
+      if (!r.ok) { alert('Failed: ' + (j.message || r.status)); return; }
+      N = j.framesCount || 1;
       document.getElementById('len').textContent = N;
       setInterval(tick, intervalMs);
       tick();
@@ -354,7 +379,9 @@ exports.qrEmbedPageByToken = asyncHandler(async (req, res) => {
     async function tick() {
       document.getElementById('pos').textContent = ((i % N) + 1);
       const img = document.getElementById('qr');
-      img.src = base + '/c/'+tok+'/qr-embed/frame?i='+i+'&size='+size + qs + '&_t=' + Date.now();
+      // append qs after &size=...; remove leading "?" when appending
+      const extra = qs ? '&' + qs.slice(1) : '';
+      img.src = base + '/c/' + tok + '/qr-embed/frame?i=' + i + '&size=' + size + extra + '&_t=' + Date.now();
       i++;
     }
     start();
