@@ -218,23 +218,24 @@ exports.list = async function list(req, res) {
 // POST /api/mobile/claim-queue/redeem-one
 // body: { token }
 exports.redeemOne = async function redeemOne(req, res) {
+  const userId = req.user?._id?.toString(); // <-- move outside try so catch can use it
   try {
     if (!redis) return res.status(503).json({ message: 'Queue unavailable' });
-    const userId = req.user?._id?.toString();
     const { token } = req.body || {};
     if (!token) return res.status(400).json({ message: 'token required' });
 
     const payload = await redeemTokenForUser(token, userId);
     await removeFromQueue(userId, token);
     return res.json({ ok: true, payload });
- } catch (e) {
-  const status = e.status || 500;
-  if (status === 404 || status === 410) {
-    try { await removeFromQueue(userId, req.body?.token); } catch {}
+  } catch (e) {
+    const status = e.status || 500;
+    if (status === 404 || status === 410) {
+      try { await removeFromQueue(userId, req.body?.token); } catch {}
+    }
+    return res.status(status).json({ ok: false, message: e.message || 'redeem failed' });
   }
-  return res.status(status).json({ ok: false, message: e.message || 'redeem failed' });
-}
 };
+
 
 // POST /api/mobile/claim-queue/redeem-all
 // Redeems everything in the user’s queue; returns per-token results.
