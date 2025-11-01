@@ -40,6 +40,7 @@ const signedVcSchema = new mongoose.Schema({
     anchored_at: { type: Date },
     merkle_proof: { type: [String], default: [] },
   },
+  claimed_at: { type: Date, default: null, index: true },
 }, { timestamps: true });
 
 signedVcSchema.index({ student_id: 1 });

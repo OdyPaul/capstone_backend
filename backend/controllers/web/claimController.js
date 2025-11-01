@@ -68,26 +68,36 @@ exports.redeemClaim = asyncHandler(async (req, res) => {
   }
 
   const vc = await SignedVC.findById(ticket.cred_id)
-    .select('jws alg kid digest salt anchoring status');
+    .select('_id jws alg kid digest salt anchoring status claimed_at');
   if (!vc) return res.status(404).json({ message: 'Credential not found' });
   if (vc.status !== 'active') return res.status(409).json({ message: 'Credential not active' });
 
+  // consume the ticket once
   if (!ticket.used_at) {
     ticket.used_at = now;
-    await ticket.save();
+    await ticket.save().catch(() => {});
   }
+
+  // mark first-claim moment (no holder bind here)
+  try {
+    await SignedVC.updateOne(
+      { _id: vc._id, $or: [{ claimed_at: { $exists: false } }, { claimed_at: null }] },
+      { $set: { claimed_at: now } }
+    );
+  } catch {}
 
   res.set('Cache-Control', 'no-store');
   res.json(buildVcPayload(vc));
 });
 
+
 // ---------- ADMIN (id-based, protected) ----------
 exports.createClaim = asyncHandler(async (req, res) => {
   const { credId, ttlDays = 7, singleActive = true } = req.body;
-  const vc = await SignedVC.findById(credId).select('_id status');
+  const vc = await SignedVC.findById(credId).select('_id status claimed_at');
   if (!vc) return res.status(404).json({ message: 'Credential not found' });
   if (vc.status !== 'active') return res.status(409).json({ message: 'VC not active' });
-
+  if (vc.claimed_at) return res.status(409).json({ message: 'VC already claimed' });
   const now = new Date();
   if (singleActive) {
     const existing = await ClaimTicket.findOne({

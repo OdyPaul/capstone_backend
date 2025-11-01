@@ -35,52 +35,62 @@ function buildVcPayload(vc) {
 }
 
 // Core redeem (same effect as GET /c/:token), with holder bind on success
+// Core redeem (same effect as GET /c/:token), with holder bind + claimed_at
 async function redeemTokenForUser(token, holderUserId) {
   const now = new Date();
 
   const ticket = await ClaimTicket.findOne({ token });
-  if (!ticket) {
-    const err = new Error('Claim token not found');
-    err.status = 404;
-    throw err;
-  }
-  if (ticket.expires_at && ticket.expires_at < now) {
-    const err = new Error('Claim token expired');
-    err.status = 410;
-    throw err;
-  }
+  if (!ticket) { const err = new Error('Claim token not found'); err.status = 404; throw err; }
+  if (ticket.expires_at && ticket.expires_at < now) { const err = new Error('Claim token expired'); err.status = 410; throw err; }
 
+  // fetch minimal VC fields used below
   const vc = await SignedVC.findById(ticket.cred_id)
-    .select('jws alg kid digest salt anchoring status holder_user_id');
-  if (!vc) {
-    const err = new Error('Credential not found');
-    err.status = 404;
-    throw err;
-  }
-  if (vc.status !== 'active') {
-    const err = new Error('Credential not active');
-    err.status = 409;
-    throw err;
-  }
+    .select('_id jws alg kid digest salt anchoring status holder_user_id claimed_at');
+  if (!vc) { const err = new Error('Credential not found'); err.status = 404; throw err; }
+  if (vc.status !== 'active') { const err = new Error('Credential not active'); err.status = 409; throw err; }
 
-  // Mark ticket used
+  // 1) Mark ticket consumed (idempotent)
   if (!ticket.used_at) {
     ticket.used_at = now;
-    await ticket.save();
+    await ticket.save().catch(() => {});
   }
 
-  // Bind holder to this user (first come wins; don’t override later)
-  if (!vc.holder_user_id && holderUserId && mongoose.Types.ObjectId.isValid(holderUserId)) {
-    try {
+  // 2) Try to atomically set both holder_user_id (first come wins) and claimed_at (first claim wins)
+  try {
+    const canBind = holderUserId && mongoose.Types.ObjectId.isValid(holderUserId);
+
+    if (canBind) {
+      // attempt to set BOTH fields in a single atomic update, only if both are still empty
+      const res = await SignedVC.updateOne(
+        {
+          _id: vc._id,
+          $and: [
+            { $or: [{ holder_user_id: { $exists: false } }, { holder_user_id: null }] },
+            { $or: [{ claimed_at: { $exists: false } }, { claimed_at: null }] },
+          ],
+        },
+        { $set: { holder_user_id: holderUserId, claimed_at: now } }
+      );
+
+      if (!res.modifiedCount) {
+        // ensure claimed_at is set at least once, without touching holder_user_id
         await SignedVC.updateOne(
-        { _id: vc._id, $or: [{ holder_user_id: { $exists: false } }, { holder_user_id: null }] },
-        { $set: { holder_user_id: holderUserId } }
+          { _id: vc._id, $or: [{ claimed_at: { $exists: false } }, { claimed_at: null }] },
+          { $set: { claimed_at: now } }
         );
-    } catch { /* best-effort, never block redeem */ }
-  }
+      }
+    } else {
+      // no user id: still set claimed_at first time
+      await SignedVC.updateOne(
+        { _id: vc._id, $or: [{ claimed_at: { $exists: false } }, { claimed_at: null }] },
+        { $set: { claimed_at: now } }
+      );
+    }
+  } catch { /* never block redeem on marking */ }
 
   return buildVcPayload(vc);
 }
+
 
 // ---- Redis I/O ----
 async function addToQueue({ userId, token, url, expiresAt }) {

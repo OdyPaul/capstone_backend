@@ -8,7 +8,7 @@ const verifyCtrl = require('../../controllers/web/verificationController');
 const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
 const { z, validate, objectId } = require('../../middleware/validate');
 const requestLogger = require('../../middleware/requestLogger');
-
+const { listSigned } = require('../../controllers/web/signed');
 // -------- VC issuance / listing --------
 router.get(
   '/vc/signed',
@@ -22,6 +22,7 @@ router.get(
   }),
   issueCtrl.listSigned
 );
+router.get('/vc/signed', protect, admin, listSigned);
 
 router.post(
   '/vc/drafts/:id/issue',
