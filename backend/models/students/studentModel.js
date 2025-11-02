@@ -26,6 +26,7 @@ const SubjectSchema = new mongoose.Schema({
 });
 
 const StudentSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true, sparse: true }, // 👈 add this
   studentNumber: { type: String, required: true, unique: true },
   fullName: String,
   extensionName: String,
