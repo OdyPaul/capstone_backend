@@ -79,7 +79,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   web.use(require('./routes/web/vcRoutes'));
   web.use(require('./routes/web/pdfRoutes'));
   web.use(require('./routes/web/settingsRoutes'));
-  web.use(require('./routes/web/studentsRoutes'));
+  web.use(require('./routes/students/studentRoutes'));
   web.use(require('./routes/web/draftVcRoutes'));
   web.use(require('./routes/web/paymentRoutes'));
   web.use(require('./routes/web/claimRoutes'));
