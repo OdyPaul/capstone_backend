@@ -145,7 +145,7 @@ const loginWebUser = asyncHandler(async (req, res) => {
     if (!allowed.includes(user.role)) { res.status(403); throw new Error('Unauthorized role'); }
     return res.json({
       _id: user._id, username: user.username, fullName: user.fullName || null,
-      email: user.email, role: user.role, token: generateToken(user._id),
+      email: user.email, role: user.role,profilePicture: user.profilePicture, token: generateToken(user._id),
     });
   }
   res.status(400); throw new Error('Invalid credentials');

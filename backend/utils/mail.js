@@ -13,7 +13,7 @@ async function sendMail({ to, subject, text, html }) {
     console.warn("⚠️ RESEND_API_KEY missing. Printing email to console instead.");
     console.log("TO:", to);
     console.log("SUBJECT:", subject);
-    console.log("TEXT:", text || "");
+    console.log("TEXT:", text || "");  
     console.log("HTML:", html || "");
     return { id: "dev-no-api-key" };
   }
