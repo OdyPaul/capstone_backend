@@ -35,13 +35,14 @@ const protect = asyncHandler(async (req, res, next) => {
 
 // Admin-only
 const admin = (req, res, next) => {
-  if (req.user && req.user.role === "admin") {
+  if (req.user && (req.user.role === "admin" || req.user.role === "superadmin")) {
     next();
   } else {
     res.status(401);
-    throw new Error("Not authorized as admin");
+    throw new Error("Not authorized as admin or superadmin");
   }
 };
+
 
 // Mobile student-only
 const mobileUser = (req, res, next) => {
