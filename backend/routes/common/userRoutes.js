@@ -11,6 +11,7 @@ const {
   getMe,
   updateUserDID,
   logoutWebUser,
+  updateWebUser,
 } = require("../../controllers/common/userController");
 
 const { requestOtp, verifyOtp } = require("../../controllers/mobile/otpController");
@@ -40,16 +41,43 @@ const createWebUserSchema = {
     password: z.string().min(8).max(200),
     contactNo: z.string().trim().max(50).optional().nullable(),
     role: z.enum(["admin", "superadmin", "developer"]).default("admin"),
-    // Allow URL or data URI (but prefer imageId flow)
-    profilePicture: z.string().url().optional().or(z.string().startsWith("data:image/")).optional().nullable(),
+    // Prefer staged upload via profileImageId, but allow direct URL/data-URI too:
+    profilePicture: z.union([
+      z.string().url(),
+      z.string().startsWith("data:image/")
+    ]).optional().nullable(),
+    // If you use staged uploads, uncomment this:
+    // profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
   }).strip(),
 };
 
-// ---------- Subrouters to keep concerns separate ----------
+const updateWebUserSchema = {
+  params: z.object({
+    id: z.string().regex(/^[a-fA-F0-9]{24}$/)
+  }),
+  body: z.object({
+    username: z.string().trim().min(2).max(100).optional(),
+    fullName: z.string().trim().min(2).max(200).optional().nullable(),
+    age: z.number().int().min(0).max(150).optional().nullable(),
+    address: z.string().trim().max(1000).optional().nullable(),
+    gender: z.enum(["male", "female", "other"]).optional().nullable(),
+    email: z.string().trim().toLowerCase().email().max(254).optional(),
+    password: z.string().min(8).max(200).optional(),
+    contactNo: z.string().trim().max(50).optional().nullable(),
+    role: z.enum(["admin", "superadmin", "developer"]).optional(),
+    profilePicture: z.union([
+      z.string().url(),
+      z.string().startsWith("data:image/")
+    ]).optional().nullable(),
+    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional()
+  }).strip(),
+};
+
+// ---------- Subrouters ----------
 const web = express.Router();
 const mobile = express.Router();
 
-// Give web routes bigger body limit (profilePicture data-uri if used)
+// Bigger body limit for potential data-URIs
 web.use(express.json({ limit: "2mb" }));
 web.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
@@ -90,6 +118,15 @@ web.get(
   getUsers
 );
 
+// Update web user (auth rules enforced in controller)
+web.put(
+  "/users/:id",
+  protect,
+  validate(updateWebUserSchema),
+  requestLogger("web.users.update", { db: "auth" }),
+  updateWebUser
+);
+
 // Logout (stateless audit)
 web.post(
   "/users/logout",
@@ -119,11 +156,12 @@ mobile.post(
     prefix: "rl:otp:verify",
     windowMs: 60_000,
     max: 10,
-    keyFn: (req) => `${req.ip}|${(req.body?.email || "").toLowerCase()}`,
+    keyFn: (req) => `${req.ip}|${(req.body?.email || "").toLowerCase()}`
   }),
   requestLogger("mobile.otp.verify", { db: "auth" }),
   verifyOtp
 );
+
 
 // Link/Unlink DID
 mobile.put(

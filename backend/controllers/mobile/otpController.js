@@ -89,4 +89,15 @@ exports.verifyOtp = async (req, res) => {
   res.json({ success: true, otpSession });
 };
 
-// export.consumeOtpSession remains unchanged…
+exports.consumeOtpSession = (email, otpSession) => {
+  const key = email.toLowerCase();
+  const s = sessionStore.get(key);
+  if (!s) return false;
+  if (s.expiresAt < Date.now()) {
+    sessionStore.delete(key);
+    return false;
+  }
+  if (s.otpSession !== otpSession) return false;
+  sessionStore.delete(key); // one-time use
+  return true;
+};

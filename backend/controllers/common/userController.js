@@ -150,6 +150,75 @@ const loginWebUser = asyncHandler(async (req, res) => {
   }
   res.status(400); throw new Error('Invalid credentials');
 });
+
+
+// @desc    Update a web user (superadmin → anyone; user → self with limited fields)
+// @route   PUT /api/web/users/:id
+// @access  Private
+const updateWebUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const target = await User.findById(id);
+  if (!target) { res.status(404); throw new Error('User not found'); }
+  if (target.kind !== 'web') { res.status(400); throw new Error('Only web users can be edited here'); }
+
+  const requester = req.user;
+  const isSuperadmin = requester.role === 'superadmin';
+  const isSelf = requester._id.toString() === target._id.toString();
+
+  if (!isSuperadmin && !isSelf) {
+    res.status(403); throw new Error('Not authorized');
+  }
+
+  const {
+    username, fullName, age, address, gender, email, password, contactNo, role,
+    profilePicture,  // optional raw URL/data-URI
+    profileImageId,  // optional staged image id
+  } = req.body;
+
+  // Role changes only by superadmin
+  if (!isSuperadmin && typeof role !== 'undefined' && role !== target.role) {
+    res.status(403); throw new Error('Only superadmin can change role');
+  }
+
+  // Apply fields
+  if (typeof username !== 'undefined')  target.username = username;
+  if (typeof fullName !== 'undefined')  target.fullName = fullName;
+  if (typeof age !== 'undefined')       target.age = age;
+  if (typeof address !== 'undefined')   target.address = address;
+  if (typeof gender !== 'undefined')    target.gender = gender;
+  if (typeof email !== 'undefined')     target.email = email;
+  if (typeof contactNo !== 'undefined') target.contactNo = contactNo;
+  if (isSuperadmin && typeof role !== 'undefined') target.role = role;
+
+  if (password && String(password).trim().length > 0) {
+    const hashed = await bcrypt.hash(password, 10);
+    target.password = hashed;
+  }
+
+  // Image updates
+  let imgDoc = null;
+  if (profileImageId) {
+    imgDoc = await UserImage.findById(profileImageId);
+    if (!imgDoc) { res.status(400); throw new Error('Invalid profileImageId'); }
+    if (imgDoc.purpose !== 'profile') { res.status(400); throw new Error('Image purpose mismatch'); }
+    if (imgDoc.ownerUser && imgDoc.ownerUser.toString() !== target._id.toString()) {
+      res.status(409); throw new Error('Image already attached to another user');
+    }
+    target.profilePicture = imgDoc.url;
+  } else if (typeof profilePicture !== 'undefined') {
+    target.profilePicture = profilePicture || null;
+  }
+
+  await target.save();
+
+  if (imgDoc) {
+    imgDoc.ownerUser = target._id;
+    await imgDoc.save();
+  }
+
+  const safe = await User.findById(target._id).select('-password');
+  res.status(200).json({ user: safe });
+});
 // ---------------- SHARED CONTROLLERS ----------------
 
 // @desc    Get logged-in user profile
@@ -206,6 +275,7 @@ module.exports = {
   registerMobileUser,
   loginMobileUser,
   registerWebUser,
+  updateWebUser, 
   loginWebUser,
   getUsers,
   getMe,
