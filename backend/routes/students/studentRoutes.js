@@ -56,7 +56,31 @@ const createSchema = {
     photoDataUrl: z.string().startsWith("data:image/").optional().nullable(),
   }).strip(),
 };
-
+// ---------- Update student schema ----------
+const updateSchema = {
+  params: z.object({
+    id: z.string().regex(/^[a-fA-F0-9]{24}$/),
+  }),
+  body: z
+    .object({
+      fullName: z.string().trim().max(200).optional(),
+      extensionName: z.string().trim().max(100).optional(),
+      gender: z.enum(["male", "female", "other"]).optional(),
+      address: z.string().trim().max(500).optional(),
+      placeOfBirth: z.string().trim().max(200).optional(),
+      highSchool: z.string().trim().max(200).optional(),
+      entranceCredentials: z.string().trim().max(200).optional(),
+      program: z.string().trim().max(200).optional(),
+      major: z.string().trim().max(200).optional(),
+      dateAdmission: z.any().optional(),
+      dateGraduated: z.any().optional(),
+      honor: z.string().trim().max(200).optional(),
+      photoDataUrl: z.string().startsWith("data:image/").optional().nullable(),
+      curriculumId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+      regenSubjects: z.coerce.boolean().optional(),
+    })
+    .strip(),
+};
 // ---------- Sub-router for /student/* GETs ----------
 const student = express.Router();
 
@@ -114,6 +138,15 @@ router.post(
   allowRoles("admin", "superadmin"),
   validate(createSchema),
   createStudent
+);
+// ---------- PATCH /students/:id (update) ----------
+const { updateStudent } = require("../../controllers/web/studentController");
+router.patch(
+  "/students/:id",
+  protect,
+  allowRoles("admin", "superadmin"),
+  validate(updateSchema),
+  updateStudent
 );
 
 module.exports = router;

@@ -3,7 +3,22 @@ const Student = require("../../models/students/studentModel");
 const asyncHandler = require("express-async-handler");
 const escapeRegExp = require("../../utils/escapeRegExp");
 const Curriculum = require("../../models/students/Curriculum");
+const { isValidObjectId } = require("mongoose");
+const cloudinary = require("../../utils/cloudinary");
+const { generateRandomGradesForCurriculum } = require("../../lib/createStudent");
 
+function minusYears(dateLike, years) {
+  const d = new Date(dateLike);
+  if (isNaN(d)) return undefined;
+  d.setFullYear(d.getFullYear() - Number(years || 0));
+  return d;
+}
+
+async function uploadDataUriToCloudinary(dataUri, folder = "students_profiles") {
+  if (!/^data:image\//i.test(String(dataUri || ""))) return null;
+  const res = await cloudinary.uploader.upload(dataUri, { folder });
+  return res?.secure_url || null;
+}
 // @desc    Get Passing Students
 // @route   GET /api/student/passing
 // @access  Private (University Personnel)
@@ -135,10 +150,102 @@ const searchPrograms = asyncHandler(async (req, res) => {
   res.json(docs);
 });
 
+
+// @desc    Update Student (partial)
+// @route   PATCH /api/web/students/:id
+// @access  Private (admin/superadmin)
+const updateStudent = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid student id" });
+
+  // whitelist editable fields
+  const {
+    fullName,
+    extensionName,
+    gender,
+    address,
+    placeOfBirth,
+    highSchool,
+    entranceCredentials,
+    program,
+    major,
+    dateAdmission,
+    dateGraduated,
+    honor,
+    photoDataUrl,     // optional Data URI -> Cloudinary
+    curriculumId,     // optional: switch curriculum
+    regenSubjects,    // optional: if true and curriculum provided -> regenerate subjects/gwa
+  } = req.body || {};
+
+  const $set = {};
+
+  if (typeof fullName === "string") $set.fullName = fullName.trim();
+  if (typeof extensionName === "string") $set.extensionName = extensionName.trim();
+  if (typeof gender === "string") $set.gender = gender.toLowerCase();
+  if (typeof address === "string") $set.address = address.trim();
+  if (typeof placeOfBirth === "string") $set.placeOfBirth = placeOfBirth.trim();
+  if (typeof highSchool === "string") $set.highSchool = highSchool.trim();
+  if (typeof entranceCredentials === "string") $set.entranceCredentials = entranceCredentials.trim();
+  if (typeof program === "string") $set.program = program.trim();
+  if (typeof major === "string") $set.major = major.trim();
+  if (typeof honor === "string") $set.honor = honor.trim();
+
+  // dates
+  if (dateGraduated !== undefined && dateGraduated !== null) {
+    const g = new Date(dateGraduated);
+    if (!isNaN(g)) {
+      $set.dateGraduated = g;
+      // If admission not explicitly provided, infer = grad - 4y (your rule)
+      if (dateAdmission === undefined) {
+        const inferred = minusYears(g, 4);
+        if (inferred) $set.dateAdmission = inferred;
+      }
+    }
+  }
+  if (dateAdmission !== undefined && dateAdmission !== null) {
+    const a = new Date(dateAdmission);
+    if (!isNaN(a)) $set.dateAdmission = a;
+  }
+
+  // photo
+  if (typeof photoDataUrl === "string" && /^data:image\//i.test(photoDataUrl)) {
+    const url = await uploadDataUriToCloudinary(photoDataUrl);
+    if (url) $set.photoUrl = url;
+  }
+
+  // curriculum switch (optional)
+  if (curriculumId !== undefined && curriculumId !== null) {
+    if (!isValidObjectId(curriculumId)) {
+      return res.status(400).json({ message: "Invalid curriculumId" });
+    }
+    const cur = await Curriculum.findById(curriculumId).lean();
+    if (!cur) return res.status(404).json({ message: "Curriculum not found" });
+    $set.curriculum = cur._id;
+    // Fill program from curriculum if not explicitly provided in the payload
+    if ($set.program === undefined) {
+      $set.program = cur.program || cur.name || cur.title || undefined;
+    }
+    // regenerate subjects/gwa if asked
+    if (regenSubjects) {
+      const { subjects, gwa } = generateRandomGradesForCurriculum(cur);
+      $set.subjects = subjects;
+      $set.gwa = gwa;
+    }
+  }
+
+  const updated = await Student.findByIdAndUpdate(
+    id,
+    { $set },
+    { new: true, runValidators: true }
+  );
+  if (!updated) return res.status(404).json({ message: "Student not found" });
+  res.json(updated);
+});
 module.exports = {
   getStudentPassing,
   getStudentTor,
   searchStudent,
   findStudent,
-  searchPrograms, 
+  searchPrograms,
+  updateStudent,
 };
