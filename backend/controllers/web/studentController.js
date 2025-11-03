@@ -2,6 +2,7 @@
 const Student = require("../../models/students/studentModel");
 const asyncHandler = require("express-async-handler");
 const escapeRegExp = require("../../utils/escapeRegExp");
+const Curriculum = require("../../models/students/Curriculum");
 
 // @desc    Get Passing Students
 // @route   GET /api/student/passing
@@ -103,10 +104,41 @@ const findStudent = asyncHandler(async (req, res) => {
     res.status(500).json({ error: "Failed to fetch student" });
   }
 });
+/**
+ * @desc   Search Programs (from Curriculum collection)
+ * @route  GET /api/web/programs?q=&limit=
+ * @access Private (University Personnel)
+ */
+const searchPrograms = asyncHandler(async (req, res) => {
+  const { q = "", limit = 10 } = req.query;
+
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
+
+  const filter = {};
+  if (q) {
+    const safe = escapeRegExp(String(q));
+    filter.$or = [
+      { program: { $regex: safe, $options: "i" } },
+      { curriculumYear: { $regex: safe, $options: "i" } },
+    ];
+  }
+
+  const docs = await Curriculum.find(
+    filter,
+    { program: 1, curriculumYear: 1 } // projection
+  )
+    .sort({ program: 1, curriculumYear: -1 })
+    .limit(lim)
+    .lean();
+
+  // Frontend expects an array
+  res.json(docs);
+});
 
 module.exports = {
   getStudentPassing,
   getStudentTor,
   searchStudent,
   findStudent,
+  searchPrograms, 
 };

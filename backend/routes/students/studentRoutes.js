@@ -7,6 +7,7 @@ const {
   getStudentTor,
   searchStudent,
   findStudent,
+  searchPrograms, 
 } = require("../../controllers/web/studentController");
 
 const { createStudent } = require("../../controllers/web/createStudentController");
@@ -36,6 +37,14 @@ const searchSchema = {
   query: z.object({ ...queryCommon }).strip(),
 };
 
+
+// 🔎 Programs search schema
+const programSearchSchema = {
+  query: z.object({
+    q: z.string().trim().max(128).optional(),
+    limit: z.coerce.number().int().min(1).max(50).optional(),
+  }).strip(),
+};
 // ---------- Create student schema (admin/superadmin) ----------
 const createSchema = {
   body: z.object({
@@ -82,6 +91,21 @@ student.get("/:id", protect, findStudent);
 
 // Mount /student/* endpoints
 router.use("/student", student);
+
+// ---------- Programs search (used by Create Student page) ----------
+router.get(
+  "/programs",
+  protect,
+  validate(programSearchSchema),
+  rateLimitRedis({
+    prefix: "rl:programs:search",
+    windowMs: 60_000,
+    max: 60,
+    keyFn: (req) => req.user?._id?.toString() || req.ip,
+  }),
+  searchPrograms
+);
+
 
 // ---------- POST /students (create) ----------
 router.post(
