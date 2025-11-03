@@ -65,7 +65,15 @@ const updateSchema = {
     .object({
       fullName: z.string().trim().max(200).optional(),
       extensionName: z.string().trim().max(100).optional(),
-      gender: z.enum(["male", "female", "other"]).optional(),
+
+      // ⬇️ make 'Male'/'FEMALE' etc. acceptable by lowercasing first
+      gender: z
+        .preprocess(
+          (v) => (typeof v === "string" ? v.toLowerCase().trim() : v),
+          z.enum(["male", "female", "other"])
+        )
+        .optional(),
+
       address: z.string().trim().max(500).optional(),
       placeOfBirth: z.string().trim().max(200).optional(),
       highSchool: z.string().trim().max(200).optional(),
@@ -81,6 +89,7 @@ const updateSchema = {
     })
     .strip(),
 };
+
 // ---------- Sub-router for /student/* GETs ----------
 const student = express.Router();
 
