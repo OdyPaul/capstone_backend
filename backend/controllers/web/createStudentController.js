@@ -1,5 +1,6 @@
 // backend/controllers/web/studentAdminController.js
 const asyncHandler = require("express-async-handler");
+const { isValidObjectId } = require("mongoose"); // 👈 add this
 const cloudinary = require("../../utils/cloudinary");
 const Student = require("../../models/students/studentModel");
 const Curriculum = require("../../models/students/Curriculum");
@@ -73,7 +74,7 @@ exports.createStudent = async (req, res, next) => {
     // curriculum
     let curriculumDoc = null;
     if (hasValue(curriculumId)) {
-      if (!mongoose.isValidObjectId(curriculumId)) {
+      if (!isValidObjectId(curriculumId)) {   
         return res.status(400).json({ message: "Invalid curriculumId." });
       }
       curriculumDoc = await Curriculum.findById(curriculumId).lean();
