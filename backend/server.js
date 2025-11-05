@@ -83,6 +83,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   web.use(require('./routes/web/draftVcRoutes'));
   web.use(require('./routes/web/paymentRoutes'));
   web.use(require('./routes/web/claimRoutes'));
+ web.use('/stats', require('./routes/web/statsRoutes'));
   app.use('/api/web', web);
 
   // Public claims
