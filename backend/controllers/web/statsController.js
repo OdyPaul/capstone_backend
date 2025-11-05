@@ -1,9 +1,9 @@
 // controllers/web/statsController.js
 const asyncHandler = require("express-async-handler");
-const Student   = require("../../models/students/studentModel");
-const VcDraft   = require("../../models/web/vcDraft");
-const SignedVC  = require("../../models/web/signedVcModel");
-const Payment   = require("../../models/web/paymentModel");
+const Student  = require("../../models/students/studentModel");
+const VcDraft  = require("../../models/web/vcDraft");
+const SignedVC = require("../../models/web/signedVcModel");
+const Payment  = require("../../models/web/paymentModel");
 
 // 👇 for audit logs (login/logout)
 const { getAuthConn } = require("../../config/db");
@@ -13,7 +13,8 @@ let AuditLogAuth = null;
 function getAuditLogAuth() {
   const conn = getAuthConn();
   if (!conn) return null;
-  AuditLogAuth = AuditLogAuth || conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
+  AuditLogAuth =
+    AuditLogAuth || conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
   return AuditLogAuth;
 }
 
@@ -31,13 +32,14 @@ function startForRange(range) {
     case "all":
     case "alltime":
       return null; // all-time (no filter)
-    default:      return new Date(now.getTime() - 7 * 864e5);
+    default:
+      return new Date(now.getTime() - 7 * 864e5);
   }
 }
 
 // Day helpers (server timezone)
-function startOfDay(d) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
-function endOfDay(d)   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function endOfDay(d)   { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; }
 
 // Fill missing days with 0s between since..today (YYYY-MM-DD keys)
 function fillDaysMap(map, since) {
@@ -74,18 +76,25 @@ function addSessionSplitByDay(outMap, start, end) {
   }
 }
 
-// Compute total logged ms for a user within range (cut at day boundaries)
-async function computeLoggedMs(userId, since) {
+// Compute total logged ms for a user within range (cut at day boundaries).
+// Uses web.login matched by meta.loginEmail and web.logout matched by actorId.
+async function computeLoggedMs(user, since) {
   const Audit = getAuditLogAuth();
-  if (!Audit || !userId) return 0;
+  if (!Audit || !user) return 0;
 
-  // Pull only login/logout events. If since is provided, include a 1-day buffer
-  // so sessions that started yesterday and end today are handled.
+  const userId = user._id;
+  const userEmail = String(user.email || "").toLowerCase();
+
+  // Include a 1-day buffer before 'since' so a session starting yesterday and ending today is counted.
   const tsFilter = since ? { $gte: new Date(since.getTime() - 864e5) } : undefined;
+
   const query = {
-    actorId: userId,
-    routeTag: { $in: ["web.login", "web.logout"] },
     ...(tsFilter ? { ts: tsFilter } : {}),
+    status: { $gte: 200, $lt: 300 }, // only successful requests
+    $or: [
+      { routeTag: "web.login",  "meta.loginEmail": userEmail },
+      { routeTag: "web.logout", actorId: userId },
+    ],
   };
 
   const logs = await Audit.find(query).sort({ ts: 1 }).lean();
@@ -95,13 +104,11 @@ async function computeLoggedMs(userId, since) {
   const now = new Date();
 
   for (const row of logs) {
-    const tag = row.routeTag;
-    const t   = new Date(row.ts);
-
-    if (tag === "web.login") {
-      // If already "logged in" (no logout yet), keep the earliest start
+    const t = new Date(row.ts);
+    if (row.routeTag === "web.login") {
+      // Start/keep earliest open session
       currentStart = currentStart || t;
-    } else if (tag === "web.logout") {
+    } else if (row.routeTag === "web.logout") {
       if (currentStart && t > currentStart) {
         addSessionSplitByDay(sessionsByDay, currentStart, t);
       }
@@ -158,10 +165,12 @@ exports.getOverview = asyncHandler(async (req, res) => {
   const reqMatch = since ? { createdAt: { $gte: since } } : {};
   const reqAgg = await VcDraft.aggregate([
     { $match: reqMatch },
-    { $group: {
+    {
+      $group: {
         _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
         count: { $sum: 1 },
-      } },
+      },
+    },
     { $sort: { _id: 1 } },
   ]);
 
@@ -171,7 +180,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
   let fillStart = since;
   if (!fillStart) {
     if (reqAgg.length) fillStart = new Date(reqAgg[0]._id + "T00:00:00Z");
-    else { fillStart = new Date(); fillStart.setHours(0,0,0,0); }
+    else { fillStart = new Date(); fillStart.setHours(0, 0, 0, 0); }
   }
   const filled = fillDaysMap(dayMap, fillStart);
   const categories = Object.keys(filled);
@@ -187,14 +196,15 @@ exports.getOverview = asyncHandler(async (req, res) => {
     SignedVC.countDocuments(issuedCountMatch2),
     SignedVC.countDocuments(anchoredCountMatch).catch(() =>
       SignedVC.countDocuments(
-        since ? { createdAt: { $gte: since }, "anchoring.state": "anchored" }
-              : { "anchoring.state": "anchored" }
+        since
+          ? { createdAt: { $gte: since }, "anchoring.state": "anchored" }
+          : { "anchoring.state": "anchored" }
       )
     ),
   ]);
 
   // ----- logged time (ms) for current user over selected range -----
-  const loggedMs = await computeLoggedMs(req.user?._id, since);
+  const loggedMs = await computeLoggedMs(req.user, since);
   const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100; // 2 decimals
 
   res.json({
