@@ -5,17 +5,20 @@ const VcDraft  = require("../../models/web/vcDraft");
 const SignedVC = require("../../models/web/signedVcModel");
 const Payment  = require("../../models/web/paymentModel");
 
-// 👇 for audit logs (login/logout)
+// 👇 Audit logs (web.login / web.logout)
 const { getAuthConn } = require("../../config/db");
 const AuditLogSchema  = require("../../models/common/auditLog.schema");
 
 let AuditLogAuth = null;
 function getAuditLogAuth() {
-  const conn = getAuthConn();
-  if (!conn) return null;
-  AuditLogAuth =
-    AuditLogAuth || conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
-  return AuditLogAuth;
+  try {
+    const conn = getAuthConn();
+    if (!conn) return null;
+    AuditLogAuth = AuditLogAuth || conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
+    return AuditLogAuth;
+  } catch {
+    return null;
+  }
 }
 
 // -------- Range helper --------
@@ -31,7 +34,7 @@ function startForRange(range) {
     case "6m":    return new Date(now.getTime() - 182 * 864e5);
     case "all":
     case "alltime":
-      return null; // all-time (no filter)
+      return null; // all-time
     default:
       return new Date(now.getTime() - 7 * 864e5);
   }
@@ -54,7 +57,7 @@ function fillDaysMap(map, since) {
   return out;
 }
 
-// Split a [start,end] session across day boundaries, accumulating ms per day (in out map)
+// Split a [start,end] session across day boundaries, accumulating ms per day
 function addSessionSplitByDay(outMap, start, end) {
   let s = new Date(start);
   let e = new Date(end);
@@ -76,8 +79,9 @@ function addSessionSplitByDay(outMap, start, end) {
   }
 }
 
-// Compute total logged ms for a user within range (cut at day boundaries).
-// Uses web.login matched by meta.loginEmail and web.logout matched by actorId.
+// Compute total logged ms for a user within range.
+// Uses successful (2xx) web.login matched by meta.loginEmail and web.logout by actorId.
+// Adds a 1-day buffer before 'since' to span overnight sessions.
 async function computeLoggedMs(user, since) {
   const Audit = getAuditLogAuth();
   if (!Audit || !user) return 0;
@@ -85,12 +89,10 @@ async function computeLoggedMs(user, since) {
   const userId = user._id;
   const userEmail = String(user.email || "").toLowerCase();
 
-  // Include a 1-day buffer before 'since' so a session starting yesterday and ending today is counted.
   const tsFilter = since ? { $gte: new Date(since.getTime() - 864e5) } : undefined;
-
   const query = {
     ...(tsFilter ? { ts: tsFilter } : {}),
-    status: { $gte: 200, $lt: 300 }, // only successful requests
+    status: { $gte: 200, $lt: 300 },
     $or: [
       { routeTag: "web.login",  "meta.loginEmail": userEmail },
       { routeTag: "web.logout", actorId: userId },
@@ -99,14 +101,13 @@ async function computeLoggedMs(user, since) {
 
   const logs = await Audit.find(query).sort({ ts: 1 }).lean();
 
-  let sessionsByDay = {}; // { 'YYYY-MM-DD': ms }
+  const sessionsByDay = {}; // { 'YYYY-MM-DD': ms }
   let currentStart = null;
   const now = new Date();
 
   for (const row of logs) {
     const t = new Date(row.ts);
     if (row.routeTag === "web.login") {
-      // Start/keep earliest open session
       currentStart = currentStart || t;
     } else if (row.routeTag === "web.logout") {
       if (currentStart && t > currentStart) {
@@ -116,12 +117,12 @@ async function computeLoggedMs(user, since) {
     }
   }
 
-  // Open session: count until now
+  // Count an open session up to now
   if (currentStart) {
     addSessionSplitByDay(sessionsByDay, currentStart, now);
   }
 
-  // Sum over selected range (or all-time if since == null)
+  // Sum over selected range (or all-time)
   let total = 0;
   if (since) {
     const sinceKey = startOfDay(since).toISOString().slice(0, 10);
@@ -135,10 +136,11 @@ async function computeLoggedMs(user, since) {
   return total; // ms
 }
 
+// -------- Main overview (unchanged interface) --------
 exports.getOverview = asyncHandler(async (req, res) => {
   const since = startForRange(req.query.range);
 
-  // ----- totals (all-time) -----
+  // Totals (all-time)
   const [students, drafts, issuedActive, anchored] = await Promise.all([
     Student.countDocuments({}),
     VcDraft.countDocuments({ status: "draft" }),
@@ -146,7 +148,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
     SignedVC.countDocuments({ "anchoring.state": "anchored" }),
   ]);
 
-  // ----- revenue (payments preferred; fallback 250/issued in range) -----
+  // Revenue (prefer payments; fallback to 250 * issued in range)
   const paidMatch = { status: { $in: ["paid", "consumed"] } };
   if (since) paidMatch.paid_at = { $gte: since };
 
@@ -161,7 +163,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
 
   const revenuePhp = paymentsAgg.length ? paymentsAgg[0].total : issuedCount * 250;
 
-  // ----- line: requests per day -----
+  // Line: drafts created per day in range
   const reqMatch = since ? { createdAt: { $gte: since } } : {};
   const reqAgg = await VcDraft.aggregate([
     { $match: reqMatch },
@@ -173,10 +175,9 @@ exports.getOverview = asyncHandler(async (req, res) => {
     },
     { $sort: { _id: 1 } },
   ]);
-
   const dayMap = reqAgg.reduce((m, r) => { m[r._id] = r.count; return m; }, {});
 
-  // When all-time (since === null), start filling from earliest bucket or today
+  // Fill range
   let fillStart = since;
   if (!fillStart) {
     if (reqAgg.length) fillStart = new Date(reqAgg[0]._id + "T00:00:00Z");
@@ -186,7 +187,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
   const categories = Object.keys(filled);
   const series = [{ name: "Requests", data: categories.map(k => filled[k]) }];
 
-  // ----- pie (range-aware) -----
+  // Pie: range-aware counts
   const draftCountMatch    = since ? { createdAt: { $gte: since } } : {};
   const issuedCountMatch2  = since ? { createdAt: { $gte: since }, status: "active" } : { status: "active" };
   const anchoredCountMatch = since ? { "anchoring.anchored_at": { $gte: since } } : { "anchoring.state": "anchored" };
@@ -203,13 +204,28 @@ exports.getOverview = asyncHandler(async (req, res) => {
     ),
   ]);
 
-  // ----- logged time (ms) for current user over selected range -----
+  // Logged time for current user within selected range
   const loggedMs = await computeLoggedMs(req.user, since);
-  const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100; // 2 decimals
+  const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100;
 
   res.json({
     totals: { students, drafts, issuedActive, anchored, revenuePhp, loggedMs, loggedHours },
     line:   { categories, series },
     pie:    { labels: ["Draft", "Issued", "Anchored"], series: [inRangeDrafts, inRangeIssued, inRangeAnchored] },
+  });
+});
+
+// -------- NEW: explicit logged-time endpoint --------
+// GET /api/web/stats/admin/stats/logged-time?range=today|1w|1m|3m|6m|all
+exports.getLoggedTime = asyncHandler(async (req, res) => {
+  const range = String(req.query.range || "today");
+  const since = startForRange(range);
+  const loggedMs = await computeLoggedMs(req.user, since);
+  const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100;
+  res.json({
+    range,
+    since: since ? since.toISOString() : null,
+    loggedMs,
+    loggedHours,
   });
 });
