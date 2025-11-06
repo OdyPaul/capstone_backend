@@ -3,6 +3,7 @@ const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
 const QRCode      = require('qrcode');
+const mongoose    = require('mongoose'); // 👈 add this
 const { importJWK, compactVerify } = require('jose');
 
 const SignedVC = require('../../models/web/signedVcModel');
@@ -37,12 +38,36 @@ async function verifyJwsSignature(jws, maybeJwk) {
   }
 }
 
+/* ---------- Helper: load VC by ObjectId OR by string key ---------- */
+async function loadSignedVCByCredentialId(credential_id) {
+  if (!credential_id) return null;
+
+  // 1) try ObjectId
+  if (mongoose.isValidObjectId(credential_id)) {
+    const byId = await SignedVC.findById(credential_id).lean();
+    if (byId) return byId;
+  }
+
+  // 2) try string key (public id)
+  const byKey = await SignedVC.findOne({ key: String(credential_id) }).lean();
+  if (byKey) return byKey;
+
+  // 3) optionally: if you later switch to string _id, allow this too
+  try {
+    const byStringId = await SignedVC.findOne({ _id: String(credential_id) }).lean();
+    if (byStringId) return byStringId;
+  } catch {}
+
+  return null;
+}
+
 /* ---------- Core verifiers ---------- */
 async function verifyByCredentialId(credential_id) {
-  const signed = await SignedVC.findById(credential_id).lean();
+  const signed = await loadSignedVCByCredentialId(credential_id);
   if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
 
   if (signed.anchoring?.state !== 'anchored') {
+    // Valid VC, not anchored yet
     return { ok: true, result: { valid: true, reason: 'not_anchored' } };
   }
 
@@ -64,11 +89,9 @@ async function verifyStatelessPayload(payload) {
   if (!jws || !salt || !digest) return { ok: false, reason: 'payload_incomplete' };
   if (alg && !['ES256'].includes(alg)) return { ok: false, reason: 'alg_not_allowed' };
 
-  // recompute digest to assert the blob hasn’t changed
   const recomputed = digestJws(jws, salt);
   if (recomputed !== digest) return { ok: false, reason: 'digest_mismatch' };
 
-  // (optional) verify the JWS signature if the mobile sent a JWK
   const sigOK = await verifyJwsSignature(jws, jwk);
   if (!sigOK) return { ok: false, reason: 'bad_signature' };
 

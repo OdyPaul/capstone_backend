@@ -4,6 +4,10 @@ const { getVcConn } = require('../../config/db');
 const vconn = getVcConn();
 
 const signedVcSchema = new mongoose.Schema({
+  // Public, stable id you can share with clients (e.g., "webZZ123...")
+  // Keep unique+sparse so existing docs without a key are allowed.
+  key: { type: String, unique: true, sparse: true, index: true },
+
   student_id: { type: String, required: true },
   holder_user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   template_id: { type: String, required: true },
@@ -40,6 +44,7 @@ const signedVcSchema = new mongoose.Schema({
     anchored_at: { type: Date },
     merkle_proof: { type: [String], default: [] },
   },
+
   claimed_at: { type: Date, default: null, index: true },
 }, { timestamps: true });
 
