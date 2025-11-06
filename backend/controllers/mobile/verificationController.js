@@ -1,14 +1,37 @@
+// controllers/mobile/verificationController.js
+const axios = require("axios"); // kept for future use if needed
+const { isValidObjectId } = require("mongoose");
+
 const VerificationRequest = require("../../models/mobile/verificationRequestModel");
 const Image = require("../../models/mobile/imageModel");
 const User = require("../../models/common/userModel");
+const Student = require("../../models/students/studentModel");
+const { enqueueVerify, enqueueReject } = require("../../queues/verification.queue");
 
-// @desc Student submits verification request
+// -------- Helpers --------
+function toBool(v) {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") return ["1", "true", "yes", "y"].includes(v.toLowerCase());
+  return false;
+}
+function parseJsonMaybe(val, label) {
+  if (typeof val !== "string") return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    const err = new Error(`${label} must be a JSON object`);
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+// ===== Student submits a verification request =====
 // @route POST /api/verification
 // @access Private (student)
 exports.createVerificationRequest = async (req, res) => {
   try {
     let { personal, education, selfieImageId, idImageId, did } = req.body || {};
-    // validate presence
+
     if (!personal || !education) {
       return res.status(400).json({ message: "Personal and education info required" });
     }
@@ -22,28 +45,21 @@ exports.createVerificationRequest = async (req, res) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    // if strings slipped through, parse once
-    if (typeof personal === "string") {
-      try { personal = JSON.parse(personal); }
-      catch { return res.status(400).json({ message: "personal must be a JSON object" }); }
-    }
-    if (typeof education === "string") {
-      try { education = JSON.parse(education); }
-      catch { return res.status(400).json({ message: "education must be a JSON object" }); }
-    }
+    // Parse JSON if sent as strings
+    personal = parseJsonMaybe(personal, "personal");
+    education = parseJsonMaybe(education, "education");
 
-    // create request
     const verification = await VerificationRequest.create({
       user: req.user._id,
       personal,
       education,
       selfieImage: selfieImageId,
       idImage: idImageId,
-      did:did,        
+      did,
       status: "pending",
     });
 
-    // link images
+    // Link images back to the request
     await Promise.all([
       Image.findByIdAndUpdate(selfieImageId, { ownerRequest: verification._id }),
       Image.findByIdAndUpdate(idImageId, { ownerRequest: verification._id }),
@@ -51,48 +67,82 @@ exports.createVerificationRequest = async (req, res) => {
 
     return res.status(201).json(verification);
   } catch (err) {
-    // ✅ correct duplicate key detection for did
     if (err?.code === 11000 && (err?.keyPattern?.did || err?.keyValue?.did)) {
       return res.status(409).json({ message: "DID already used in another request" });
     }
     console.error("createVerificationRequest error:", err);
-    return res.status(500).json({ message: err.message || "Failed to submit verification" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Failed to submit verification",
+    });
   }
 };
 
-// @desc Admin verifies a request
+// ===== Admin: queue verify (optionally link to Student in worker) =====
 // @route POST /api/verification/:id/verify
 // @access Private (admin)
 exports.verifyRequest = async (req, res) => {
   try {
     const { id } = req.params;
-    const verification = await VerificationRequest.findById(id);
-    if (!verification) return res.status(404).json({ message: "Not found" });
+    const { studentId } = req.body || {};
 
-    verification.status = "verified";
-    verification.verifiedAt = new Date();
-    await verification.save();
+    if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
+    if (studentId && !isValidObjectId(studentId)) {
+      return res.status(400).json({ message: "Invalid studentId" });
+    }
 
-    // Mark user as verified
-    await User.findByIdAndUpdate(verification.user, { verified: "verified" });
+    // Light existence check so we can fail fast
+    const vr = await VerificationRequest.findById(id).select("_id status");
+    if (!vr) return res.status(404).json({ message: "Request not found" });
+    if (vr.status !== "pending") {
+      return res.status(409).json({ message: `Request is ${vr.status}, not pending` });
+    }
 
-    // Expire images in 30 days
-    const expireDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const updates = [];
-    if (verification.selfieImage) updates.push(Image.findByIdAndUpdate(verification.selfieImage, { expiresAt: expireDate }));
-    if (verification.idImage) updates.push(Image.findByIdAndUpdate(verification.idImage, { expiresAt: expireDate }));
-    await Promise.all(updates);
-
-    return res.json({
-      message: "✅ User account verified, request updated, images set to expire in 30 days",
+    await enqueueVerify({
+      requestId: id,
+      studentId: studentId || null,
+      actorId: req.user?._id || null,
+      actorRole: req.user?.role || null,
     });
+
+    return res.status(202).json({ queued: true, action: "verify", requestId: id, studentId: studentId || null });
   } catch (err) {
-    console.error("verifyRequest error:", err);
-    return res.status(500).json({ message: err.message || "Failed to verify request" });
+    console.error("verifyRequest enqueue error:", err);
+    return res.status(500).json({ message: err.message || "Failed to queue verify" });
   }
 };
 
-// @desc Student fetches their own requests
+// ===== Admin: queue reject =====
+// @route POST /api/verification/:id/reject
+// @access Private (admin)
+exports.rejectRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
+
+    // Light existence check
+    const vr = await VerificationRequest.findById(id).select("_id status");
+    if (!vr) return res.status(404).json({ message: "Request not found" });
+    if (vr.status !== "pending") {
+      return res.status(409).json({ message: `Request is ${vr.status}, not pending` });
+    }
+
+    await enqueueReject({
+      requestId: id,
+      reason: String(reason || "").slice(0, 240),
+      actorId: req.user?._id || null,
+      actorRole: req.user?.role || null,
+    });
+
+    return res.status(202).json({ queued: true, action: "reject", requestId: id });
+  } catch (err) {
+    console.error("rejectRequest enqueue error:", err);
+    return res.status(500).json({ message: err.message || "Failed to queue reject" });
+  }
+};
+
+// ===== Student: list own requests =====
 // @route GET /api/verification/mine
 // @access Private (student)
 exports.getMyVerificationRequests = async (req, res) => {
@@ -100,7 +150,8 @@ exports.getMyVerificationRequests = async (req, res) => {
     const requests = await VerificationRequest.find({ user: req.user._id })
       .populate("selfieImage", "url")
       .populate("idImage", "url")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     res.json(requests);
   } catch (err) {
@@ -109,33 +160,75 @@ exports.getMyVerificationRequests = async (req, res) => {
   }
 };
 
-// @desc Admin fetch all requests
+// ===== Admin: list requests (filters & pagination) =====
 // @route GET /api/verification
 // @access Private (admin)
 exports.getVerificationRequests = async (req, res) => {
   try {
-    const requests = await VerificationRequest.find()
-      .populate("user", "email name")
-      .populate("selfieImage", "url")
-      .populate("idImage", "url")
-      .sort({ createdAt: -1 });
+    const {
+      page = 1,
+      limit = 20,
+      status = "all",
+      q = "",
+      from = "",
+      to = "",
+      includeImages = "0",
+    } = req.query;
 
-    res.json(requests);
+    const pg = Math.max(1, parseInt(page, 10) || 1);
+    const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
+
+    const filter = {};
+    if (status && status !== "all") filter.status = status;
+
+    if (q) {
+      const safe = String(q).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filter.$or = [
+        { did: { $regex: safe, $options: "i" } },
+        { "personal.fullName": { $regex: safe, $options: "i" } },
+      ];
+    }
+
+    if (from) filter.createdAt = { ...(filter.createdAt || {}), $gte: new Date(from) };
+    if (to) filter.createdAt = { ...(filter.createdAt || {}), $lte: new Date(to) };
+
+    const qDoc = VerificationRequest.find(filter)
+      .populate("user", "email username fullName role")
+      .populate("student", "fullName studentNumber program")
+      .sort({ createdAt: -1 })
+      .skip((pg - 1) * lim)
+      .limit(lim);
+
+    if (toBool(includeImages)) {
+      qDoc.populate("selfieImage", "url").populate("idImage", "url");
+    }
+
+    const [items, total] = await Promise.all([
+      qDoc.lean(),
+      VerificationRequest.countDocuments(filter),
+    ]);
+
+    res.json({ items, total, page: pg, limit: lim });
   } catch (err) {
     console.error("getVerificationRequests error:", err);
     res.status(500).json({ message: "Failed to fetch verification requests" });
   }
 };
 
-// @desc Admin fetch single request
+// ===== Admin: get single request =====
 // @route GET /api/verification/:id
 // @access Private (admin)
 exports.getVerificationRequestById = async (req, res) => {
   try {
-    const request = await VerificationRequest.findById(req.params.id)
-      .populate("user", "email name")
+    const { id } = req.params;
+    if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
+
+    const request = await VerificationRequest.findById(id)
+      .populate("user", "email username fullName role")
+      .populate("student", "fullName studentNumber program")
       .populate("selfieImage", "url")
-      .populate("idImage", "url");
+      .populate("idImage", "url")
+      .lean();
 
     if (!request) return res.status(404).json({ message: "Request not found" });
 
