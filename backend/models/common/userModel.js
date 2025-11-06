@@ -14,6 +14,7 @@ const baseSchema = new mongoose.Schema({
   did:      { type: String, unique: true, sparse: true },
   verified: { type: String, enum: ['unverified','verified'], default: 'unverified' },
 
+   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student_Profiles', unique: true, sparse: true },
   // 👇 moved here so both web & mobile can persist it
   profilePicture: { type: String, default: null },
 }, {
