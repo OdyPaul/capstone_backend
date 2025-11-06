@@ -92,7 +92,8 @@ const createSession = asyncHandler(async (req, res) => {
     contact,
     types = ['TOR'],
     ttlHours = 168,              // ← default 7 days
-    credential_id,               // ← optional VC id to bake into the verifier link
+    credential_id,      
+    ui_base,         // ← optional VC id to bake into the verifier link
   } = req.body || {};
 
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
@@ -106,13 +107,24 @@ const createSession = asyncHandler(async (req, res) => {
     expires_at,
   });
 
-  // Use BASE_URL if provided; otherwise derive from the request
-  const base =
-    (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
-  const baseUrl = `${base}/verify/${session_id}`;
-  const verifyUrl = credential_id
-    ? `${baseUrl}?credential_id=${encodeURIComponent(String(credential_id))}`
-    : baseUrl;
+  // Prefer an explicit UI base (req, then env), else fallback to backend origin
+  const UI_BASE =
+    String(ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL ||
+      process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+
+  // If UI_BASE contains {session}, use it; otherwise append sensible path.
+  function buildVerifyUrl(base, session, credId) {
+    const hasPlaceholder = /\{session\}/.test(base);
+    const url = hasPlaceholder
+      ? base.replace('{session}', session)
+      : base.endsWith('/verification-portal') || base.endsWith('/verify')
+        ? `${base}/${session}`
+        : `${base}/verify/${session}`;
+    const sep = url.includes('?') ? '&' : '?';
+    return credId ? `${url}${sep}credential_id=${encodeURIComponent(String(credId))}` : url;
+  }
+
+  const verifyUrl = buildVerifyUrl(UI_BASE, session_id, credential_id);
 
   res.status(201).json({
     session_id,
