@@ -1,7 +1,9 @@
 // controllers/web/verificationController.js
 const asyncHandler = require('express-async-handler');
-const keccak256 = require('keccak256');
-const crypto = require('crypto');
+const keccak256   = require('keccak256');
+const crypto      = require('crypto');
+const QRCode      = require('qrcode');            // ⬅️ NEW
+const { importJWK, compactVerify } = require('jose'); // ⬅️ NEW (optional, for JWS sig verify)
 
 const SignedVC = require('../../models/web/signedVcModel');
 const AnchorBatch = require('../../models/web/anchorBatchModel');
@@ -11,6 +13,7 @@ const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
 const isFinal = (r) => r && r.reason && r.reason !== 'pending';
 
+/* ---------- Merkle proof helper ---------- */
 function verifyProof(leafBuf, proof, rootHex) {
   let hash = leafBuf;
   for (const p of (proof || [])) {
@@ -22,13 +25,24 @@ function verifyProof(leafBuf, proof, rootHex) {
   return computed.toLowerCase() === String(rootHex || '').toLowerCase();
 }
 
-/* ---------------- core verifiers ---------------- */
+/* ---------- OPTIONAL: JWS signature verify (stateless) ---------- */
+async function verifyJwsSignature(jws, maybeJwk) {
+  if (!maybeJwk) return true; // skip if you don’t provide a JWK (digest/Merkle-only trust)
+  const key = await importJWK(maybeJwk, 'ES256');
+  try {
+    await compactVerify(jws, key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ---------- Core verifiers ---------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await SignedVC.findById(credential_id).lean();
   if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
 
   if (signed.anchoring?.state !== 'anchored') {
-    // syntactically valid but not anchored
     return { ok: true, result: { valid: true, reason: 'not_anchored' } };
   }
 
@@ -46,16 +60,23 @@ async function verifyByCredentialId(credential_id) {
 }
 
 async function verifyStatelessPayload(payload) {
-  const { jws, salt, digest, anchoring, alg } = payload || {};
+  const { jws, salt, digest, anchoring, alg, kid, jwk } = payload || {};
   if (!jws || !salt || !digest) return { ok: false, reason: 'payload_incomplete' };
   if (alg && !['ES256'].includes(alg)) return { ok: false, reason: 'alg_not_allowed' };
 
+  // recompute digest to assert the blob hasn’t changed
   const recomputed = digestJws(jws, salt);
   if (recomputed !== digest) return { ok: false, reason: 'digest_mismatch' };
+
+  // (optional) verify the JWS signature if the mobile sent a JWK
+  // (keeps everything SSI and stateless; if you prefer, resolve by `kid`)
+  const sigOK = await verifyJwsSignature(jws, jwk);
+  if (!sigOK) return { ok: false, reason: 'bad_signature' };
 
   if (anchoring?.state === 'anchored') {
     const batch = await AnchorBatch.findOne({ batch_id: anchoring.batch_id }).lean();
     if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
+
     const leaf = keccak256(fromB64url(digest));
     const included = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
     if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
@@ -65,7 +86,7 @@ async function verifyStatelessPayload(payload) {
   return { ok: true, result: { valid: true, reason: 'not_anchored' } };
 }
 
-/* ---------------- controllers ---------------- */
+/* ---------- Controllers ---------- */
 const createSession = asyncHandler(async (req, res) => {
   const { org, contact, types = ['TOR'], ttlHours = 48 } = req.body || {};
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
@@ -148,9 +169,33 @@ const submitPresentation = asyncHandler(async (req, res) => {
   return res.json({ ok: true, session: sess.session_id, result: sess.result });
 });
 
+/* ---------- NEW: session QR image ---------- */
+const sessionQrPng = asyncHandler(async (req, res) => {
+  const { sessionId } = req.params;
+  const size = Math.min(Number(req.query.size) || 220, 800);
+  // This is what the phone will read. Keep it simple & stateless.
+  const payload = {
+    t: 'vc-session',
+    v: 1,
+    session: sessionId,
+    api: (process.env.BASE_URL || '').replace(/\/+$/, '') + '/api',
+    ts: Date.now()
+  };
+  const text = JSON.stringify(payload);
+  const png = await QRCode.toBuffer(text, {
+    width: size,
+    margin: 1,
+    errorCorrectionLevel: 'M',
+  });
+  res.set('Content-Type', 'image/png');
+  res.set('Cache-Control', 'no-store');
+  res.send(png);
+});
+
 module.exports = {
   createSession,
   beginSession,
   getSession,
   submitPresentation,
+  sessionQrPng,              // ⬅️ export it
 };
