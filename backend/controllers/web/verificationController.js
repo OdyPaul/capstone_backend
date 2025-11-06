@@ -2,13 +2,10 @@
 const asyncHandler = require('express-async-handler');
 const keccak256 = require('keccak256');
 const crypto = require('crypto');
-const Jimp = require('jimp');
-const jsQR = require('jsqr');
 
 const SignedVC = require('../../models/web/signedVcModel');
 const AnchorBatch = require('../../models/web/anchorBatchModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
-const ClaimTicket = require('../../models/web/claimTicket'); // for /c/:token in QR
 const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 
 const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
@@ -25,27 +22,18 @@ function verifyProof(leafBuf, proof, rootHex) {
   return computed.toLowerCase() === String(rootHex || '').toLowerCase();
 }
 
-const buildVcPayload = (vc) => ({
-  format: 'vc+jws',
-  jws: vc.jws,
-  kid: vc.kid,
-  alg: vc.alg,
-  salt: vc.salt,
-  digest: vc.digest,
-  anchoring: vc.anchoring,
-});
-
 /* ---------------- core verifiers ---------------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await SignedVC.findById(credential_id).lean();
   if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
 
   if (signed.anchoring?.state !== 'anchored') {
+    // syntactically valid but not anchored
     return { ok: true, result: { valid: true, reason: 'not_anchored' } };
   }
 
-  const digest = digestJws(signed.jws, signed.salt);
-  if (digest !== signed.digest) return { ok: false, reason: 'digest_mismatch' };
+  const recomputed = digestJws(signed.jws, signed.salt);
+  if (recomputed !== signed.digest) return { ok: false, reason: 'digest_mismatch' };
 
   const batch = await AnchorBatch.findOne({ batch_id: signed.anchoring.batch_id }).lean();
   if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
@@ -73,32 +61,11 @@ async function verifyStatelessPayload(payload) {
     if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
     return { ok: true, result: { valid: true, reason: 'ok' } };
   }
+
   return { ok: true, result: { valid: true, reason: 'not_anchored' } };
 }
 
-/* ---------------- QR decode helpers ---------------- */
-async function decodeQrBuffer(buf) {
-  const img = await Jimp.read(buf);
-  const { data, width, height } = img.bitmap; // RGBA Buffer
-  // jsQR expects a Uint8ClampedArray (RGBA)
-  const u8 = new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength);
-  const qr = jsQR(u8, width, height);
-  return qr ? qr.data : '';
-}
-
-function tryParseJson(text) {
-  try { return JSON.parse(text); } catch { return null; }
-}
-
-function extractClaimTokenFromUrl(text) {
-  try {
-    const u = new URL(text);
-    const m = u.pathname.match(/\/c\/([^/]+)/);
-    return m ? m[1] : null;
-  } catch { return null; }
-}
-
-/* ---------------- controllers (pure exports, no router mounts) ---------------- */
+/* ---------------- controllers ---------------- */
 const createSession = asyncHandler(async (req, res) => {
   const { org, contact, types = ['TOR'], ttlHours = 48 } = req.body || {};
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
@@ -181,78 +148,9 @@ const submitPresentation = asyncHandler(async (req, res) => {
   return res.json({ ok: true, session: sess.session_id, result: sess.result });
 });
 
-const presentFromQrImage = asyncHandler(async (req, res) => {
-  const { sessionId } = req.params;
-  const sess = await VerificationSession.findOne({ session_id: sessionId });
-  if (!sess) return res.status(404).json({ message: 'Session not found' });
-  if (isFinal(sess.result)) return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
-  if (sess.expires_at < new Date()) {
-    sess.result = { valid: false, reason: 'expired_session' };
-    await sess.save();
-    return res.json({ ok: false, reason: 'expired_session' });
-  }
-
-  // Accept either multipart "qr" or body.imageDataUrl
-  let buf = null;
-  if (req.file && req.file.buffer) {
-    buf = req.file.buffer;
-  } else if (req.body && typeof req.body.imageDataUrl === 'string') {
-    const m = req.body.imageDataUrl.match(/^data:image\/[a-zA-Z+]+;base64,(.+)$/);
-    if (m) buf = Buffer.from(m[1], 'base64');
-  }
-  if (!buf) return res.status(400).json({ ok: false, reason: 'no_image' });
-
-  let text = '';
-  try {
-    text = await decodeQrBuffer(buf);
-  } catch {
-    return res.status(422).json({ ok: false, reason: 'qr_decode_failed' });
-  }
-
-  // Accept either claim URL (/c/:token) or raw JSON payload
-  let payload = null;
-
-  // 1) claim URL path
-  const token = extractClaimTokenFromUrl(text);
-  if (token) {
-    const now = new Date();
-    const t = await ClaimTicket.findOne({ token });
-    if (!t) return res.status(404).json({ ok: false, reason: 'claim_not_found' });
-    if (t.expires_at && t.expires_at < now) return res.status(410).json({ ok: false, reason: 'claim_expired' });
-
-    const vc = await SignedVC.findById(t.cred_id)
-      .select('_id jws alg kid digest salt anchoring status').lean();
-    if (!vc) return res.status(404).json({ ok: false, reason: 'credential_not_found' });
-    if (vc.status !== 'active') return res.status(409).json({ ok: false, reason: 'credential_not_active' });
-
-    if (!t.used_at) { t.used_at = now; await t.save().catch(() => {}); }
-    payload = buildVcPayload(vc);
-  }
-
-  // 2) JSON payload inside QR
-  if (!payload) {
-    const parsed = tryParseJson(text);
-    if (parsed && parsed.jws && parsed.salt && parsed.digest) payload = parsed;
-  }
-
-  if (!payload) return res.status(400).json({ ok: false, reason: 'qr_unrecognized' });
-
-  const outcome = await verifyStatelessPayload(payload);
-  if (!outcome.ok) {
-    sess.result = { valid: false, reason: outcome.reason || 'failed' };
-    await sess.save();
-    return res.json({ ok: false, reason: sess.result.reason });
-  }
-
-  sess.result = outcome.result;
-  await sess.save();
-  return res.json({ ok: true, session: sess.session_id, result: sess.result });
-});
-
 module.exports = {
   createSession,
   beginSession,
   getSession,
   submitPresentation,
-  presentFromQrImage,
 };

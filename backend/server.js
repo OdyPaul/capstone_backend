@@ -85,9 +85,11 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   web.use(require('./routes/web/claimRoutes'));
   web.use('/stats', require('./routes/web/statsRoutes'));
   web.use(require('./routes/web/auditLogRoutes'));
-  web.use(require('./routes/web/verificationRoutes'));
+  
   app.use('/api/web', web);
 
+  // ✅ Mount verification routes directly under /api so paths match the frontend
+  app.use('/api', require('./routes/web/verificationRoutes'));
   // Public claims
   app.use('/', require('./routes/web/claimPublicRoutes'));
 
