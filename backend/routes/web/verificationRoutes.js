@@ -3,10 +3,16 @@ const express = require('express');
 const router = express.Router();
 const ctrl = require('../../controllers/web/verificationController');
 
-// public endpoints (presentation sessions are intentionally public to verifiers)
-router.post('/verification/session', ctrl.createSession);
-router.get('/verification/session/:sessionId', ctrl.getSession);       // poll status
-router.post('/verification/session/:sessionId/begin', ctrl.beginSession); // verifier fills form
-router.post('/verification/session/:sessionId/present', ctrl.submitPresentation); // holder posts VC
+// create a session (can be protected or public)
+router.post('/api/verification/session', ctrl.createSession);
+
+// verifier fills org/contact/purpose
+router.post('/api/verification/session/:sessionId/begin', ctrl.beginSession);
+
+// poll session
+router.get('/api/verification/session/:sessionId', ctrl.getSession);
+
+// holder presents (credential_id OR payload)
+router.post('/api/verification/session/:sessionId/present', ctrl.submitPresentation);
 
 module.exports = router;
