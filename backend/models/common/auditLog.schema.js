@@ -7,7 +7,7 @@ const AuditLogSchema = new Schema(
 
     // who/what
     actorId:    { type: Schema.Types.ObjectId, ref: 'User', default: null },
-    actorRole:  { type: String, enum: ['student','staff','admin','developer', null], default: null },
+    actorRole:  { type: String, enum: ['student','admin','superadmin','developer', null], default: null },
     ip:         { type: String, default: '' },
     ua:         { type: String, default: '' },
 
