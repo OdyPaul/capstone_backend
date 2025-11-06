@@ -2,8 +2,8 @@
 const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
-const QRCode      = require('qrcode');            // ⬅️ NEW
-const { importJWK, compactVerify } = require('jose'); // ⬅️ NEW (optional, for JWS sig verify)
+const QRCode      = require('qrcode');
+const { importJWK, compactVerify } = require('jose');
 
 const SignedVC = require('../../models/web/signedVcModel');
 const AnchorBatch = require('../../models/web/anchorBatchModel');
@@ -69,7 +69,6 @@ async function verifyStatelessPayload(payload) {
   if (recomputed !== digest) return { ok: false, reason: 'digest_mismatch' };
 
   // (optional) verify the JWS signature if the mobile sent a JWK
-  // (keeps everything SSI and stateless; if you prefer, resolve by `kid`)
   const sigOK = await verifyJwsSignature(jws, jwk);
   if (!sigOK) return { ok: false, reason: 'bad_signature' };
 
@@ -88,9 +87,16 @@ async function verifyStatelessPayload(payload) {
 
 /* ---------- Controllers ---------- */
 const createSession = asyncHandler(async (req, res) => {
-  const { org, contact, types = ['TOR'], ttlHours = 48 } = req.body || {};
+  const {
+    org,
+    contact,
+    types = ['TOR'],
+    ttlHours = 168,              // ← default 7 days
+    credential_id,               // ← optional VC id to bake into the verifier link
+  } = req.body || {};
+
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
-  const expires_at = new Date(Date.now() + Number(ttlHours || 48) * 3600 * 1000);
+  const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
 
   await VerificationSession.create({
     session_id,
@@ -100,9 +106,18 @@ const createSession = asyncHandler(async (req, res) => {
     expires_at,
   });
 
+  // Use BASE_URL if provided; otherwise derive from the request
+  const base =
+    (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const baseUrl = `${base}/verify/${session_id}`;
+  const verifyUrl = credential_id
+    ? `${baseUrl}?credential_id=${encodeURIComponent(String(credential_id))}`
+    : baseUrl;
+
   res.status(201).json({
     session_id,
-    verifyUrl: `${process.env.BASE_URL}/verify/${session_id}`,
+    verifyUrl,
+    expires_at,
   });
 });
 
@@ -145,7 +160,9 @@ const submitPresentation = asyncHandler(async (req, res) => {
 
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
-  if (isFinal(sess.result)) return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
+  if (isFinal(sess.result)) {
+    return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
+  }
   if (sess.expires_at < now) {
     sess.result = { valid: false, reason: 'expired_session' };
     await sess.save();
@@ -169,24 +186,26 @@ const submitPresentation = asyncHandler(async (req, res) => {
   return res.json({ ok: true, session: sess.session_id, result: sess.result });
 });
 
-/* ---------- NEW: session QR image ---------- */
+/* ---------- Session QR image (for mobile wallet to read) ---------- */
 const sessionQrPng = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
   const size = Math.min(Number(req.query.size) || 220, 800);
-  // This is what the phone will read. Keep it simple & stateless.
+
   const payload = {
     t: 'vc-session',
     v: 1,
     session: sessionId,
-    api: (process.env.BASE_URL || '').replace(/\/+$/, '') + '/api',
-    ts: Date.now()
+    api: (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '') + '/api',
+    ts: Date.now(),
   };
+
   const text = JSON.stringify(payload);
   const png = await QRCode.toBuffer(text, {
     width: size,
     margin: 1,
     errorCorrectionLevel: 'M',
   });
+
   res.set('Content-Type', 'image/png');
   res.set('Cache-Control', 'no-store');
   res.send(png);
@@ -197,5 +216,5 @@ module.exports = {
   beginSession,
   getSession,
   submitPresentation,
-  sessionQrPng,              // ⬅️ export it
+  sessionQrPng,
 };
