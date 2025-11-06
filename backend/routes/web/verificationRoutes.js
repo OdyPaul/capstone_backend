@@ -27,6 +27,7 @@ const vCreateBody = validate({
     ttlHours: z.coerce.number().int().min(1).max(168).optional(),
     ui_base: z.string().max(300).optional(), // e.g. http://localhost:5173/verification-portal
    credential_id: z.string().max(64).optional(),
+   
   }).strict(), // keep strict so only allowed keys are accepted
 });
 
@@ -53,6 +54,7 @@ const PresentWithPayload = z.object({
     anchoring: z.any().optional(),
     alg: z.string().optional(),
     kid: z.string().optional(),
+    jwk: z.any().optional(), 
   }).strict(),
 }).strict();
 

@@ -42,29 +42,34 @@ async function verifyJwsSignature(jws, maybeJwk) {
 async function loadSignedVCByCredentialId(credential_id) {
   if (!credential_id) return null;
 
-  // 1) try ObjectId
   if (mongoose.isValidObjectId(credential_id)) {
     const byId = await SignedVC.findById(credential_id).lean();
     if (byId) return byId;
   }
 
-  // 2) try string key (public id)
-  const byKey = await SignedVC.findOne({ key: String(credential_id) }).lean();
+  const asString = String(credential_id);
+  const byKey = await SignedVC.findOne({ key: asString }).lean();
   if (byKey) return byKey;
 
-  // 3) optionally: if you later switch to string _id, allow this too
+  const byStudent = await SignedVC.findOne({ student_id: asString }).lean();
+  if (byStudent) return byStudent;
+
+  // Optional: string _id docs
   try {
-    const byStringId = await SignedVC.findOne({ _id: String(credential_id) }).lean();
+    const byStringId = await SignedVC.findOne({ _id: asString }).lean();
     if (byStringId) return byStringId;
   } catch {}
 
   return null;
 }
 
+
 /* ---------- Core verifiers ---------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
   if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
+  // 👉 Only reject when explicitly revoked
+  if (signed.status === 'revoked') return { ok: false, reason: 'not_found_or_revoked' };
 
   if (signed.anchoring?.state !== 'anchored') {
     // Valid VC, not anchored yet
