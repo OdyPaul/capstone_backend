@@ -1,173 +1,79 @@
-// controllers/web/verificationController.js
-const asyncHandler = require('express-async-handler');
-const keccak256 = require('keccak256');
-const crypto = require('crypto');
+// routes/web/verificationRoutes.js
+const express = require('express');
+const router = express.Router();
+const ctrl = require('../../controllers/web/verificationController');
 
-const SignedVC = require('../../models/web/signedVcModel');
-const AnchorBatch = require('../../models/web/anchorBatchModel');
-const VerificationSession = require('../../models/web/verificationSessionModel');
-const { digestJws, fromB64url } = require('../../utils/vcCrypto');
+const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
+const { z, validate } = require('../../middleware/validate');
 
-const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
-const isFinal = (r) => r && r.reason && r.reason !== 'pending';
+const multer = require('multer');
 
-function verifyProof(leafBuf, proof, rootHex) {
-  let hash = leafBuf;
-  for (const p of proof || []) {
-    const sibling = hexToBuf(p);
-    const [a, b] = [hash, sibling].sort(Buffer.compare);
-    hash = keccak256(Buffer.concat([a, b]));
-  }
-  const computed = '0x' + hash.toString('hex');
-  return computed.toLowerCase() === String(rootHex || '').toLowerCase();
-}
+// ---- Redis rate limits (tune as needed)
+const RL_CREATE  = rateLimitRedis({ prefix: 'rl:veri:create',  windowMs: 60_000, max: 20 });
+const RL_BEGIN   = rateLimitRedis({ prefix: 'rl:veri:begin',   windowMs: 60_000, max: 60 });
+const RL_POLL    = rateLimitRedis({ prefix: 'rl:veri:poll',    windowMs: 60_000, max: 240 });
+const RL_PRESENT = rateLimitRedis({ prefix: 'rl:veri:present', windowMs: 60_000, max: 60 });
+const RL_UPLOAD  = rateLimitRedis({ prefix: 'rl:veri:upload',  windowMs: 60_000, max: 30 });
 
-const createSession = asyncHandler(async (req, res) => {
-  const { org, contact, types = ['TOR'], ttlHours = 48 } = req.body || {};
-  const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
-  const expires_at = new Date(Date.now() + Number(ttlHours || 48) * 3600 * 1000);
-
-  await VerificationSession.create({
-    session_id,
-    employer: { org: org || '', contact: contact || '' },
-    request: { types: Array.isArray(types) ? types : ['TOR'], purpose: 'Hiring' },
-    result: { valid: false, reason: 'pending' },
-    expires_at,
-  });
-
-  res.status(201).json({
-    session_id,
-    verifyUrl: `${process.env.BASE_URL}/verify/${session_id}`,
-  });
+// ---- Validation
+const vSessionParam = validate({
+  params: z.object({ sessionId: z.string().min(6).max(64) }).strict(),
+});
+const vCreateBody = validate({
+  body: z.object({
+    org: z.string().max(120).optional(),
+    contact: z.string().max(120).optional(),
+    types: z.array(z.string().max(40)).min(1).max(8).optional(),
+    ttlHours: z.number().int().min(1).max(168).optional(),
+  }).strict()
+});
+const vBeginBody = validate({
+  body: z.object({
+    org: z.string().max(120).optional(),
+    contact: z.string().max(120).optional(),
+    purpose: z.string().max(240).optional(),
+  }).strict()
+});
+const vPresentBody = validate({
+  body: z.object({
+    credential_id: z.string().max(64).optional(),
+    payload: z.object({
+      jws: z.string(),
+      salt: z.string(),
+      digest: z.string(),
+      anchoring: z.any().optional(),
+      alg: z.string().optional(),
+      kid: z.string().optional(),
+    }).partial().refine(o => o.jws && o.salt && o.digest, 'missing fields').optional(),
+  }).strict()
 });
 
-const beginSession = asyncHandler(async (req, res) => {
-  const { sessionId } = req.params;
-  const { org, contact, purpose = 'General verification' } = req.body || {};
-  const sess = await VerificationSession.findOne({ session_id: sessionId });
-  if (!sess) return res.status(404).json({ message: 'Session not found' });
-  if (sess.expires_at < new Date()) return res.status(410).json({ message: 'Session expired' });
-  if (isFinal(sess.result)) return res.json({ ok: true }); // already decided
-
-  sess.employer = { org: org || '', contact: contact || '' };
-  sess.request = { ...(sess.request || {}), purpose };
-  sess.markModified('employer');
-  sess.markModified('request');
-  await sess.save();
-
-  res.json({ ok: true });
+// ---- Multer (in-memory) for QR images
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 1_500_000, files: 1 }, // ~1.5MB
+  fileFilter: (_req, file, cb) => {
+    const ok = /image\/(png|jpeg|jpg|webp)/i.test(file.mimetype);
+    cb(ok ? null : new Error('unsupported_file_type'), ok);
+  },
 });
 
-const getSession = asyncHandler(async (req, res) => {
-  const { sessionId } = req.params;
-  const sess = await VerificationSession.findOne({ session_id: sessionId }).lean();
-  if (!sess) return res.status(404).json({ message: 'Session not found' });
+// ---- Routes
+router.post('/api/verification/session', RL_CREATE, vCreateBody, ctrl.createSession);
 
-  res.set('Cache-Control', 'no-store');
-  res.json({
-    session_id: sess.session_id,
-    employer: sess.employer,
-    request: sess.request,
-    result: sess.result,
-    expires_at: sess.expires_at,
-  });
-});
+router.post('/api/verification/session/:sessionId/begin', RL_BEGIN, vSessionParam, vBeginBody, ctrl.beginSession);
 
-const submitPresentation = asyncHandler(async (req, res) => {
-  const { sessionId } = req.params;
-  const { credential_id, payload } = req.body || {};
-  const now = new Date();
+router.get('/api/verification/session/:sessionId', RL_POLL, vSessionParam, ctrl.getSession);
 
-  const sess = await VerificationSession.findOne({ session_id: sessionId });
-  if (!sess) return res.status(404).json({ message: 'Session not found' });
-  if (isFinal(sess.result)) return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
-  if (sess.expires_at < now) {
-    sess.result = { valid: false, reason: 'expired_session' };
-    await sess.save();
-    return res.json({ ok: false, reason: 'expired_session' });
-  }
+router.post('/api/verification/session/:sessionId/present', RL_PRESENT, vSessionParam, vPresentBody, ctrl.submitPresentation);
 
-  // Path A: DB-stored VC
-  if (credential_id && !payload) {
-    const signed = await SignedVC.findById(credential_id).lean();
-    if (!signed || signed.status !== 'active') {
-      sess.result = { valid: false, reason: 'not_found_or_revoked' };
-      await sess.save(); return res.json({ ok: false, reason: 'not_found_or_revoked' });
-    }
-    if (signed.anchoring?.state !== 'anchored') {
-      sess.result = { valid: true, reason: 'not_anchored' }; // syntactically valid, not anchored
-      await sess.save(); return res.json({ ok: true, session: sess.session_id, result: sess.result });
-    }
+// NEW: upload QR image instead of scanning
+router.post(
+  '/api/verification/session/:sessionId/present-qr',
+  RL_UPLOAD,
+  vSessionParam,
+  upload.single('qr'), // expects multipart field "qr" (or body.imageDataUrl as fallback)
+  ctrl.presentFromQrImage
+);
 
-    const digest = digestJws(signed.jws, signed.salt);
-    if (digest !== signed.digest) {
-      sess.result = { valid: false, reason: 'digest_mismatch' };
-      await sess.save(); return res.json({ ok: false, reason: 'digest_mismatch' });
-    }
-
-    const batch = await AnchorBatch.findOne({ batch_id: signed.anchoring.batch_id }).lean();
-    if (!batch || !batch.merkle_root) {
-      sess.result = { valid: false, reason: 'batch_missing' };
-      await sess.save(); return res.json({ ok: false, reason: 'batch_missing' });
-    }
-
-    const leaf = keccak256(fromB64url(signed.digest));
-    const ok = verifyProof(leaf, signed.anchoring.merkle_proof || [], batch.merkle_root);
-    if (!ok) {
-      sess.result = { valid: false, reason: 'merkle_proof_invalid' };
-      await sess.save(); return res.json({ ok: false, reason: 'merkle_proof_invalid' });
-    }
-
-    sess.result = { valid: true, reason: 'ok' };
-    await sess.save();
-    return res.json({ ok: true, session: sess.session_id, result: sess.result });
-  }
-
-  // Path B: stateless payload from phone
-  if (payload && !credential_id) {
-    const { jws, salt, digest, anchoring, alg } = payload;
-
-    if (!jws || !salt || !digest) {
-      sess.result = { valid: false, reason: 'payload_incomplete' };
-      await sess.save(); return res.json({ ok: false, reason: 'payload_incomplete' });
-    }
-
-    // optional: enforce allowed alg
-    if (alg && !['ES256'].includes(alg)) {
-      sess.result = { valid: false, reason: 'alg_not_allowed' };
-      await sess.save(); return res.json({ ok: false, reason: 'alg_not_allowed' });
-    }
-
-    const recomputed = digestJws(jws, salt);
-    if (recomputed !== digest) {
-      sess.result = { valid: false, reason: 'digest_mismatch' };
-      await sess.save(); return res.json({ ok: false, reason: 'digest_mismatch' });
-    }
-
-    if (anchoring?.state === 'anchored') {
-      const batch = await AnchorBatch.findOne({ batch_id: anchoring.batch_id }).lean();
-      if (!batch || !batch.merkle_root) {
-        sess.result = { valid: false, reason: 'batch_missing' };
-        await sess.save(); return res.json({ ok: false, reason: 'batch_missing' });
-      }
-      const leaf = keccak256(fromB64url(digest));
-      const ok = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
-      if (!ok) {
-        sess.result = { valid: false, reason: 'merkle_proof_invalid' };
-        await sess.save(); return res.json({ ok: false, reason: 'merkle_proof_invalid' });
-      }
-      sess.result = { valid: true, reason: 'ok' };
-    } else {
-      sess.result = { valid: true, reason: 'not_anchored' };
-    }
-
-    await sess.save();
-    return res.json({ ok: true, session: sess.session_id, result: sess.result });
-  }
-
-  sess.result = { valid: false, reason: 'bad_request' };
-  await sess.save();
-  return res.status(400).json({ ok: false, reason: 'bad_request' });
-});
-
-module.exports = { createSession, beginSession, getSession, submitPresentation };
+module.exports = router;
