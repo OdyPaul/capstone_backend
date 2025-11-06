@@ -3,12 +3,12 @@ const asyncHandler = require('express-async-handler');
 const keccak256 = require('keccak256');
 const crypto = require('crypto');
 const Jimp = require('jimp');
-import jsQR from 'jsqr';
+const jsQR = require('jsqr');
 
 const SignedVC = require('../../models/web/signedVcModel');
 const AnchorBatch = require('../../models/web/anchorBatchModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
-const ClaimTicket = require('../../models/web/claimTicket'); // to resolve /c/:token
+const ClaimTicket = require('../../models/web/claimTicket'); // for /c/:token in QR
 const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 
 const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
@@ -16,7 +16,7 @@ const isFinal = (r) => r && r.reason && r.reason !== 'pending';
 
 function verifyProof(leafBuf, proof, rootHex) {
   let hash = leafBuf;
-  for (const p of proof || []) {
+  for (const p of (proof || [])) {
     const sibling = hexToBuf(p);
     const [a, b] = [hash, sibling].sort(Buffer.compare);
     hash = keccak256(Buffer.concat([a, b]));
@@ -35,13 +35,12 @@ const buildVcPayload = (vc) => ({
   anchoring: vc.anchoring,
 });
 
-/* ---------- core verifiers ---------- */
+/* ---------------- core verifiers ---------------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await SignedVC.findById(credential_id).lean();
   if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
 
   if (signed.anchoring?.state !== 'anchored') {
-    // syntactically valid but not anchored
     return { ok: true, result: { valid: true, reason: 'not_anchored' } };
   }
 
@@ -52,8 +51,8 @@ async function verifyByCredentialId(credential_id) {
   if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
 
   const leaf = keccak256(fromB64url(signed.digest));
-  const ok = verifyProof(leaf, signed.anchoring.merkle_proof || [], batch.merkle_root);
-  if (!ok) return { ok: false, reason: 'merkle_proof_invalid' };
+  const included = verifyProof(leaf, signed.anchoring.merkle_proof || [], batch.merkle_root);
+  if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
 
   return { ok: true, result: { valid: true, reason: 'ok' } };
 }
@@ -70,21 +69,21 @@ async function verifyStatelessPayload(payload) {
     const batch = await AnchorBatch.findOne({ batch_id: anchoring.batch_id }).lean();
     if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
     const leaf = keccak256(fromB64url(digest));
-    const ok = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
-    if (!ok) return { ok: false, reason: 'merkle_proof_invalid' };
+    const included = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
+    if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
     return { ok: true, result: { valid: true, reason: 'ok' } };
   }
   return { ok: true, result: { valid: true, reason: 'not_anchored' } };
 }
 
-/* ---------- QR decoding ---------- */
+/* ---------------- QR decode helpers ---------------- */
 async function decodeQrBuffer(buf) {
-  const image = await Jimp.read(buf);
-  return new Promise((resolve, reject) => {
-    const qr = new QrCode();
-    qr.callback = (err, v) => (err ? reject(err) : resolve((v && v.result) || ''));
-    qr.decode(image.bitmap);
-  });
+  const img = await Jimp.read(buf);
+  const { data, width, height } = img.bitmap; // RGBA Buffer
+  // jsQR expects a Uint8ClampedArray (RGBA)
+  const u8 = new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength);
+  const qr = jsQR(u8, width, height);
+  return qr ? qr.data : '';
 }
 
 function tryParseJson(text) {
@@ -99,7 +98,7 @@ function extractClaimTokenFromUrl(text) {
   } catch { return null; }
 }
 
-/* ---------- public handlers ---------- */
+/* ---------------- controllers (pure exports, no router mounts) ---------------- */
 const createSession = asyncHandler(async (req, res) => {
   const { org, contact, types = ['TOR'], ttlHours = 48 } = req.body || {};
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
@@ -129,7 +128,8 @@ const beginSession = asyncHandler(async (req, res) => {
 
   sess.employer = { org: org || '', contact: contact || '' };
   sess.request = { ...(sess.request || {}), purpose };
-  sess.markModified('employer'); sess.markModified('request');
+  sess.markModified('employer');
+  sess.markModified('request');
   await sess.save();
 
   res.json({ ok: true });
@@ -165,14 +165,9 @@ const submitPresentation = asyncHandler(async (req, res) => {
   }
 
   let outcome;
-
-  if (credential_id && !payload) {
-    outcome = await verifyByCredentialId(credential_id);
-  } else if (payload && !credential_id) {
-    outcome = await verifyStatelessPayload(payload);
-  } else {
-    outcome = { ok: false, reason: 'bad_request' };
-  }
+  if (credential_id && !payload) outcome = await verifyByCredentialId(credential_id);
+  else if (payload && !credential_id) outcome = await verifyStatelessPayload(payload);
+  else outcome = { ok: false, reason: 'bad_request' };
 
   if (!outcome.ok) {
     sess.result = { valid: false, reason: outcome.reason || 'failed' };
@@ -186,7 +181,6 @@ const submitPresentation = asyncHandler(async (req, res) => {
   return res.json({ ok: true, session: sess.session_id, result: sess.result });
 });
 
-/* ---------- NEW: upload QR image to verify without scanning ---------- */
 const presentFromQrImage = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
   const sess = await VerificationSession.findOne({ session_id: sessionId });
@@ -198,7 +192,7 @@ const presentFromQrImage = asyncHandler(async (req, res) => {
     return res.json({ ok: false, reason: 'expired_session' });
   }
 
-  // Accept either file field 'qr' or a base64 data URL in body.imageDataUrl
+  // Accept either multipart "qr" or body.imageDataUrl
   let buf = null;
   if (req.file && req.file.buffer) {
     buf = req.file.buffer;
@@ -215,10 +209,10 @@ const presentFromQrImage = asyncHandler(async (req, res) => {
     return res.status(422).json({ ok: false, reason: 'qr_decode_failed' });
   }
 
-  // Accept either: claim URL (/c/:token), or raw JSON payload
+  // Accept either claim URL (/c/:token) or raw JSON payload
   let payload = null;
 
-  // 1) Try claim URL
+  // 1) claim URL path
   const token = extractClaimTokenFromUrl(text);
   if (token) {
     const now = new Date();
@@ -231,23 +225,18 @@ const presentFromQrImage = asyncHandler(async (req, res) => {
     if (!vc) return res.status(404).json({ ok: false, reason: 'credential_not_found' });
     if (vc.status !== 'active') return res.status(409).json({ ok: false, reason: 'credential_not_active' });
 
-    // (Optionally mark ticket used here, mirroring redeemClaim)
     if (!t.used_at) { t.used_at = now; await t.save().catch(() => {}); }
-
     payload = buildVcPayload(vc);
   }
 
-  // 2) Try JSON payload inside QR (stateless)
+  // 2) JSON payload inside QR
   if (!payload) {
     const parsed = tryParseJson(text);
-    if (parsed && parsed.jws && parsed.salt && parsed.digest) {
-      payload = parsed;
-    }
+    if (parsed && parsed.jws && parsed.salt && parsed.digest) payload = parsed;
   }
 
   if (!payload) return res.status(400).json({ ok: false, reason: 'qr_unrecognized' });
 
-  // Reuse the same stateless verification
   const outcome = await verifyStatelessPayload(payload);
   if (!outcome.ok) {
     sess.result = { valid: false, reason: outcome.reason || 'failed' };
@@ -265,5 +254,5 @@ module.exports = {
   beginSession,
   getSession,
   submitPresentation,
-  presentFromQrImage, // NEW
+  presentFromQrImage,
 };
