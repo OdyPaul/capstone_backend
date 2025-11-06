@@ -169,6 +169,16 @@ const updateWebUser = asyncHandler(async (req, res) => {
     res.status(403); throw new Error('Not authorized');
   }
 
+  // 🔐 If the requester is superadmin, require their current password for ANY edit they perform.
+  if (isSuperadmin) {
+    const { currentPassword } = req.body || {};
+    if (!currentPassword) { res.status(401); throw new Error('Current password required to perform admin updates'); }
+
+    const freshRequester = await User.findById(requester._id);
+    const ok = await bcrypt.compare(String(currentPassword), freshRequester.password || '');
+    if (!ok) { res.status(401); throw new Error('Invalid current password'); }
+  }
+
   const {
     username, fullName, age, address, gender, email, password, contactNo, role,
     profilePicture,  // optional raw URL/data-URI
@@ -219,6 +229,7 @@ const updateWebUser = asyncHandler(async (req, res) => {
   const safe = await User.findById(target._id).select('-password');
   res.status(200).json({ user: safe });
 });
+
 // ---------------- SHARED CONTROLLERS ----------------
 
 // @desc    Get logged-in user profile
