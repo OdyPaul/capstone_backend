@@ -54,15 +54,17 @@ const mobileUser = (req, res, next) => {
   }
 };
 
-// middleware/authMiddleware.js
-exports.allowRoles = (...roles) => (req, res, next) => {
-  if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
+const allowRoles = (...roles) => (req, res, next) => {
+  if (!req.user) {
+    res.status(401);
+    throw new Error('Not authenticated');
+  }
   if (!roles.includes(req.user.role)) {
-    return res.status(403).json({ message: 'Forbidden: insufficient role' });
+    res.status(403);
+    throw new Error('Forbidden: insufficient role');
   }
   next();
 };
-
 module.exports = {
   protect,
   admin,
