@@ -1,5 +1,4 @@
 // controllers/mobile/verificationController.js
-const axios = require("axios"); // kept for future use if needed
 const { isValidObjectId } = require("mongoose");
 
 const VerificationRequest = require("../../models/mobile/verificationRequestModel");
