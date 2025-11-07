@@ -22,7 +22,6 @@ function getAuditLogAuth() {
 }
 
 // -------- Range helper --------
-// Returns a Date boundary or null (null = all-time)
 function startForRange(range) {
   const now = new Date();
   const startOfToday = new Date(now); startOfToday.setHours(0, 0, 0, 0);
@@ -34,7 +33,7 @@ function startForRange(range) {
     case "6m":    return new Date(now.getTime() - 182 * 864e5);
     case "all":
     case "alltime":
-      return null; // all-time
+      return null;
     default:
       return new Date(now.getTime() - 7 * 864e5);
   }
@@ -75,21 +74,27 @@ function addSessionSplitByDay(outMap, start, end) {
       const key = dayStart.toISOString().slice(0, 10);
       outMap[key] = (outMap[key] || 0) + (segEnd - segStart);
     }
-    cur = new Date(cur.getTime() + 864e5); // next day
+    cur = new Date(cur.getTime() + 864e5);
   }
 }
 
-// Compute total logged ms for a user within range.
-// Uses successful (2xx) web.login matched by meta.loginEmail and web.logout by actorId.
-// Adds a 1-day buffer before 'since' to span overnight sessions.
+/**
+ * Compute total logged ms for a user within range.
+ * RULES:
+ *  - Count only intervals that BEGIN with a `web.login`.
+ *  - For a bounded range (e.g., "today"), IGNORE any session that started BEFORE `since`.
+ *    (So if user stayed logged in overnight, today = 0 until they log in today.)
+ */
 async function computeLoggedMs(user, since) {
   const Audit = getAuditLogAuth();
   if (!Audit || !user) return 0;
 
   const userId = user._id;
   const userEmail = String(user.email || "").toLowerCase();
+  const sinceFloor = since ? startOfDay(since) : null;
 
-  const tsFilter = since ? { $gte: new Date(since.getTime() - 864e5) } : undefined;
+  // Fetch a little before since (for ordering), but we will enforce the rule above.
+  const tsFilter = sinceFloor ? { $gte: new Date(sinceFloor.getTime() - 864e5) } : undefined;
   const query = {
     ...(tsFilter ? { ts: tsFilter } : {}),
     status: { $gte: 200, $lt: 300 },
@@ -107,25 +112,39 @@ async function computeLoggedMs(user, since) {
 
   for (const row of logs) {
     const t = new Date(row.ts);
+
     if (row.routeTag === "web.login") {
-      currentStart = currentStart || t;
+      // Only start a new counted session if the login is within range OR range is all-time.
+      if (!sinceFloor || t >= sinceFloor) {
+        currentStart = t;
+      } else {
+        // login happened before `since` → do not start a session for this range
+        currentStart = null;
+      }
     } else if (row.routeTag === "web.logout") {
-      if (currentStart && t > currentStart) {
-        addSessionSplitByDay(sessionsByDay, currentStart, t);
+      if (currentStart) {
+        const sessionStart = currentStart;
+        const sessionEnd   = t;
+        // Count only if session STARTED within the range.
+        if (!sinceFloor || sessionStart >= sinceFloor) {
+          addSessionSplitByDay(sessionsByDay, sessionStart, sessionEnd);
+        }
       }
       currentStart = null;
     }
   }
 
-  // Count an open session up to now
+  // Open session → only count if it started within the range
   if (currentStart) {
-    addSessionSplitByDay(sessionsByDay, currentStart, now);
+    if (!sinceFloor || currentStart >= sinceFloor) {
+      addSessionSplitByDay(sessionsByDay, currentStart, now);
+    }
   }
 
   // Sum over selected range (or all-time)
   let total = 0;
-  if (since) {
-    const sinceKey = startOfDay(since).toISOString().slice(0, 10);
+  if (sinceFloor) {
+    const sinceKey = startOfDay(sinceFloor).toISOString().slice(0, 10);
     for (const [k, v] of Object.entries(sessionsByDay)) {
       if (k >= sinceKey) total += v;
     }
@@ -136,7 +155,7 @@ async function computeLoggedMs(user, since) {
   return total; // ms
 }
 
-// -------- Main overview (unchanged interface) --------
+// -------- Main overview --------
 exports.getOverview = asyncHandler(async (req, res) => {
   const since = startForRange(req.query.range);
 
@@ -160,7 +179,6 @@ exports.getOverview = asyncHandler(async (req, res) => {
   const issuedCountMatch = { status: "active" };
   if (since) issuedCountMatch.createdAt = { $gte: since };
   const issuedCount = await SignedVC.countDocuments(issuedCountMatch);
-
   const revenuePhp = paymentsAgg.length ? paymentsAgg[0].total : issuedCount * 250;
 
   // Line: drafts created per day in range
@@ -204,7 +222,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
     ),
   ]);
 
-  // Logged time for current user within selected range
+  // Logged time (with "start today only if login today" semantics)
   const loggedMs = await computeLoggedMs(req.user, since);
   const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100;
 
@@ -215,7 +233,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
   });
 });
 
-// -------- NEW: explicit logged-time endpoint --------
+// -------- Explicit logged-time endpoint --------
 // GET /api/web/stats/admin/stats/logged-time?range=today|1w|1m|3m|6m|all
 exports.getLoggedTime = asyncHandler(async (req, res) => {
   const range = String(req.query.range || "today");
