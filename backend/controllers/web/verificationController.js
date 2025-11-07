@@ -194,9 +194,10 @@ const getSession = asyncHandler(async (req, res) => {
   });
 });
 
+// controllers/web/verificationController.js → inside submitPresentation
 const submitPresentation = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
-  const { credential_id, payload, decision } = req.body || {};
+  const { credential_id, payload, decision } = req.body || {};   // 👈 read decision
   const now = new Date();
 
   const sess = await VerificationSession.findOne({ session_id: sessionId });
@@ -213,7 +214,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
     return res.status(410).json({ ok: false, reason: 'expired_session' });
   }
 
-  // ✅ Deny path (holder denies)
+  // ✅ Only holder can finalize as denied
   if (decision === 'deny') {
     sess.result = { valid: false, reason: 'denied_by_holder' };
     await sess.save();
@@ -221,27 +222,27 @@ const submitPresentation = asyncHandler(async (req, res) => {
     return res.json({ ok: true, session: sess.session_id, result: sess.result });
   }
 
-  // Decide which verifier to use:
-  // Prefer payload (stateless) if present; else try credential_id
-  let outcome;
-  if (payload && Object.keys(payload || {}).length) {
+  // Prefer stateless payload, else server-resolvable id
+  let outcome = null;
+  if (payload && Object.keys(payload).length) {
     outcome = await verifyStatelessPayload(payload);
   } else if (credential_id) {
     outcome = await verifyByCredentialId(credential_id);
   } else {
-    outcome = { ok: false, reason: 'bad_request' };
+    // ⛔ Bad request: DO NOT finalize the session — keep it pending!
+    res.set('Cache-Control', 'no-store');
+    return res.status(400).json({ ok: false, reason: 'bad_request' });
   }
 
   if (!outcome.ok) {
-    // Finalize the session with the failure reason so the portal exits its “pending” state.
+    // A real verification was attempted but failed → finalize with that reason
     sess.result = { valid: false, reason: outcome.reason || 'failed' };
     await sess.save();
-    const code = outcome.reason === 'bad_request' ? 400 : 200;
     res.set('Cache-Control', 'no-store');
-    return res.status(code).json({ ok: false, reason: sess.result.reason });
+    return res.status(200).json({ ok: false, reason: sess.result.reason });
   }
 
-  // Success
+  // ✅ Success
   sess.result = outcome.result; // { valid: true, reason: 'ok' | 'not_anchored' }
   await sess.save();
   res.set('Cache-Control', 'no-store');
