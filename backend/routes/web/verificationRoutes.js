@@ -26,10 +26,15 @@ const vCreateBody = validate({
     types: z.array(z.string().max(40)).min(1).max(8).optional(),
     ttlHours: z.coerce.number().int().min(1).max(168).optional(),
     ui_base: z.string().max(300).optional(), // e.g. http://localhost:5173/verification-portal
-   credential_id: z.string().max(64).optional(),
+   credential_id: z.string().max(256).optional(),
    
   }).strict(), // keep strict so only allowed keys are accepted
 });
+const PresentWithDecision = z.object({
+  decision: z.enum(['deny']),
+  credential_id: z.undefined().optional(),
+  payload: z.undefined().optional(),
+}).strict();
 
 const vBeginBody = validate({
   body: z.object({
@@ -41,7 +46,7 @@ const vBeginBody = validate({
 
 // Either credential_id OR payload
 const PresentWithId = z.object({
-  credential_id: z.string().max(64),
+  credential_id: z.string().max(256),
   payload: z.undefined().optional(),
 }).strict();
 
@@ -65,5 +70,7 @@ router.post('/verification/session', RL_CREATE, vCreateBody, ctrl.createSession)
 router.post('/verification/session/:sessionId/begin', RL_BEGIN, vSessionParam, vBeginBody, ctrl.beginSession);
 router.get('/verification/session/:sessionId', RL_POLL, vSessionParam, ctrl.getSession);
 router.post('/verification/session/:sessionId/present', RL_PRESENT, vSessionParam, vPresentBody, ctrl.submitPresentation);
+
+router.get('/verification/session/:sessionId/qr.png', RL_POLL, vSessionParam, ctrl.sessionQrPng);
 
 module.exports = router;

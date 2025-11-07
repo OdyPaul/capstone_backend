@@ -208,6 +208,12 @@ const submitPresentation = asyncHandler(async (req, res) => {
     await sess.save();
     return res.json({ ok: false, reason: 'expired_session' });
   }
+    // 👉 Deny path
+  if (decision === 'deny') {
+    sess.result = { valid: false, reason: 'denied_by_holder' };
+    await sess.save();
+    return res.json({ ok: true, session: sess.session_id, result: sess.result });
+  }
 
   let outcome;
   if (credential_id && !payload) outcome = await verifyByCredentialId(credential_id);

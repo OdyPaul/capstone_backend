@@ -52,9 +52,10 @@ exports.listSigned = asyncHandler(async (req, res) => {
   if (and.length) filter.$and = and;
 
   const docs = await SignedVC.find(filter)
-    .select('_id template_id status anchoring createdAt claimed_at vc_payload')
+    .select('_id key template_id status anchoring createdAt claimed_at vc_payload') // 👈 add key
     .sort({ createdAt: -1 })
     .lean();
 
   res.json(docs);
+
 });

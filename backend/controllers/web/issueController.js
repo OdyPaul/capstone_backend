@@ -119,7 +119,13 @@ exports.issueFromDraft = asyncHandler(async (req, res) => {
     return anchorCtrl.requestNow(req, res);
   }
 
-  return res.status(201).json({ message: 'Issued (unanchored)', credential_id: signed._id });
+   return res.status(201).json({
+    message: 'Issued (unanchored)',
+    credential_id: signed._id,     // mongo ObjectId (server-internal)
+    key: signed.key,               // public string id (use in links/QR)
+    status: signed.status,
+    anchoring: signed.anchoring,
+  });
 });
 
 // -------------------- LIST SIGNED --------------------
