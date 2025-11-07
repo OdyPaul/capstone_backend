@@ -69,7 +69,13 @@ const updateWebUserSchema = {
       z.string().url(),
       z.string().startsWith("data:image/")
     ]).optional().nullable(),
-    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional()
+    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+
+
+    // ✅ keep these so the controller can read them
+   currentPassword: z.string().min(1).max(200).optional(),
+   passwordCurrent: z.string().min(1).max(200).optional(),
+   adminPassword: z.string().min(1).max(200).optional(),
   }).strip(),
 };
 
