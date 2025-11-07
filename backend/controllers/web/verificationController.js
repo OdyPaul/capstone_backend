@@ -116,45 +116,54 @@ async function verifyStatelessPayload(payload) {
 /* ---------- Controllers ---------- */
 // controllers/web/verificationController.js
 const createSession = asyncHandler(async (req, res) => {
-  const {
-    org,
-    contact,
-    types = ['TOR'],
-    ttlHours = 168,
-    credential_id,     // ← provided by client (optional)
-    ui_base,
-  } = req.body || {};
+  // controllers/web/verificationController.js (inside createSession)
+const {
+  org,
+  contact,
+  types = ['TOR'],
+  ttlHours = 168,
+  credential_id,           // holder's actual id (private)
+  ui_base,
+} = req.body || {};
 
-  const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
-  const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
+const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
+const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
 
-  await VerificationSession.create({
-    session_id,
-    employer: { org: org || '', contact: contact || '' },
-    // ⬇️ persist credential_id here so mobile can read it later
-    request: { types: Array.isArray(types) ? types : ['TOR'], purpose: 'Hiring', credential_id: credential_id || '' },
-    result: { valid: false, reason: 'pending' },
-    expires_at,
-  });
+// short random, not reversible to student #
+const hint_key = crypto.randomBytes(6).toString('base64url');
 
-  const UI_BASE = String(
-    ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL || process.env.BASE_URL || `${req.protocol}://${req.get('host')}`
-  ).replace(/\/+$/, '');
+await VerificationSession.create({
+  session_id,
+  employer: { org: org || '', contact: contact || '' },
+  request: {
+    types: Array.isArray(types) ? types : ['TOR'],
+    purpose: 'Hiring',
+    cred_hint: credential_id || null, // store privately
+    hint_key,                         // opaque token for the URL
+  },
+  result: { valid: false, reason: 'pending' },
+  expires_at,
+});
 
-  function buildVerifyUrl(base, session, credId) {
-    const hasPlaceholder = /\{session\}/.test(base);
-    const url = hasPlaceholder
-      ? base.replace('{session}', session)
-      : base.endsWith('/verification-portal') || base.endsWith('/verify')
-        ? `${base}/${session}`
-        : `${base}/verify/${session}`;
-    const sep = url.includes('?') ? '&' : '?';
-    return credId ? `${url}${sep}credential_id=${encodeURIComponent(String(credId))}` : url;
-  }
+const UI_BASE =
+  String(ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL ||
+    process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
 
-  const verifyUrl = buildVerifyUrl(UI_BASE, session_id, credential_id);
+function buildVerifyUrl(base, session, hint) {
+  const hasPlaceholder = /\{session\}/.test(base);
+  const url = hasPlaceholder
+    ? base.replace('{session}', session)
+    : base.endsWith('/verification-portal') || base.endsWith('/verify')
+      ? `${base}/${session}`
+      : `${base}/verify/${session}`;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}hint=${encodeURIComponent(hint)}`; // <- no credential_id in URL
+}
 
-  res.status(201).json({ session_id, verifyUrl, expires_at });
+const verifyUrl = buildVerifyUrl(UI_BASE, session_id, hint_key);
+
+res.status(201).json({ session_id, verifyUrl, expires_at });
+
 });
 
 
