@@ -83,7 +83,7 @@ function addSessionSplitByDay(outMap, start, end) {
  * RULES:
  *  - Count only intervals that BEGIN with a `web.login`.
  *  - For a bounded range (e.g., "today"), IGNORE any session that started BEFORE `since`.
- *    (So if user stayed logged in overnight, today = 0 until they log in today.)
+ *    (If user stayed logged in overnight, "today" remains 0 until they log in today.)
  */
 async function computeLoggedMs(user, since) {
   const Audit = getAuditLogAuth();
@@ -91,9 +91,11 @@ async function computeLoggedMs(user, since) {
 
   const userId = user._id;
   const userEmail = String(user.email || "").toLowerCase();
-  const sinceFloor = since ? startOfDay(since) : null;
 
-  // Fetch a little before since (for ordering), but we will enforce the rule above.
+  // if caller provided since (client local midnight in UTC), respect it exactly
+  const sinceFloor = since ? new Date(since) : null;
+
+  // Fetch a bit earlier for ordering, but we enforce since-window on session start.
   const tsFilter = sinceFloor ? { $gte: new Date(sinceFloor.getTime() - 864e5) } : undefined;
   const query = {
     ...(tsFilter ? { ts: tsFilter } : {}),
@@ -114,18 +116,16 @@ async function computeLoggedMs(user, since) {
     const t = new Date(row.ts);
 
     if (row.routeTag === "web.login") {
-      // Only start a new counted session if the login is within range OR range is all-time.
+      // Start counting only if login is inside the range (or no range).
       if (!sinceFloor || t >= sinceFloor) {
         currentStart = t;
       } else {
-        // login happened before `since` → do not start a session for this range
         currentStart = null;
       }
     } else if (row.routeTag === "web.logout") {
       if (currentStart) {
         const sessionStart = currentStart;
         const sessionEnd   = t;
-        // Count only if session STARTED within the range.
         if (!sinceFloor || sessionStart >= sinceFloor) {
           addSessionSplitByDay(sessionsByDay, sessionStart, sessionEnd);
         }
@@ -144,7 +144,7 @@ async function computeLoggedMs(user, since) {
   // Sum over selected range (or all-time)
   let total = 0;
   if (sinceFloor) {
-    const sinceKey = startOfDay(sinceFloor).toISOString().slice(0, 10);
+    const sinceKey = new Date(sinceFloor).toISOString().slice(0, 10);
     for (const [k, v] of Object.entries(sessionsByDay)) {
       if (k >= sinceKey) total += v;
     }
@@ -157,7 +157,13 @@ async function computeLoggedMs(user, since) {
 
 // -------- Main overview --------
 exports.getOverview = asyncHandler(async (req, res) => {
-  const since = startForRange(req.query.range);
+  // If client sends since (UTC ISO for client local midnight), prefer it.
+  let since = null;
+  if (req.query.since) {
+    const d = new Date(req.query.since);
+    if (!isNaN(d.getTime())) since = d;
+  }
+  if (!since) since = startForRange(req.query.range);
 
   // Totals (all-time)
   const [students, drafts, issuedActive, anchored] = await Promise.all([
@@ -222,7 +228,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
     ),
   ]);
 
-  // Logged time (with "start today only if login today" semantics)
+  // Logged time (start today only if login today)
   const loggedMs = await computeLoggedMs(req.user, since);
   const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100;
 
@@ -234,14 +240,18 @@ exports.getOverview = asyncHandler(async (req, res) => {
 });
 
 // -------- Explicit logged-time endpoint --------
-// GET /api/web/stats/admin/stats/logged-time?range=today|1w|1m|3m|6m|all
+// GET /api/web/stats/admin/stats/logged-time?range=today|1w|1m|3m|6m|all&since=<ISO>
 exports.getLoggedTime = asyncHandler(async (req, res) => {
-  const range = String(req.query.range || "today");
-  const since = startForRange(range);
+  let since = null;
+  if (req.query.since) {
+    const d = new Date(req.query.since);
+    if (!isNaN(d.getTime())) since = d;
+  }
+  if (!since) since = startForRange(String(req.query.range || "today"));
   const loggedMs = await computeLoggedMs(req.user, since);
   const loggedHours = Math.round((loggedMs / 36e5) * 100) / 100;
   res.json({
-    range,
+    range: String(req.query.range || "today"),
     since: since ? since.toISOString() : null,
     loggedMs,
     loggedHours,
