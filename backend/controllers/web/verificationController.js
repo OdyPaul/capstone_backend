@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
 const QRCode      = require('qrcode');
-const mongoose    = require('mongoose');
+const mongoose    = require('mongoose'); // 👈 add this
 const { importJWK, compactVerify } = require('jose');
 
 const SignedVC = require('../../models/web/signedVcModel');
@@ -54,6 +54,7 @@ async function loadSignedVCByCredentialId(credential_id) {
   const byStudent = await SignedVC.findOne({ student_id: asString }).lean();
   if (byStudent) return byStudent;
 
+  // Optional: string _id docs
   try {
     const byStringId = await SignedVC.findOne({ _id: asString }).lean();
     if (byStringId) return byStringId;
@@ -66,11 +67,12 @@ async function loadSignedVCByCredentialId(credential_id) {
 /* ---------- Core verifiers ---------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
-  if (!signed) return { ok: false, reason: 'not_found_or_revoked' };
+  if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
+  // 👉 Only reject when explicitly revoked
   if (signed.status === 'revoked') return { ok: false, reason: 'not_found_or_revoked' };
 
-  // If not anchored yet, it’s still a valid VC (just unanchored)
   if (signed.anchoring?.state !== 'anchored') {
+    // Valid VC, not anchored yet
     return { ok: true, result: { valid: true, reason: 'not_anchored' } };
   }
 
@@ -112,13 +114,14 @@ async function verifyStatelessPayload(payload) {
 }
 
 /* ---------- Controllers ---------- */
+// controllers/web/verificationController.js
 const createSession = asyncHandler(async (req, res) => {
   const {
     org,
     contact,
     types = ['TOR'],
     ttlHours = 168,
-    credential_id,
+    credential_id,     // ← provided by client (optional)
     ui_base,
   } = req.body || {};
 
@@ -128,14 +131,15 @@ const createSession = asyncHandler(async (req, res) => {
   await VerificationSession.create({
     session_id,
     employer: { org: org || '', contact: contact || '' },
-    request: { types: Array.isArray(types) ? types : ['TOR'], purpose: 'Hiring' },
+    // ⬇️ persist credential_id here so mobile can read it later
+    request: { types: Array.isArray(types) ? types : ['TOR'], purpose: 'Hiring', credential_id: credential_id || '' },
     result: { valid: false, reason: 'pending' },
     expires_at,
   });
 
-  const UI_BASE =
-    String(ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL ||
-      process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const UI_BASE = String(
+    ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL || process.env.BASE_URL || `${req.protocol}://${req.get('host')}`
+  ).replace(/\/+$/, '');
 
   function buildVerifyUrl(base, session, credId) {
     const hasPlaceholder = /\{session\}/.test(base);
@@ -150,13 +154,9 @@ const createSession = asyncHandler(async (req, res) => {
 
   const verifyUrl = buildVerifyUrl(UI_BASE, session_id, credential_id);
 
-  res.set('Cache-Control', 'no-store');
-  res.status(201).json({
-    session_id,
-    verifyUrl,
-    expires_at,
-  });
+  res.status(201).json({ session_id, verifyUrl, expires_at });
 });
+
 
 const beginSession = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
@@ -164,10 +164,7 @@ const beginSession = asyncHandler(async (req, res) => {
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
   if (sess.expires_at < new Date()) return res.status(410).json({ message: 'Session expired' });
-  if (isFinal(sess.result)) {
-    res.set('Cache-Control', 'no-store');
-    return res.json({ ok: true });
-  }
+  if (isFinal(sess.result)) return res.json({ ok: true });
 
   sess.employer = { org: org || '', contact: contact || '' };
   sess.request = { ...(sess.request || {}), purpose };
@@ -175,7 +172,6 @@ const beginSession = asyncHandler(async (req, res) => {
   sess.markModified('request');
   await sess.save();
 
-  res.set('Cache-Control', 'no-store');
   res.json({ ok: true });
 });
 
@@ -194,60 +190,48 @@ const getSession = asyncHandler(async (req, res) => {
   });
 });
 
-// controllers/web/verificationController.js → inside submitPresentation
+// controllers/web/verificationController.js
 const submitPresentation = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
-  const { credential_id, payload, decision } = req.body || {};   // 👈 read decision
+  // ⬇️ add decision here
+  const { credential_id, payload, decision } = req.body || {};
   const now = new Date();
 
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
-
   if (isFinal(sess.result)) {
-    res.set('Cache-Control', 'no-store');
     return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
   }
   if (sess.expires_at < now) {
     sess.result = { valid: false, reason: 'expired_session' };
     await sess.save();
-    res.set('Cache-Control', 'no-store');
-    return res.status(410).json({ ok: false, reason: 'expired_session' });
+    return res.json({ ok: false, reason: 'expired_session' });
   }
 
-  // ✅ Only holder can finalize as denied
+  // ✅ Deny path (works now)
   if (decision === 'deny') {
     sess.result = { valid: false, reason: 'denied_by_holder' };
     await sess.save();
-    res.set('Cache-Control', 'no-store');
     return res.json({ ok: true, session: sess.session_id, result: sess.result });
   }
 
-  // Prefer stateless payload, else server-resolvable id
-  let outcome = null;
-  if (payload && Object.keys(payload).length) {
-    outcome = await verifyStatelessPayload(payload);
-  } else if (credential_id) {
-    outcome = await verifyByCredentialId(credential_id);
-  } else {
-    // ⛔ Bad request: DO NOT finalize the session — keep it pending!
-    res.set('Cache-Control', 'no-store');
-    return res.status(400).json({ ok: false, reason: 'bad_request' });
-  }
+  let outcome;
+  if (credential_id && !payload) outcome = await verifyByCredentialId(credential_id);
+  else if (payload && !credential_id) outcome = await verifyStatelessPayload(payload);
+  else outcome = { ok: false, reason: 'bad_request' };
 
   if (!outcome.ok) {
-    // A real verification was attempted but failed → finalize with that reason
     sess.result = { valid: false, reason: outcome.reason || 'failed' };
     await sess.save();
-    res.set('Cache-Control', 'no-store');
-    return res.status(200).json({ ok: false, reason: sess.result.reason });
+    const code = outcome.reason === 'bad_request' ? 400 : 200;
+    return res.status(code).json({ ok: false, reason: sess.result.reason });
   }
 
-  // ✅ Success
-  sess.result = outcome.result; // { valid: true, reason: 'ok' | 'not_anchored' }
+  sess.result = outcome.result;
   await sess.save();
-  res.set('Cache-Control', 'no-store');
   return res.json({ ok: true, session: sess.session_id, result: sess.result });
 });
+
 
 /* ---------- Session QR image (for mobile wallet to read) ---------- */
 const sessionQrPng = asyncHandler(async (req, res) => {
