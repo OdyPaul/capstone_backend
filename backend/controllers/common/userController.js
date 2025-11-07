@@ -169,11 +169,20 @@ const updateWebUser = asyncHandler(async (req, res) => {
     res.status(403); throw new Error('Not authorized');
   }
 
-  // 🔐 If the requester is superadmin, require their current password for ANY edit they perform.
-  if (isSuperadmin) {
-    const { currentPassword } = req.body || {};
-    if (!currentPassword) { res.status(401); throw new Error('Current password required to perform admin updates'); }
+  // --- Normalize body (handle accidental nesting like { data: {...} }) ---
+  const body = req.body && typeof req.body === 'object' && req.body.data
+    ? req.body.data
+    : req.body || {};
 
+  // Accept a few aliases just in case the client used a different key
+  const currentPassword =
+    body.currentPassword ?? body.passwordCurrent ?? body.adminPassword ?? null;
+
+  // 🔐 Superadmin must confirm their own password for any edit
+  if (isSuperadmin) {
+    if (!currentPassword) {
+      res.status(401); throw new Error('Current password required to perform admin updates');
+    }
     const freshRequester = await User.findById(requester._id);
     const ok = await bcrypt.compare(String(currentPassword), freshRequester.password || '');
     if (!ok) { res.status(401); throw new Error('Invalid current password'); }
@@ -183,7 +192,7 @@ const updateWebUser = asyncHandler(async (req, res) => {
     username, fullName, age, address, gender, email, password, contactNo, role,
     profilePicture,  // optional raw URL/data-URI
     profileImageId,  // optional staged image id
-  } = req.body;
+  } = body;
 
   // Role changes only by superadmin
   if (!isSuperadmin && typeof role !== 'undefined' && role !== target.role) {
@@ -220,15 +229,12 @@ const updateWebUser = asyncHandler(async (req, res) => {
   }
 
   await target.save();
-
-  if (imgDoc) {
-    imgDoc.ownerUser = target._id;
-    await imgDoc.save();
-  }
+  if (imgDoc) { imgDoc.ownerUser = target._id; await imgDoc.save(); }
 
   const safe = await User.findById(target._id).select('-password');
   res.status(200).json({ user: safe });
 });
+
 
 // ---------------- SHARED CONTROLLERS ----------------
 
