@@ -173,7 +173,7 @@ exports.getOverview = asyncHandler(async (req, res) => {
     SignedVC.countDocuments({ "anchoring.state": "anchored" }),
   ]);
 
-  // Revenue (prefer payments; fallback to 250 * issued in range)
+  // Revenue (prefer payments; fallback to 250 * issued in range, using the same issued-match as the pie)
   const paidMatch = { status: { $in: ["paid", "consumed"] } };
   if (since) paidMatch.paid_at = { $gte: since };
 
@@ -182,10 +182,19 @@ exports.getOverview = asyncHandler(async (req, res) => {
     { $group: { _id: null, total: { $sum: "$amount" } } },
   ]);
 
-  const issuedCountMatch = { status: "active" };
-  if (since) issuedCountMatch.createdAt = { $gte: since };
-  const issuedCount = await SignedVC.countDocuments(issuedCountMatch);
-  const revenuePhp = paymentsAgg.length ? paymentsAgg[0].total : issuedCount * 250;
+  const issuedFallbackMatch = since
+    ? {
+        status: "active",
+        $or: [
+          { issued_at:   { $gte: since } },
+          { activated_at:{ $gte: since } },
+          { createdAt:   { $gte: since } },
+        ],
+      }
+    : { status: "active" };
+
+  const issuedCountForRevenue = await SignedVC.countDocuments(issuedFallbackMatch);
+  const revenuePhp = paymentsAgg.length ? paymentsAgg[0].total : issuedCountForRevenue * 250;
 
   // Line: drafts created per day in range
   const reqMatch = since ? { createdAt: { $gte: since } } : {};
@@ -212,20 +221,37 @@ exports.getOverview = asyncHandler(async (req, res) => {
   const series = [{ name: "Requests", data: categories.map(k => filled[k]) }];
 
   // Pie: range-aware counts
-  const draftCountMatch    = since ? { createdAt: { $gte: since } } : {};
-  const issuedCountMatch2  = since ? { createdAt: { $gte: since }, status: "active" } : { status: "active" };
-  const anchoredCountMatch = since ? { "anchoring.anchored_at": { $gte: since } } : { "anchoring.state": "anchored" };
+  const draftCountMatch = since ? { createdAt: { $gte: since } } : {};
+
+  // Issued: count only if issued/activated/created today (in that priority order)
+  const issuedCountMatch2 = since
+    ? {
+        status: "active",
+        $or: [
+          { issued_at:   { $gte: since } },    // prefer explicit
+          { activated_at:{ $gte: since } },    // common alt
+          { createdAt:   { $gte: since } },    // fallback
+        ],
+      }
+    : { status: "active" };
+
+  // Anchored: require state=anchored and anchored_at/anchoredAt/updatedAt/createdAt within range (in that priority order)
+  const anchoredCountMatch = since
+    ? {
+        "anchoring.state": "anchored",
+        $or: [
+          { "anchoring.anchored_at": { $gte: since } },
+          { "anchoring.anchoredAt":  { $gte: since } },
+          { updatedAt:               { $gte: since } }, // helpful if timestamps are updated on state change
+          { createdAt:               { $gte: since } }, // last resort for older docs
+        ],
+      }
+    : { "anchoring.state": "anchored" };
 
   const [inRangeDrafts, inRangeIssued, inRangeAnchored] = await Promise.all([
     VcDraft.countDocuments(draftCountMatch),
     SignedVC.countDocuments(issuedCountMatch2),
-    SignedVC.countDocuments(anchoredCountMatch).catch(() =>
-      SignedVC.countDocuments(
-        since
-          ? { createdAt: { $gte: since }, "anchoring.state": "anchored" }
-          : { "anchoring.state": "anchored" }
-      )
-    ),
+    SignedVC.countDocuments(anchoredCountMatch),
   ]);
 
   // Logged time (start today only if login today)
