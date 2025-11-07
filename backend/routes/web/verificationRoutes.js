@@ -26,14 +26,12 @@ const vCreateBody = validate({
     types: z.array(z.string().max(40)).min(1).max(8).optional(),
     ttlHours: z.coerce.number().int().min(1).max(168).optional(),
     ui_base: z.string().max(300).optional(), // e.g. http://localhost:5173/verification-portal
-   credential_id: z.string().max(256).optional(),
-   
-  }).strict(), // keep strict so only allowed keys are accepted
+    credential_id: z.string().max(256).optional(),
+  }).strict(),
 });
+
 const PresentWithDecision = z.object({
-  decision: z.enum(['deny']),
-  credential_id: z.undefined().optional(),
-  payload: z.undefined().optional(),
+  decision: z.literal('deny'),
 }).strict();
 
 const vBeginBody = validate({
@@ -47,11 +45,9 @@ const vBeginBody = validate({
 // Either credential_id OR payload
 const PresentWithId = z.object({
   credential_id: z.string().max(256),
-  payload: z.undefined().optional(),
 }).strict();
 
 const PresentWithPayload = z.object({
-  credential_id: z.undefined().optional(),
   payload: z.object({
     jws: z.string(),
     salt: z.string(),
@@ -59,11 +55,13 @@ const PresentWithPayload = z.object({
     anchoring: z.any().optional(),
     alg: z.string().optional(),
     kid: z.string().optional(),
-    jwk: z.any().optional(), 
+    jwk: z.any().optional(),
   }).strict(),
 }).strict();
 
-const vPresentBody = validate({ body: z.union([PresentWithId, PresentWithPayload]) });
+const vPresentBody = validate({
+  body: z.union([PresentWithDecision, PresentWithId, PresentWithPayload]),
+});
 
 // ---- Routes (NO leading /api — we’ll mount under /api in server.js)
 router.post('/verification/session', RL_CREATE, vCreateBody, ctrl.createSession);

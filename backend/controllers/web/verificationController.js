@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
 const QRCode      = require('qrcode');
-const mongoose    = require('mongoose'); // 👈 add this
+const mongoose    = require('mongoose');
 const { importJWK, compactVerify } = require('jose');
 
 const SignedVC = require('../../models/web/signedVcModel');
@@ -54,7 +54,6 @@ async function loadSignedVCByCredentialId(credential_id) {
   const byStudent = await SignedVC.findOne({ student_id: asString }).lean();
   if (byStudent) return byStudent;
 
-  // Optional: string _id docs
   try {
     const byStringId = await SignedVC.findOne({ _id: asString }).lean();
     if (byStringId) return byStringId;
@@ -67,12 +66,11 @@ async function loadSignedVCByCredentialId(credential_id) {
 /* ---------- Core verifiers ---------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
-  if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
-  // 👉 Only reject when explicitly revoked
+  if (!signed) return { ok: false, reason: 'not_found_or_revoked' };
   if (signed.status === 'revoked') return { ok: false, reason: 'not_found_or_revoked' };
 
+  // If not anchored yet, it’s still a valid VC (just unanchored)
   if (signed.anchoring?.state !== 'anchored') {
-    // Valid VC, not anchored yet
     return { ok: true, result: { valid: true, reason: 'not_anchored' } };
   }
 
@@ -119,9 +117,9 @@ const createSession = asyncHandler(async (req, res) => {
     org,
     contact,
     types = ['TOR'],
-    ttlHours = 168,              // ← default 7 days
-    credential_id,      
-    ui_base,         // ← optional VC id to bake into the verifier link
+    ttlHours = 168,
+    credential_id,
+    ui_base,
   } = req.body || {};
 
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
@@ -135,12 +133,10 @@ const createSession = asyncHandler(async (req, res) => {
     expires_at,
   });
 
-  // Prefer an explicit UI base (req, then env), else fallback to backend origin
   const UI_BASE =
     String(ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL ||
       process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
 
-  // If UI_BASE contains {session}, use it; otherwise append sensible path.
   function buildVerifyUrl(base, session, credId) {
     const hasPlaceholder = /\{session\}/.test(base);
     const url = hasPlaceholder
@@ -154,6 +150,7 @@ const createSession = asyncHandler(async (req, res) => {
 
   const verifyUrl = buildVerifyUrl(UI_BASE, session_id, credential_id);
 
+  res.set('Cache-Control', 'no-store');
   res.status(201).json({
     session_id,
     verifyUrl,
@@ -167,7 +164,10 @@ const beginSession = asyncHandler(async (req, res) => {
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
   if (sess.expires_at < new Date()) return res.status(410).json({ message: 'Session expired' });
-  if (isFinal(sess.result)) return res.json({ ok: true });
+  if (isFinal(sess.result)) {
+    res.set('Cache-Control', 'no-store');
+    return res.json({ ok: true });
+  }
 
   sess.employer = { org: org || '', contact: contact || '' };
   sess.request = { ...(sess.request || {}), purpose };
@@ -175,6 +175,7 @@ const beginSession = asyncHandler(async (req, res) => {
   sess.markModified('request');
   await sess.save();
 
+  res.set('Cache-Control', 'no-store');
   res.json({ ok: true });
 });
 
@@ -195,40 +196,55 @@ const getSession = asyncHandler(async (req, res) => {
 
 const submitPresentation = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
-  const { credential_id, payload } = req.body || {};
+  const { credential_id, payload, decision } = req.body || {};
   const now = new Date();
 
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
+
   if (isFinal(sess.result)) {
+    res.set('Cache-Control', 'no-store');
     return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
   }
   if (sess.expires_at < now) {
     sess.result = { valid: false, reason: 'expired_session' };
     await sess.save();
-    return res.json({ ok: false, reason: 'expired_session' });
+    res.set('Cache-Control', 'no-store');
+    return res.status(410).json({ ok: false, reason: 'expired_session' });
   }
-    // 👉 Deny path
+
+  // ✅ Deny path (holder denies)
   if (decision === 'deny') {
     sess.result = { valid: false, reason: 'denied_by_holder' };
     await sess.save();
+    res.set('Cache-Control', 'no-store');
     return res.json({ ok: true, session: sess.session_id, result: sess.result });
   }
 
+  // Decide which verifier to use:
+  // Prefer payload (stateless) if present; else try credential_id
   let outcome;
-  if (credential_id && !payload) outcome = await verifyByCredentialId(credential_id);
-  else if (payload && !credential_id) outcome = await verifyStatelessPayload(payload);
-  else outcome = { ok: false, reason: 'bad_request' };
+  if (payload && Object.keys(payload || {}).length) {
+    outcome = await verifyStatelessPayload(payload);
+  } else if (credential_id) {
+    outcome = await verifyByCredentialId(credential_id);
+  } else {
+    outcome = { ok: false, reason: 'bad_request' };
+  }
 
   if (!outcome.ok) {
+    // Finalize the session with the failure reason so the portal exits its “pending” state.
     sess.result = { valid: false, reason: outcome.reason || 'failed' };
     await sess.save();
     const code = outcome.reason === 'bad_request' ? 400 : 200;
+    res.set('Cache-Control', 'no-store');
     return res.status(code).json({ ok: false, reason: sess.result.reason });
   }
 
-  sess.result = outcome.result;
+  // Success
+  sess.result = outcome.result; // { valid: true, reason: 'ok' | 'not_anchored' }
   await sess.save();
+  res.set('Cache-Control', 'no-store');
   return res.json({ ok: true, session: sess.session_id, result: sess.result });
 });
 
