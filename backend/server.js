@@ -67,7 +67,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.get('/', (_req, res) => res.send('✅ API is running...'));
 
   // ---------- Routes ----------
-  // 🔧 Ensure filename matches: colorRoutes.js (plural)
+  // 🔧 Ensure filename matches: colorRoute.js
   app.use('/api', require('./routes/utils/colorRoute'));
 
   // Common users (merged web + mobile user routes)

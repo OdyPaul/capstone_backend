@@ -10,7 +10,7 @@ async function centerMeanRgbFromBuffer(buffer, outSize = 96, centerFrac = 0.5) {
     .raw()
     .toBuffer({ resolveWithObject: true });
 
-  const w = info.width, h = info.height; // e.g., 96x96
+  const w = info.width, h = info.height;
   const x0 = Math.floor((1 - centerFrac) / 2 * w);
   const y0 = Math.floor((1 - centerFrac) / 2 * h);
   const x1 = Math.ceil((1 + centerFrac) / 2 * w);
@@ -73,22 +73,56 @@ exports.analyzeColors = async (req, res, next) => {
       hsv.push(rgbToHsv(m));
     }
 
-    // Assume order: red, green, blue (indices 0/1/2). Tolerant checks.
+    // If a baseline is present, expect order: [baselineGray, red, green, blue]
+    const hasBaseline = means.length >= 4;
+    const baselineIdx = hasBaseline ? 0 : -1;
+
     const targets = [
-      { hue: 0,   main: 'r' },
-      { hue: 120, main: 'g' },
-      { hue: 240, main: 'b' },
+      { hue: 0,   main: 'r' },   // red
+      { hue: 120, main: 'g' },   // green
+      { hue: 240, main: 'b' },   // blue
     ];
-    const passByIndex = targets.map((t, i) => {
-      const c = means[i], h = hsv[i];
-      if (!c || !h) return false;
-      return (
-        h.s >= 0.12 &&           // some saturation
-        h.v >= 0.18 &&           // not too dark
-        closeHue(h.h, t.hue, 45) &&
-        dominanceOK(c, t.main, 1.08)
-      );
-    });
+
+    let passByIndex = [];
+    if (hasBaseline) {
+      const baseHSV = hsv[baselineIdx];
+      const baseS = baseHSV.s, baseV = baseHSV.v;
+
+      // More tolerant absolute thresholds when we also see a relative lift vs baseline
+      const SAT_MIN = 0.10;         // absolute minimum saturation
+      const VAL_MIN = 0.15;         // absolute minimum brightness
+      const DELTA_S_MIN = 0.04;     // required saturation increase vs baseline
+      const DELTA_V_MIN = 0.03;     // slight brightness rise helps robustness
+
+      passByIndex = targets.map((t, i) => {
+        const idx = i + 1; // skip baseline (0)
+        const c = means[idx], h = hsv[idx];
+        if (!c || !h) return false;
+        const okAbs =
+          h.s >= SAT_MIN &&
+          h.v >= VAL_MIN &&
+          closeHue(h.h, t.hue, 45) &&
+          dominanceOK(c, t.main, 1.08);
+
+        const okDelta =
+          (h.s - baseS) >= DELTA_S_MIN &&
+          (h.v - baseV) >= DELTA_V_MIN;
+
+        return okAbs && okDelta;
+      });
+    } else {
+      // No baseline: fall back to absolute checks on the first three images
+      passByIndex = targets.map((t, i) => {
+        const c = means[i], h = hsv[i];
+        if (!c || !h) return false;
+        return (
+          h.s >= 0.12 &&
+          h.v >= 0.18 &&
+          closeHue(h.h, t.hue, 45) &&
+          dominanceOK(c, t.main, 1.08)
+        );
+      });
+    }
 
     const overallPassed = passByIndex.length >= 3 && passByIndex[0] && passByIndex[1] && passByIndex[2];
 
@@ -96,8 +130,9 @@ exports.analyzeColors = async (req, res, next) => {
       count: means.length,
       means,              // backwards compatible
       hsv,                // useful for debugging
-      passByIndex,        // [bool,bool,bool]
+      passByIndex,        // [bool,bool,bool] for R,G,B
       overallPassed,      // single boolean
+      baselineUsed: hasBaseline,
     });
   } catch (err) {
     next ? next(err) : res.status(500).json({ error: err?.message || 'Failed to analyze colors' });

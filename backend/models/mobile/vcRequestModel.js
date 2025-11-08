@@ -1,61 +1,24 @@
 const mongoose = require("mongoose");
+// If you want VC data in the VC DB, uncomment and use getVcConn()
+// const { getVcConn } = require("../../config/db");
+// const conn = getVcConn();
+const conn = mongoose; // or swap to vc conn above
 
-const vcRequestSchema = new mongoose.Schema(
+const vcRequestSchema = new conn.Schema(
   {
-    // Always tie requests to the account
-    student: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User", // reference to the logged-in user account
-      required: true,
-    },
+    // account that created the request
+    student: { type: conn.Schema.Types.ObjectId, ref: "User", required: true, index: true },
 
-    // The LRN typed by the student (not yet official)
-    lrn: {
-      type: String,
-      required: true,
-    },
+    // link to student profile by ObjectId reference
+    studentId: { type: conn.Schema.Types.ObjectId, ref: "Student_Profiles", required: true, index: true },
 
-    type: {
-      type: String,
-      enum: ["DEGREE", "TOR"],
-      required: true,
-    },
-    course: {
-      type: String,
-      required: true,
-    },
-    yearGraduated: {
-      type: String,
-    },
-    did: {
-      type: String,
-      default: () =>
-        "did:example:" + Math.random().toString(36).substring(2, 10),
-    },
+    type: { type: String, enum: ["TOR", "DIPLOMA"], required: true },
 
-    // Two image uploads
-    faceImage: {
-      filename: String,
-      data: Buffer,
-      contentType: String,
-    },
-    validIdImage: {
-      filename: String,
-      data: Buffer,
-      contentType: String,
-    },
+    status: { type: String, enum: ["pending", "approved", "rejected", "issued"], default: "pending", index: true },
 
-    status: {
-      type: String,
-      enum: ["pending", "approved", "rejected", "issued"],
-      default: "pending",
-    },
-    reviewedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User", // admin user
-    },
+    reviewedBy: { type: conn.Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model("VCRequest", vcRequestSchema);
+module.exports = conn.model("VCRequest", vcRequestSchema);
