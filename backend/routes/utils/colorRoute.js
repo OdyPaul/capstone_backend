@@ -1,4 +1,4 @@
-// utils/colorRoutes.js
+// routes/utils/colorRoutes.js
 const express = require('express');
 const multer = require('multer');
 const { analyzeColors } = require('../../controllers/utils/colorController');
