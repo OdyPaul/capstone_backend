@@ -65,7 +65,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
 
   // Health
   app.get('/', (_req, res) => res.send('✅ API is running...'));
-
+    app.use('/api', require('./routes/utils/colorRoute'));
   // ---------- Routes ----------
   // Common users (merged web + mobile user routes)
   app.use('/api', require('./routes/common/userRoutes'));
@@ -87,7 +87,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   web.use(require('./routes/web/auditLogRoutes'));
   
   app.use('/api/web', web);
-
+  app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
   // ✅ Mount verification routes directly under /api so paths match the frontend
   app.use('/api', require('./routes/web/verificationRoutes'));
   // Public claims
@@ -100,7 +100,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
   app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
   app.use('/api/mobile', require('./routes/mobile/students'));
-  app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
+  
 
   // Errors
   app.use(errorHandler);
