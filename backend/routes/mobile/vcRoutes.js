@@ -43,7 +43,6 @@ const PURPOSES = [
 const makeBodyValidator = (schema) => {
   try {
     if (typeof validate === 'function' && z && schema) {
-      // Do NOT force .strict() — allow controller to normalize, and .passthrough() can handle extras
       return validate({ body: schema });
     }
   } catch {}
@@ -60,32 +59,27 @@ const makeParamsValidator = (schema) => {
 };
 
 /* --------------------------------- schemas --------------------------------- */
-// Accept `purpose` as free text (controller will normalize/enum-check). Use .passthrough() to avoid
-// “Unrecognized key(s) …” if the client sends extra fields.
 const BodyCreate = z
-  ? z
-      .object({
-        type: z.enum(['TOR', 'DIPLOMA']),
-        purpose: z.string().min(3).max(120),
-      })
-      .passthrough()
+  ? z.object({
+      type: z.enum(['TOR', 'DIPLOMA']),
+      purpose: z.string().min(3).max(120),
+    }).passthrough()
   : null;
 
-const ParamsId = z ? z.object({ id: z.string().regex(/^[0-9a-fA-F]{24}$/) }) : null;
-
+const ParamsId  = z ? z.object({ id: z.string().regex(/^[0-9a-fA-F]{24}$/) }) : null;
 const BodyReview = z ? z.object({ status: z.enum(['approved', 'rejected', 'issued']) }) : null;
 
 /* ---------------------------------- routes --------------------------------- */
-// Student: create VC request (server uses req.user.studentId)
+// Student: create VC request
 router.post('/', protect, RL_CREATE, makeBodyValidator(BodyCreate), ctrl.createVCRequest);
 
 // Student: list own requests
 router.get('/mine', protect, RL_MINE, ctrl.getMyVCRequests);
 
-// Admin: list all requests (+ joins)
+// Admin: list all (+ joins)
 router.get('/', protect, admin, RL_ADMIN, ctrl.getAllVCRequests);
 
-// Admin: get one request
+// Admin: get one
 router.get('/:id', protect, admin, RL_ADMIN, makeParamsValidator(ParamsId), ctrl.getVCRequestById);
 
 // Admin: review (approve/reject/issue)
@@ -97,6 +91,16 @@ router.patch(
   makeParamsValidator(ParamsId),
   makeBodyValidator(BodyReview),
   ctrl.reviewVCRequest
+);
+
+// Admin: delete (trash)
+router.delete(
+  '/:id',
+  protect,
+  admin,
+  RL_ADMIN,
+  makeParamsValidator(ParamsId),
+  ctrl.deleteVCRequest
 );
 
 module.exports = router;
