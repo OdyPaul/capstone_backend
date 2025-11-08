@@ -4,6 +4,7 @@ const keccak256 = require('keccak256');
 const SignedVC = require('../models/web/signedVcModel');
 const AnchorBatch = require('../models/web/anchorBatchModel');
 const { fromB64url } = require('../utils/vcCrypto');
+const { pub } = require('../lib/redis'); // ⬅️ NEW: publish events to Redis
 
 // --- config + ABI
 const ABI = require('../abi/MerkleAnchor.json');
@@ -57,24 +58,32 @@ async function submitToPolygon(merkleRootHex, batchId) {
   return rcpt.hash;
 }
 
-// build tree, call chain, persist results
+// build tree, call chain, persist results, and publish events
 async function commitBatch(docs, label = 'batch') {
+  if (!Array.isArray(docs) || docs.length === 0) {
+    return { batch_id: null, txHash: null, count: 0 };
+  }
+
+  // Build leaves from VC digests
   const leafBuffers = docs.map(d => leafFromDigestB64Url(d.digest));
   const tree = new MerkleTree(leafBuffers, keccak256, { sortPairs: true });
   const root = '0x' + tree.getRoot().toString('hex');
 
   const batch_id = makeBatchId(label);
   const txHash = await submitToPolygon(root, batch_id);
+  const anchoredAt = new Date();
 
+  // Persist batch record
   await AnchorBatch.create({
     batch_id,
     merkle_root: root,
     tx_hash: txHash,
     chain_id: CHAIN_ID,
     count: docs.length,
-    anchored_at: new Date(),
+    anchored_at: anchoredAt,
   });
 
+  // Persist VC anchoring details + clear queue flags
   const updates = docs.map((d, i) => {
     const leaf = leafBuffers[i];
     const proof = tree.getHexProof(leaf);
@@ -87,7 +96,7 @@ async function commitBatch(docs, label = 'batch') {
             'anchoring.batch_id': batch_id,
             'anchoring.tx_hash': txHash,
             'anchoring.chain_id': CHAIN_ID,
-            'anchoring.anchored_at': new Date(),
+            'anchoring.anchored_at': anchoredAt,
             'anchoring.merkle_proof': proof,
             'anchoring.queue_mode': 'none',
             'anchoring.approved_mode': null,
@@ -98,7 +107,39 @@ async function commitBatch(docs, label = 'batch') {
       }
     };
   });
-  await SignedVC.bulkWrite(updates);
+  await SignedVC.bulkWrite(updates, { ordered: false });
+
+  // 🔔 Publish Redis events so UIs / mobile can refresh instantly
+  try {
+    if (pub) {
+      // Batch-level event (optional, nice for dashboards)
+      pub.publish('events', JSON.stringify({
+        type: 'batch:anchored',
+        batchId: batch_id,
+        merkleRoot: root,
+        txHash,
+        chainId: CHAIN_ID,
+        count: docs.length,
+        ts: Date.now(),
+      }));
+
+      // Per-VC events (admin SSE can refresh queue; mobile can poll /vc/status)
+      for (const d of docs) {
+        pub.publish('events', JSON.stringify({
+          type: 'vc:anchored',
+          credId: String(d._id),
+          batchId: batch_id,
+          txHash,
+          chainId: CHAIN_ID,
+          anchoredAt: anchoredAt.toISOString(),
+          ts: Date.now(),
+        }));
+      }
+    }
+  } catch (e) {
+    // Non-fatal: logging only
+    console.warn('[commitBatch] publish events failed:', e?.message || e);
+  }
 
   return { batch_id, txHash, count: docs.length };
 }

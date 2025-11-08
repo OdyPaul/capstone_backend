@@ -88,7 +88,8 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   web.use(require('./routes/web/claimRoutes'));
   web.use('/stats', require('./routes/web/statsRoutes'));
   web.use(require('./routes/web/auditLogRoutes'));
-  
+  web.use(require('./routes/web/anchorRoutes'));
+
   app.use('/api/web', web);
   app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
 
@@ -105,7 +106,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
   app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
   app.use('/api/mobile', require('./routes/mobile/students'));
-  
+  app.use('/api/mobile', require('./routes/mobile/vcStatusRoutes'));
   // Errors
   app.use(errorHandler);
 

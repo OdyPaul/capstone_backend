@@ -1,12 +1,17 @@
 // controllers/web/anchorController.js
 const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const SignedVC = require('../../models/web/signedVcModel');
 const { enqueueAnchorNow } = require('../../queues/vc.queue');
 const { commitBatch } = require('../../services/anchorBatchService');
 
-// -------------------- REQUEST “MINT NOW” (queue only) --------------------
+// -------------------- REQUEST “ANCHOR NOW” (queue only) --------------------
 exports.requestNow = asyncHandler(async (req, res) => {
   const credId = req.params.credId;
+  if (!mongoose.Types.ObjectId.isValid(credId)) {
+    res.status(400); throw new Error('Invalid credential id');
+  }
+
   const doc = await SignedVC.findById(credId).select('_id status anchoring');
   if (!doc) { res.status(404); throw new Error('Credential not found'); }
   if (doc.status !== 'active') { res.status(409); throw new Error('Credential not active'); }
@@ -25,11 +30,15 @@ exports.requestNow = asyncHandler(async (req, res) => {
         'anchoring.queue_mode': 'now',
         'anchoring.requested_at': new Date(),
         'anchoring.requested_by': req.user?._id || null,
+        // ensure clean approval flags on enqueue
+        'anchoring.approved_mode': null,
+        'anchoring.approved_at': null,
+        'anchoring.approved_by': null,
       }
     }
   );
 
-  // enqueue the actual job so the worker can process it
+  // enqueue worker job (doesn't anchor until confirmed)
   await enqueueAnchorNow(credId);
 
   res.json({ message: 'Queued for NOW review', credential_id: credId });
@@ -45,7 +54,8 @@ exports.listQueue = asyncHandler(async (req, res) => {
 
   const docs = await SignedVC.find(filter)
     .select('_id template_id status anchoring createdAt vc_payload digest')
-    .sort({ createdAt: -1 })
+    // Prefer most recently requested first, fall back to createdAt
+    .sort({ 'anchoring.requested_at': -1, createdAt: -1 })
     .lean();
 
   res.json(docs);
@@ -68,6 +78,9 @@ exports.approveQueued = asyncHandler(async (req, res) => {
 // -------------------- RUN SINGLE (one leaf) --------------------
 exports.runSingle = asyncHandler(async (req, res) => {
   const credId = req.params.credId;
+  if (!mongoose.Types.ObjectId.isValid(credId)) {
+    res.status(400); throw new Error('Invalid credential id');
+  }
   const doc = await SignedVC.findById(credId).select('_id digest status anchoring').lean();
   if (!doc) { res.status(404); throw new Error('Credential not found'); }
   if (doc.status !== 'active') { res.status(409); throw new Error('Credential not active'); }
@@ -82,18 +95,67 @@ exports.runSingle = asyncHandler(async (req, res) => {
   res.json({ message: 'Anchored (single)', batch_id, txHash });
 });
 
-// -------------------- MINT BATCH (cron/admin) --------------------
-exports.mintBatch = asyncHandler(async (_req, res) => {
-  // Only anchor items that were explicitly approved for batch
-  const docs = await SignedVC
-    .find({ 'anchoring.state': 'queued', 'anchoring.approved_mode': 'batch', status: 'active' })
-    .select('_id digest')
-    .lean();
+// -------------------- MINT BATCH (cron/admin/EOD) --------------------
+// Optional ?mode=now|batch|all (default: all)
+//   - now:    only items with queue_mode === 'now'
+//   - batch:  only items with queue_mode === 'batch'
+//   - all:    any queue_mode (legacy behavior)
+exports.mintBatch = asyncHandler(async (req, res) => {
+  const { mode = 'all' } = req.query;
+  const filter = {
+    'anchoring.state': 'queued',
+    'anchoring.approved_mode': 'batch',
+    status: 'active',
+  };
+  if (mode === 'now')   filter['anchoring.queue_mode'] = 'now';
+  if (mode === 'batch') filter['anchoring.queue_mode'] = 'batch';
 
-  if (!docs.length) return res.json({ message: 'Nothing to anchor (no batch-approved items)' });
+  const docs = await SignedVC.find(filter).select('_id digest').lean();
+  if (!docs.length) return res.json({ message: 'Nothing to anchor', count: 0 });
 
   const { batch_id, txHash, count } = await commitBatch(docs, 'batch');
-  res.json({ message: 'Anchored (batch)', batch_id, txHash, count });
+  res.json({ message: 'Anchored (batch)', batch_id, txHash, count, mode });
+});
+
+// -------------------- LIST NON-"NOW" by AGE WINDOW --------------------
+// GET /api/web/anchor/non-now?minDays=0&maxDays=15
+// Returns ACTIVE, NOT ANCHORED, and NOT queued as 'now' within the age window.
+exports.listNonNowAged = asyncHandler(async (req, res) => {
+  const minDays = Math.max(0, Number(req.query.minDays ?? 0));
+  const maxDays = req.query.maxDays == null ? null : Math.max(0, Number(req.query.maxDays));
+
+  const now = new Date();
+  const minTs = new Date(now.getTime() - minDays * 864e5);
+  const createdLt = maxDays == null ? null : new Date(now.getTime() - maxDays * 864e5);
+
+  const filter = {
+    status: 'active',
+    $or: [
+      { 'anchoring.state': { $exists: false } },
+      { 'anchoring.state': { $ne: 'anchored' } },
+    ],
+    $orQueue: [{ 'anchoring.queue_mode': { $exists: false } }, { 'anchoring.queue_mode': { $ne: 'now' } }],
+  };
+
+  // Mongo doesn't allow two $or at same level; re-compose:
+  const realFilter = {
+    status: 'active',
+    $and: [
+      { $or: [{ 'anchoring.state': { $exists: false } }, { 'anchoring.state': { $ne: 'anchored' } }] },
+      { $or: [{ 'anchoring.queue_mode': { $exists: false } }, { 'anchoring.queue_mode': { $ne: 'now' } }] },
+      { createdAt: { $lte: minTs } }, // age >= minDays
+    ],
+  };
+  if (createdLt) {
+    realFilter.$and.push({ createdAt: { $gte: createdLt } }); // age < maxDays
+  }
+
+  const docs = await SignedVC.find(realFilter)
+    .select('_id template_id createdAt anchoring')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  res.json(docs);
 });
 
 // Legacy alias
