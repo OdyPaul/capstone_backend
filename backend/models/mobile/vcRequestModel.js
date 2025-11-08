@@ -19,9 +19,15 @@ const vcRequestSchema = new mongoose.Schema(
     student:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student_Profiles', required: true, index: true },
 
+    // ✅ denormalized identifiers for reliable rendering (even without $lookup)
+    studentNumber:   { type: String, index: true, default: null },   // <-- NEW
+    studentFullName: { type: String, default: null },                // optional
+    studentProgram:  { type: String, default: null },                // optional
+    studentPhotoUrl: { type: String, default: null },                // optional
+
     type:    { type: String, enum: ['TOR', 'DIPLOMA'], required: true },
 
-    // ✅ normalize to lowercase so it matches enum
+    // normalize to lowercase so it matches enum
     purpose: { 
       type: String,
       enum: PURPOSES,
