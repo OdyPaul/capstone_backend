@@ -1,10 +1,65 @@
-// ✅ COPY-READY
+// controllers/mobile/vcRequestController.js
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 const VCRequest = require('../../models/mobile/vcRequestModel');
 const { PURPOSES } = require('../../models/mobile/vcRequestModel');
 const User = require('../../models/common/userModel');
-const Student = require('../../models/students/studentModel'); // <-- import your Students model
+const Student = require('../../models/students/studentModel');
+
+/* 🔔 Minimal audit (auth DB) */
+const { getAuthConn } = require('../../config/db');
+const AuditLogSchema = require('../../models/common/auditLog.schema');
+let AuditLogAuth = null;
+function getAuditLogAuth() {
+  try {
+    if (!AuditLogAuth) {
+      const conn = getAuthConn();
+      if (!conn) return null;
+      AuditLogAuth = conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
+    }
+    return AuditLogAuth;
+  } catch { return null; }
+}
+async function emitVcreqAudit({ actorId, actorRole, event, recipientId, targetId, title, body, extra = {}, dedupeKey }) {
+  try {
+    const AuditLog = getAuditLogAuth();
+    if (!AuditLog) return;
+
+    if (dedupeKey) {
+      const exists = await AuditLog.exists({ 'meta.dedupeKey': dedupeKey });
+      if (exists) return;
+    }
+
+    await AuditLog.create({
+      ts: new Date(),
+      actorId: actorId || null,
+      actorRole: actorRole || null,
+      ip: null,
+      ua: '',
+      method: 'INTERNAL',
+      path: '/mobile/vc-request',
+      status: 200,
+      latencyMs: 0,
+      routeTag: 'vcreq.activity',
+      query: {},
+      params: {},
+      bodyKeys: [],
+      draftId: null,
+      paymentId: null,
+      vcId: null,
+      meta: {
+        event,
+        recipients: recipientId ? [String(recipientId)] : [],
+        targetKind: 'vc_request',
+        targetId: targetId || null,
+        title: title || null,
+        body: body || null,
+        dedupeKey: dedupeKey || undefined,
+        ...extra,
+      },
+    });
+  } catch { /* swallow */ }
+}
 
 const ALLOWED_TYPES = ['TOR', 'DIPLOMA'];
 
@@ -32,7 +87,6 @@ const createVCRequest = asyncHandler(async (req, res) => {
     res.status(400); throw new Error('No studentId linked to this user');
   }
 
-  // ✅ fetch student profile to denormalize key display fields
   const stu = await Student.findById(user.studentId)
     .select('_id studentNumber fullName program photoUrl')
     .lean();
@@ -41,21 +95,32 @@ const createVCRequest = asyncHandler(async (req, res) => {
   const doc = await VCRequest.create({
     student: req.user._id,
     studentId: stu._id,
-    // denorm fields
     studentNumber:   stu.studentNumber || null,
     studentFullName: stu.fullName || null,
     studentProgram:  stu.program || null,
     studentPhotoUrl: stu.photoUrl || null,
-
     type,
     purpose,
+  });
+
+  // 🔔 Emit Activity: vc_request.created (recipient: the student)
+  emitVcreqAudit({
+    actorId: req.user._id,
+    actorRole: req.user.role || null,
+    event: 'vc_request.created',
+    recipientId: req.user._id,
+    targetId: doc._id,
+    title: 'VC request submitted',
+    body: `Your ${type} request was submitted.`,
+    extra: { type, purpose, status: doc.status || 'pending' },
+    dedupeKey: `vcreq.created:${doc._id}`,
   });
 
   res.status(201).json({
     _id: doc._id,
     student: doc.student,
     studentId: doc.studentId,
-    studentNumber: doc.studentNumber,       // ✅ return denorms
+    studentNumber: doc.studentNumber,
     studentFullName: doc.studentFullName,
     studentProgram: doc.studentProgram,
     studentPhotoUrl: doc.studentPhotoUrl,
@@ -87,36 +152,24 @@ const deleteVCRequest = asyncHandler(async (req, res) => {
 });
 
 const getAllVCRequests = asyncHandler(async (_req, res) => {
-  // Use the actual collection name from the Students model if available
   let STUDENT_COLLECTION = 'student_profiles';
-  try {
-    if (Student?.collection?.name) STUDENT_COLLECTION = Student.collection.name;
-  } catch {}
+  try { if (Student?.collection?.name) STUDENT_COLLECTION = Student.collection.name; } catch {}
 
   const rows = await VCRequest.aggregate([
     { $sort: { createdAt: -1 } },
-
     { $lookup: { from: 'users', localField: 'student', foreignField: '_id', as: 'studentAccount' } },
     { $unwind: { path: '$studentAccount', preserveNullAndEmptyArrays: true } },
-
-    // Best-effort join (works only if same DB). We still return denorm fields either way.
     { $lookup: { from: STUDENT_COLLECTION, localField: 'studentId', foreignField: '_id', as: 'studentProfile' } },
     { $unwind: { path: '$studentProfile', preserveNullAndEmptyArrays: true } },
-
     { $project: {
         _id: 1, type: 1, purpose: 1, status: 1, createdAt: 1, updatedAt: 1,
         student: 1, studentId: 1,
-
-        // ✅ always available (denormalized)
         studentNumber: 1, studentFullName: 1, studentProgram: 1, studentPhotoUrl: 1,
-
-        // joined (when available)
         'studentProfile._id': 1,
         'studentProfile.fullName': 1,
         'studentProfile.program': 1,
         'studentProfile.studentNumber': 1,
         'studentProfile.photoUrl': 1,
-
         'studentAccount.email': 1,
         'studentAccount.username': 1,
         'studentAccount.verified': 1,
@@ -132,9 +185,7 @@ const getVCRequestById = asyncHandler(async (req, res) => {
   if (!/^[0-9a-fA-F]{24}$/.test(id)) { res.status(400); throw new Error('Invalid id'); }
 
   let STUDENT_COLLECTION = 'student_profiles';
-  try {
-    if (Student?.collection?.name) STUDENT_COLLECTION = Student.collection.name;
-  } catch {}
+  try { if (Student?.collection?.name) STUDENT_COLLECTION = Student.collection.name; } catch {}
 
   const rows = await VCRequest.aggregate([
     { $match: { _id: new mongoose.Types.ObjectId(id) } },
@@ -145,14 +196,9 @@ const getVCRequestById = asyncHandler(async (req, res) => {
     { $project: {
         _id: 1, type: 1, purpose: 1, status: 1, createdAt: 1, updatedAt: 1,
         student: 1, studentId: 1,
-
-        // ✅ denorms
         studentNumber: 1, studentFullName: 1, studentProgram: 1, studentPhotoUrl: 1,
-
-        // joined (when available)
         'studentProfile._id': 1, 'studentProfile.fullName': 1, 'studentProfile.program': 1,
         'studentProfile.studentNumber': 1, 'studentProfile.photoUrl': 1,
-
         'studentAccount.email': 1, 'studentAccount.username': 1,
         'studentAccount.verified': 1, 'studentAccount.profilePicture': 1,
     }},
@@ -173,6 +219,31 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
   doc.status = status;
   doc.reviewedBy = req.user._id;
   await doc.save();
+
+  // 🔔 Emit Activity: vc_request.* (recipient: the student)
+  const eventMap = {
+    approved: 'vc_request.approved',
+    rejected: 'vc_request.rejected',
+    issued:   'vc_request.issued',
+  };
+  emitVcreqAudit({
+    actorId: req.user._id,
+    actorRole: req.user.role || null,
+    event: eventMap[status],
+    recipientId: doc.student,
+    targetId: doc._id,
+    title: status === 'approved' ? 'VC request approved'
+          : status === 'issued' ? 'VC issued'
+          : 'VC request rejected',
+    body: status === 'approved'
+      ? 'Your VC request was approved.'
+      : status === 'issued'
+      ? 'Your verifiable credential has been issued.'
+      : 'Your VC request was rejected.',
+    extra: { status },
+    dedupeKey: `vcreq.status:${doc._id}:${status}`,
+  });
+
   res.status(200).json({
     _id: doc._id, student: doc.student, studentId: doc.studentId,
     studentNumber: doc.studentNumber, studentFullName: doc.studentFullName, studentProgram: doc.studentProgram, studentPhotoUrl: doc.studentPhotoUrl,

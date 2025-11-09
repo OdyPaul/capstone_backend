@@ -7,6 +7,73 @@ const User = require("../../models/common/userModel");   // may be on a differen
 const Student = require("../../models/students/studentModel"); // may be on a different conn
 const { enqueueVerify, enqueueReject } = require("../../queues/verification.queue");
 
+/* ---------- 👇 minimal audit helpers (auth DB) ---------- */
+const { getAuthConn } = require("../../config/db");
+const AuditLogSchema = require("../../models/common/auditLog.schema");
+
+let AuditLogAuth = null;
+function getAuditLogAuth() {
+  try {
+    if (!AuditLogAuth) {
+      const conn = getAuthConn();
+      if (!conn) return null;
+      AuditLogAuth = conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
+    }
+    return AuditLogAuth;
+  } catch {
+    return null; // never break requests because of logging
+  }
+}
+
+async function emitVerificationAudit({
+  actorId,
+  actorRole,
+  event,            // e.g., 'verification.requested'
+  recipients = [],  // array of ObjectId strings
+  targetId,         // verification request _id
+  title,
+  body,
+  extra = {},       // any additional meta fields
+}) {
+  try {
+    const AuditLog = getAuditLogAuth();
+    if (!AuditLog) return;
+
+    const doc = {
+      ts: new Date(),
+      actorId: actorId || null,
+      actorRole: actorRole || null,
+      ip: null,
+      ua: "",
+      method: "INTERNAL",
+      path: "/verification-request",
+      status: 200,
+      latencyMs: 0,
+      routeTag: "verification.activity",
+      query: {},
+      params: {},
+      bodyKeys: [],
+      draftId: null,
+      paymentId: null,
+      vcId: null,
+      meta: {
+        event,                // canonical event key
+        recipients,           // who should see this in Activity
+        targetKind: "verification",
+        targetId: targetId || null,
+        title: title || null,
+        body: body || null,
+        ...extra,             // safe extras (e.g., current status)
+      },
+    };
+
+    await AuditLog.create(doc);
+  } catch {
+    // swallow — audit must never affect normal flow
+  }
+}
+/* ---------- 👆 minimal audit helpers (auth DB) ---------- */
+
 // -------- Helpers --------
 function toBool(v) {
   if (typeof v === "boolean") return v;
@@ -110,6 +177,18 @@ exports.createVerificationRequest = async (req, res) => {
       // ignore linking failures; not fatal for creation
     }
 
+    // 🔔 Emit Activity: verification.requested (recipient: the student)
+    emitVerificationAudit({
+      actorId: req.user._id,
+      actorRole: req.user.role || null,
+      event: "verification.requested",
+      recipients: [String(req.user._id)],
+      targetId: verification._id,
+      title: "Verification request submitted",
+      body: "We received your verification details. You'll be notified once reviewed.",
+      extra: { status: "pending", selfieImageId, idImageId },
+    });
+
     return res.status(201).json(verification);
   } catch (err) {
     if (err?.code === 11000 && (err?.keyPattern?.did || err?.keyValue?.did)) {
@@ -135,8 +214,8 @@ exports.verifyRequest = async (req, res) => {
       return res.status(400).json({ message: "Invalid studentId" });
     }
 
-    // Light existence check so we can fail fast
-    const vr = await VerificationRequest.findById(id).select("_id status");
+    // Light existence check so we can fail fast (need user to notify)
+    const vr = await VerificationRequest.findById(id).select("_id status user");
     if (!vr) return res.status(404).json({ message: "Request not found" });
     if (vr.status !== "pending") {
       return res.status(409).json({ message: `Request is ${vr.status}, not pending` });
@@ -147,6 +226,18 @@ exports.verifyRequest = async (req, res) => {
       studentId: studentId || null,
       actorId: req.user?._id || null,
       actorRole: req.user?.role || null,
+    });
+
+    // 🔔 Emit Activity: verification.queued (recipient: the student)
+    emitVerificationAudit({
+      actorId: req.user?._id || null,
+      actorRole: req.user?.role || null,
+      event: "verification.queued",
+      recipients: [String(vr.user)],
+      targetId: vr._id,
+      title: "Verification in progress",
+      body: "An admin has started reviewing your verification request.",
+      extra: { status: "in_review" },
     });
 
     return res
@@ -168,8 +259,8 @@ exports.rejectRequest = async (req, res) => {
 
     if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
 
-    // Light existence check
-    const vr = await VerificationRequest.findById(id).select("_id status");
+    // Light existence check (need user to notify)
+    const vr = await VerificationRequest.findById(id).select("_id status user");
     if (!vr) return res.status(404).json({ message: "Request not found" });
     if (vr.status !== "pending") {
       return res.status(409).json({ message: `Request is ${vr.status}, not pending` });
@@ -180,6 +271,18 @@ exports.rejectRequest = async (req, res) => {
       reason: String(reason || "").slice(0, 240),
       actorId: req.user?._id || null,
       actorRole: req.user?.role || null,
+    });
+
+    // 🔔 Emit Activity: verification.rejection_queued (recipient: the student)
+    emitVerificationAudit({
+      actorId: req.user?._id || null,
+      actorRole: req.user?.role || null,
+      event: "verification.rejection_queued",
+      recipients: [String(vr.user)],
+      targetId: vr._id,
+      title: "Verification update",
+      body: "Your verification is queued for rejection review. You'll receive a final decision soon.",
+      extra: { status: "pending_rejection", reason: reason ? String(reason).slice(0, 240) : undefined },
     });
 
     return res.status(202).json({ queued: true, action: "reject", requestId: id });

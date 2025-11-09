@@ -4,6 +4,64 @@ const { redis } = require('../../lib/redis');
 const ClaimTicket = require('../../models/web/claimTicket');
 const SignedVC = require('../../models/web/signedVcModel');
 
+/* 🔔 Minimal audit (auth DB) */
+const { getAuthConn } = require('../../config/db');
+const AuditLogSchema = require('../../models/common/auditLog.schema');
+let AuditLogAuth = null;
+function getAuditLogAuth() {
+  try {
+    if (!AuditLogAuth) {
+      const conn = getAuthConn && getAuthConn();
+      if (!conn) return null;
+      AuditLogAuth = conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
+    }
+    return AuditLogAuth;
+  } catch { return null; }
+}
+async function emitVCAudit({
+  actorId, actorRole, event, recipients = [],
+  targetId, title, body, extra = {}, dedupeKey
+}) {
+  try {
+    const AuditLog = getAuditLogAuth();
+    if (!AuditLog) return;
+
+    if (dedupeKey) {
+      const exists = await AuditLog.exists({ 'meta.dedupeKey': dedupeKey });
+      if (exists) return;
+    }
+
+    await AuditLog.create({
+      ts: new Date(),
+      actorId: actorId || null,
+      actorRole: actorRole || null,
+      ip: null,
+      ua: '',
+      method: 'INTERNAL',
+      path: '/mobile/claim-queue',
+      status: 200,
+      latencyMs: 0,
+      routeTag: 'vc.activity',
+      query: {},
+      params: {},
+      bodyKeys: [],
+      draftId: null,
+      paymentId: null,
+      vcId: targetId || null,
+      meta: {
+        event,
+        recipients,
+        targetKind: 'vc',
+        targetId: targetId || null,
+        title: title || null,
+        body: body || null,
+        dedupeKey: dedupeKey || undefined,
+        ...extra,
+      },
+    });
+  } catch { /* best-effort */ }
+}
+
 const DEFAULT_QUEUE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
 
 // ---- Helpers ----
@@ -34,8 +92,7 @@ function buildVcPayload(vc) {
   };
 }
 
-// Core redeem (same effect as GET /c/:token), with holder bind on success
-// Core redeem (same effect as GET /c/:token), with holder bind + claimed_at
+// ------------------ Core redeem (same as GET /c/:token), with holder bind + claimed_at ------------------
 async function redeemTokenForUser(token, holderUserId) {
   const now = new Date();
 
@@ -43,9 +100,9 @@ async function redeemTokenForUser(token, holderUserId) {
   if (!ticket) { const err = new Error('Claim token not found'); err.status = 404; throw err; }
   if (ticket.expires_at && ticket.expires_at < now) { const err = new Error('Claim token expired'); err.status = 410; throw err; }
 
-  // fetch minimal VC fields used below
+  // fetch minimal VC fields used below (+ meta in case you want to show more client-side)
   const vc = await SignedVC.findById(ticket.cred_id)
-    .select('_id jws alg kid digest salt anchoring status holder_user_id claimed_at');
+    .select('_id jws alg kid digest salt anchoring status holder_user_id claimed_at meta');
   if (!vc) { const err = new Error('Credential not found'); err.status = 404; throw err; }
   if (vc.status !== 'active') { const err = new Error('Credential not active'); err.status = 409; throw err; }
 
@@ -88,11 +145,34 @@ async function redeemTokenForUser(token, holderUserId) {
     }
   } catch { /* never block redeem on marking */ }
 
-  return buildVcPayload(vc);
+  // 🔔 Emit Activity: vc.claimed (recipient: holder)
+  try {
+    if (holderUserId) {
+      await emitVCAudit({
+        actorId: holderUserId,
+        actorRole: null,
+        event: 'vc.claimed',
+        recipients: [String(holderUserId)],
+        targetId: String(vc._id),
+        title: 'Credential claimed',
+        body: 'Your credential was added to your wallet.',
+        extra: { digest: vc.digest || null, kid: vc.kid || null },
+        dedupeKey: `vc.claimed:${vc._id}`, // idempotent per VC
+      });
+    }
+  } catch { /* best-effort */ }
+
+  // enriched payload for mobile
+  const payload = buildVcPayload(vc);
+  payload.ticket_id = ticket._id;
+  payload.user_id = holderUserId || null;
+  payload.claimed_at = new Date().toISOString();
+  payload.meta = vc.meta || null;
+
+  return payload;
 }
 
-
-// ---- Redis I/O ----
+// ------------------ Redis I/O ------------------
 async function addToQueue({ userId, token, url, expiresAt }) {
   if (!redis) throw new Error('Redis not available');
   const userKey = keyUserSet(userId);
@@ -107,7 +187,6 @@ async function addToQueue({ userId, token, url, expiresAt }) {
     expiresAt: expiresAt ? safeISO(expiresAt) : null,
   };
 
-  // Store details on per-token hash (with TTL)
   const multi = redis.multi();
   multi.hset(tokKey, payload);
   if (payload.expiresAt) {
@@ -117,11 +196,7 @@ async function addToQueue({ userId, token, url, expiresAt }) {
     multi.expire(tokKey, DEFAULT_QUEUE_TTL_SEC);
   }
 
-  // Add token to user set
   multi.sadd(userKey, token);
-  // (Optional) keep user set around; you can set a long TTL if you want:
-  // multi.expire(userKey, 30 * 24 * 60 * 60);
-
   await multi.exec();
 }
 
@@ -131,7 +206,6 @@ async function getQueueTokens(userId) {
   const tokens = await redis.smembers(userKey);
   if (!tokens || tokens.length === 0) return [];
 
-  // fetch token details; drop missing hashes; lazy cleanup
   const multi = redis.multi();
   tokens.forEach(t => multi.hgetall(keyTokenHash(t)));
   const rows = await multi.exec();
@@ -165,7 +239,7 @@ async function removeFromQueue(userId, token) {
   await multi.exec();
 }
 
-// ---- HTTP Handlers ----
+// ------------------ HTTP Handlers ------------------
 
 // POST /api/mobile/claim-queue/enqueue
 // body: { token, url, expires_at? }
@@ -192,12 +266,14 @@ exports.enqueueBatch = async function enqueueBatch(req, res) {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!items.length) return res.status(400).json({ message: 'items required' });
 
+    let success = 0;
     for (const it of items) {
       if (it && it.token && it.url) {
         await addToQueue({ userId, token: it.token, url: it.url, expiresAt: it.expires_at || null });
+        success++;
       }
     }
-    return res.status(201).json({ ok: true, count: items.length });
+    return res.status(201).json({ ok: true, count: success });
   } catch (e) {
     return res.status(500).json({ message: e.message || 'enqueue-batch failed' });
   }
@@ -218,7 +294,7 @@ exports.list = async function list(req, res) {
 // POST /api/mobile/claim-queue/redeem-one
 // body: { token }
 exports.redeemOne = async function redeemOne(req, res) {
-  const userId = req.user?._id?.toString(); // <-- move outside try so catch can use it
+  const userId = req.user?._id?.toString(); // keep outside try so catch can use it
   try {
     if (!redis) return res.status(503).json({ message: 'Queue unavailable' });
     const { token } = req.body || {};
@@ -226,7 +302,7 @@ exports.redeemOne = async function redeemOne(req, res) {
 
     const payload = await redeemTokenForUser(token, userId);
     await removeFromQueue(userId, token);
-    return res.json({ ok: true, payload });
+    return res.json({ ok: true, message: 'Credential claimed successfully', payload });
   } catch (e) {
     const status = e.status || 500;
     if (status === 404 || status === 410) {
@@ -235,7 +311,6 @@ exports.redeemOne = async function redeemOne(req, res) {
     return res.status(status).json({ ok: false, message: e.message || 'redeem failed' });
   }
 };
-
 
 // POST /api/mobile/claim-queue/redeem-all
 // Redeems everything in the user’s queue; returns per-token results.
@@ -255,7 +330,16 @@ exports.redeemAll = async function redeemAll(req, res) {
         results.push({ token: row.token, ok: false, message: e.message || 'redeem failed' });
       }
     }
-    return res.json({ count: results.length, results });
+
+    return res.json({
+      ok: true,
+      count: results.length,
+      results,
+      summary: {
+        success: results.filter(r => r.ok).length,
+        failed: results.filter(r => !r.ok).length,
+      },
+    });
   } catch (e) {
     return res.status(500).json({ message: e.message || 'redeem-all failed' });
   }
