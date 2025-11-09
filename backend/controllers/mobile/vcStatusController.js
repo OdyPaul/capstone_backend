@@ -45,21 +45,20 @@ exports.statusBatch = asyncHandler(async (req, res) => {
   // De-dupe + cap
   list = Array.from(new Set(list)).slice(0, MAX_ITEMS);
 
-  // Build base filter for $in
   const isAdmin = !!(req.user && (req.user.isAdmin || req.user.role === 'admin'));
   const field = mode === 'digest' ? 'digest' : mode === 'id' ? '_id' : 'key';
 
+  // Base filter with per-user restriction
   const filter = { [field]: { $in: list } };
   if (!isAdmin && req.user?._id) {
     // Restrict to holder's own credentials
     filter.holder_user_id = req.user._id;
   }
 
-  // Select only what we need (include holder_user_id only for filtering)
+  // Select only what we need (holder_user_id only used for filtering)
   const sel = '_id key digest anchoring claimed_at updatedAt holder_user_id';
 
-  let docs = [];
-  // Validate ObjectId array only when mode === 'id'
+  // If mode === 'id', validate ObjectIds
   if (mode === 'id') {
     const validIds = list.filter((x) => mongoose.Types.ObjectId.isValid(x));
     if (!validIds.length) {
@@ -69,18 +68,22 @@ exports.statusBatch = asyncHandler(async (req, res) => {
     delete filter[field]; // avoid ambiguity
   }
 
-  docs = await SignedVC.find(filter).select(sel).lean();
+  let docs = await SignedVC.find(filter).select(sel).lean();
 
-  // Map back by the requested key to preserve order
+  // ⬇️ If nothing matched but we searched by digest, fall back to a “public” digest lookup.
+  //     This returns only slim anchoring info and never exposes PII beyond (id,key,digest).
+  if (!docs.length && mode === 'digest') {
+    const publicFilter = { digest: { $in: list } };
+    docs = await SignedVC.find(publicFilter).select(sel).lean();
+  }
+
+  // Preserve request order
   const indexKey = (d) => (mode === 'digest' ? d.digest : mode === 'id' ? String(d._id) : d.key);
   const m = new Map(docs.map((d) => [indexKey(d), d]));
 
   const results = list.map((k) => {
     const d = m.get(k);
-    if (!d) {
-      // Keep a hint of what was queried for easier client-side debugging
-      return { [mode]: k, notFound: true };
-    }
+    if (!d) return { [mode]: k, notFound: true };
     return {
       id: String(d._id),
       key: d.key || null,
