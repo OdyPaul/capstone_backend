@@ -158,5 +158,20 @@ exports.listNonNowAged = asyncHandler(async (req, res) => {
   res.json(docs);
 });
 
+exports.listBatches = asyncHandler(async (req, res) => {
+  const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 200)));
+  const chainId = req.query.chain_id ? Number(req.query.chain_id) : undefined;
+  const filter = {};
+  if (Number.isFinite(chainId)) filter.chain_id = chainId;
+
+  const rows = await AnchorBatch.find(filter)
+    .select('batch_id merkle_root tx_hash chain_id count anchored_at createdAt')
+    .sort({ anchored_at: -1, createdAt: -1 })
+    .limit(limit)
+    .lean();
+
+  res.json(rows);
+});
+
 // Legacy alias
 exports.mintNow = exports.requestNow;

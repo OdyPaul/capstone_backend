@@ -29,4 +29,5 @@ router.post('/anchor/mint-batch', protect, admin, RL, anchor.mintBatch);
 // ✅ NEW: Non-"now" items by age window (e.g., ?minDays=0&maxDays=15 or 15&30)
 router.get('/anchor/non-now', protect, admin, RL, anchor.listNonNowAged);
 
+router.get('/anchor/batches', protect, admin, RL, anchor.listBatches);
 module.exports = router;
