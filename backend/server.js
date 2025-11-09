@@ -107,6 +107,7 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
   app.use('/api/mobile', require('./routes/mobile/students'));
   app.use('/api/mobile', require('./routes/mobile/vcStatusRoutes'));
+  app.use('/api/mobile', require('./routes/mobile/activityRoutes'));
   // Errors
   app.use(errorHandler);
 
