@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const SignedVC = require('../../models/web/signedVcModel');
 const { enqueueAnchorNow } = require('../../queues/vc.queue');
 const { commitBatch } = require('../../services/anchorBatchService');
-
+const AnchorBatch = require('../../models/web/anchorBatchModel');
 // -------------------- REQUEST “ANCHOR NOW” (queue only) --------------------
 exports.requestNow = asyncHandler(async (req, res) => {
   const credId = req.params.credId;
