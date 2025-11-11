@@ -398,6 +398,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
   }
   if (sess.expires_at < now) {
     sess.result = { valid: false, reason: 'expired_session' };
+    sess.markModified('result');
     await sess.save();
 
     // 🔔 audit: presented after expiry
@@ -418,6 +419,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
   // ✅ Holder denies
   if (decision === 'deny') {
     sess.result = { valid: false, reason: 'denied_by_holder' };
+    sess.markModified('result');
     await sess.save();
 
     // 🔔 audit: denied by holder
@@ -444,6 +446,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
     const reason = outcome.reason || 'failed';
     const meta = outcome.meta || outcome.result?.meta || undefined;
     sess.result = meta ? { valid: false, reason, meta } : { valid: false, reason };
+    sess.markModified('result');
     await sess.save();
 
     // 🔔 audit: failed verification
@@ -464,6 +467,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
 
   // success (valid: true, reason: 'ok' | 'not_anchored')
   sess.result = outcome.result;
+  sess.markModified('result');
   await sess.save();
 
   // 🔔 audit: success
