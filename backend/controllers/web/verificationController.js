@@ -12,7 +12,7 @@ const VerificationSession = require('../../models/web/verificationSessionModel')
 const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 
 /* ---------- 🔔 Minimal audit (auth DB) ---------- */
-const { getAuthConn } = require('../../config/db');
+const { getAuthConn, getVcConn } = require('../../config/db'); // 👈 add getVcConn
 const AuditLogSchema = require('../../models/common/auditLog.schema');
 let AuditLogAuth = null;
 function getAuditLogAuth() {
@@ -26,7 +26,20 @@ function getAuditLogAuth() {
   } catch { return null; }
 }
 
-// helper near the top
+/* ---------- Shadow User model on vcConn (read-only) ---------- */
+let VCUser = null;
+function getVCUserModel() {
+  try {
+    if (!VCUser) {
+      const vc = getVcConn && getVcConn();
+      if (!vc) return null;
+      VCUser = vc.models.User || vc.model('User'); // defined in userModel.js as shadow
+    }
+    return VCUser;
+  } catch { return null; }
+}
+
+// holder name picker from VC payloads
 const pickHolderName = (payloadObj) =>
   payloadObj?.credentialSubject?.fullName ||
   payloadObj?.credentialSubject?.name ||
@@ -45,8 +58,38 @@ function decodeJwsPayload(jws) {
 }
 
 /**
+ * Compute vc_type and holder_name from SignedVC (payload first, then user).
+ * Falls back to template_id (e.g., 'TOR', 'Diploma') when VC type array is absent.
+ */
+async function inferTypeAndHolderFromSigned(signed) {
+  const p = signed?.vc_payload || decodeJwsPayload(signed?.jws) || null;
+
+  // vc_type from payload.type or payload.vc.type (first element if array)
+  let vcType =
+    (Array.isArray(p?.vc?.type) ? p.vc.type[0] : p?.vc?.type) ??
+    (Array.isArray(p?.type) ? p.type[0] : p?.type) ??
+    signed?.template_id ??
+    'VC';
+
+  // holder name: payload preferred
+  let holderName = pickHolderName(p);
+
+  // If still missing, try the user doc on vcConn
+  if (!holderName && signed?.holder_user_id) {
+    try {
+      const User = getVCUserModel();
+      if (User) {
+        const u = await User.findById(signed.holder_user_id).lean().select('fullName username');
+        if (u) holderName = u.fullName || u.username || null;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return { vcType, holderName };
+}
+
+/**
  * emitVerifyAudit — best-effort writer to the auth DB's AuditLog.
- * Avoids storing sensitive payloads; uses meta for small, non-secret context.
  */
 async function emitVerifyAudit({
   event,
@@ -163,9 +206,12 @@ async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
   if (!signed) return { ok: false, reason: 'not_found_or_revoked' };
 
+  // NEW: derive vc_type + holder_name from vc_payload / user
+  const { vcType, holderName } = await inferTypeAndHolderFromSigned(signed);
+
   const metaBase = {
-    vc_type: signed.type || signed.meta?.type || 'VC',
-    holder_name: signed.studentFullName || signed.meta?.fullName || null,
+    vc_type: vcType,
+    holder_name: holderName,
     anchoring: signed.anchoring || null,
     digest: signed.digest || null,
   };
@@ -218,7 +264,6 @@ async function verifyStatelessPayload(payload) {
   const { jws, salt, digest, anchoring, alg, kid, jwk } = payload || {};
   if (!jws || !salt || !digest) return { ok: false, reason: 'payload_incomplete' };
 
-  // We can still decode payload to build meta before alg/signature checks
   const payloadObj = decodeJwsPayload(jws);
   const vcType =
     (Array.isArray(payloadObj?.vc?.type) ? payloadObj.vc.type[0] : payloadObj?.vc?.type) ||
@@ -279,14 +324,13 @@ const createSession = asyncHandler(async (req, res) => {
     contact,
     types = ['TOR'],
     ttlHours = 168,
-    credential_id,           // holder's actual id (private)
+    credential_id,
     ui_base,
   } = req.body || {};
 
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
   const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
 
-  // short random, not reversible to student #
   const hint_key = crypto.randomBytes(6).toString('base64url');
 
   await VerificationSession.create({
@@ -295,8 +339,8 @@ const createSession = asyncHandler(async (req, res) => {
     request: {
       types: Array.isArray(types) ? types : ['TOR'],
       purpose: 'Hiring',
-      cred_hint: credential_id || null, // store privately
-      hint_key,                         // opaque token for the URL
+      cred_hint: credential_id || null,
+      hint_key,
     },
     result: { valid: false, reason: 'pending' },
     expires_at,
@@ -314,12 +358,11 @@ const createSession = asyncHandler(async (req, res) => {
         ? `${base}/${session}`
         : `${base}/verify/${session}`;
     const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}hint=${encodeURIComponent(hint)}`; // <- no credential_id in URL
+    return `${url}${sep}hint=${encodeURIComponent(hint)}`;
   }
 
   const verifyUrl = buildVerifyUrl(UI_BASE, session_id, hint_key);
 
-  // 🔔 audit: session created (idempotent per session_id)
   emitVerifyAudit({
     event: 'verification.session.created',
     sessionId: session_id,
@@ -350,7 +393,6 @@ const beginSession = asyncHandler(async (req, res) => {
   sess.markModified('request');
   await sess.save();
 
-  // 🔔 audit: session begun (idempotent per sessionId)
   emitVerifyAudit({
     event: 'verification.session.begin',
     sessionId,
@@ -373,7 +415,6 @@ const getSession = asyncHandler(async (req, res) => {
 
   res.set('Cache-Control', 'no-store');
 
-  // 🚫 never expose cred_hint to the polling UI
   const safeRequest = { ...(sess.request || {}) };
   delete safeRequest.cred_hint;
 
@@ -401,7 +442,6 @@ const submitPresentation = asyncHandler(async (req, res) => {
     sess.markModified('result');
     await sess.save();
 
-    // 🔔 audit: presented after expiry
     emitVerifyAudit({
       event: 'verification.session.presented',
       sessionId,
@@ -416,13 +456,11 @@ const submitPresentation = asyncHandler(async (req, res) => {
     return res.json({ ok: false, reason: 'expired_session' });
   }
 
-  // ✅ Holder denies
   if (decision === 'deny') {
     sess.result = { valid: false, reason: 'denied_by_holder' };
     sess.markModified('result');
     await sess.save();
 
-    // 🔔 audit: denied by holder
     emitVerifyAudit({
       event: 'verification.session.presented',
       sessionId,
@@ -449,7 +487,6 @@ const submitPresentation = asyncHandler(async (req, res) => {
     sess.markModified('result');
     await sess.save();
 
-    // 🔔 audit: failed verification
     emitVerifyAudit({
       event: 'verification.session.presented',
       sessionId,
@@ -465,12 +502,11 @@ const submitPresentation = asyncHandler(async (req, res) => {
     return res.status(code).json({ ok: false, reason, result: sess.result });
   }
 
-  // success (valid: true, reason: 'ok' | 'not_anchored')
+  // success
   sess.result = outcome.result;
   sess.markModified('result');
   await sess.save();
 
-  // 🔔 audit: success
   emitVerifyAudit({
     event: 'verification.session.presented',
     sessionId,
