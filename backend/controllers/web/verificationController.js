@@ -3,7 +3,7 @@ const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
 const QRCode      = require('qrcode');
-const mongoose    = require('mongoose'); // 👈 keep
+const mongoose    = require('mongoose');
 const { importJWK, compactVerify } = require('jose');
 
 const SignedVC = require('../../models/web/signedVcModel');
@@ -25,6 +25,7 @@ function getAuditLogAuth() {
     return AuditLogAuth;
   } catch { return null; }
 }
+
 // helper near the top
 const pickHolderName = (payloadObj) =>
   payloadObj?.credentialSubject?.fullName ||
@@ -36,10 +37,10 @@ const pickHolderName = (payloadObj) =>
 // decode a JWS payload (no verify here)
 function decodeJwsPayload(jws) {
   try {
-    const [, b64] = String(jws).split(".");
+    const [, b64] = String(jws).split('.');
     if (!b64) return null;
     const buf = fromB64url(b64);
-    return JSON.parse(buf.toString("utf8"));
+    return JSON.parse(buf.toString('utf8'));
   } catch { return null; }
 }
 
@@ -48,8 +49,8 @@ function decodeJwsPayload(jws) {
  * Avoids storing sensitive payloads; uses meta for small, non-secret context.
  */
 async function emitVerifyAudit({
-  event,               // 'verification.session.created' | 'verification.session.begin' | 'verification.session.presented'
-  actorId = null,      // if you run this behind auth, pass req.user?._id
+  event,
+  actorId = null,
   actorRole = null,
   sessionId = null,
   targetCredentialId = null,
@@ -59,7 +60,7 @@ async function emitVerifyAudit({
   body = null,
   extra = {},
   recipients = [],
-  dedupeKey = null,    // optional idempotency key
+  dedupeKey = null,
   status = 200,
   path = '',
   method = 'INTERNAL',
@@ -160,8 +161,18 @@ async function loadSignedVCByCredentialId(credential_id) {
 /* ---------- Core verifiers ---------- */
 async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
-  if (!signed || signed.status !== 'active') return { ok: false, reason: 'not_found_or_revoked' };
-  if (signed.status === 'revoked') return { ok: false, reason: 'not_found_or_revoked' };
+  if (!signed) return { ok: false, reason: 'not_found_or_revoked' };
+
+  const metaBase = {
+    vc_type: signed.type || signed.meta?.type || 'VC',
+    holder_name: signed.studentFullName || signed.meta?.fullName || null,
+    anchoring: signed.anchoring || null,
+    digest: signed.digest || null,
+  };
+
+  if (signed.status !== 'active' || signed.status === 'revoked') {
+    return { ok: false, reason: 'not_found_or_revoked', meta: metaBase };
+  }
 
   if (signed.anchoring?.state !== 'anchored') {
     return {
@@ -169,24 +180,26 @@ async function verifyByCredentialId(credential_id) {
       result: {
         valid: true,
         reason: 'not_anchored',
-        meta: {
-          vc_type: signed.type || signed.meta?.type || 'VC',
-          holder_name: signed.studentFullName || signed.meta?.fullName || null,
-          anchoring: signed.anchoring || null,
-        },
+        meta: metaBase,
       },
     };
   }
 
   const recomputed = digestJws(signed.jws, signed.salt);
-  if (recomputed !== signed.digest) return { ok: false, reason: 'digest_mismatch' };
+  if (recomputed !== signed.digest) {
+    return { ok: false, reason: 'digest_mismatch', meta: metaBase };
+  }
 
   const batch = await AnchorBatch.findOne({ batch_id: signed.anchoring.batch_id }).lean();
-  if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
+  if (!batch || !batch.merkle_root) {
+    return { ok: false, reason: 'batch_missing', meta: metaBase };
+  }
 
   const leaf = keccak256(fromB64url(signed.digest));
   const included = verifyProof(leaf, signed.anchoring.merkle_proof || [], batch.merkle_root);
-  if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
+  if (!included) {
+    return { ok: false, reason: 'merkle_proof_invalid', meta: metaBase };
+  }
 
   return {
     ok: true,
@@ -194,43 +207,47 @@ async function verifyByCredentialId(credential_id) {
       valid: true,
       reason: 'ok',
       meta: {
-        vc_type: signed.type || signed.meta?.type || 'VC',
-        holder_name: signed.studentFullName || signed.meta?.fullName || null,
-        anchoring: {
-          ...signed.anchoring,
-          merkle_root: batch.merkle_root,
-        },
-        digest: signed.digest,
+        ...metaBase,
+        anchoring: { ...(metaBase.anchoring || {}), merkle_root: batch.merkle_root },
       },
     },
   };
 }
 
-
 async function verifyStatelessPayload(payload) {
   const { jws, salt, digest, anchoring, alg, kid, jwk } = payload || {};
   if (!jws || !salt || !digest) return { ok: false, reason: 'payload_incomplete' };
-  if (alg && !['ES256'].includes(alg)) return { ok: false, reason: 'alg_not_allowed' };
+
+  // We can still decode payload to build meta before alg/signature checks
+  const payloadObj = decodeJwsPayload(jws);
+  const vcType =
+    (Array.isArray(payloadObj?.vc?.type) ? payloadObj.vc.type[0] : payloadObj?.vc?.type) ||
+    (Array.isArray(payloadObj?.type) ? payloadObj.type[0] : payloadObj?.type) ||
+    'VC';
+  const holderName = pickHolderName(payloadObj);
+
+  const metaBase = {
+    vc_type: vcType,
+    holder_name: holderName,
+    anchoring: anchoring || null,
+    digest,
+  };
+
+  if (alg && !['ES256'].includes(alg)) return { ok: false, reason: 'alg_not_allowed', meta: metaBase };
 
   const recomputed = digestJws(jws, salt);
-  if (recomputed !== digest) return { ok: false, reason: 'digest_mismatch' };
+  if (recomputed !== digest) return { ok: false, reason: 'digest_mismatch', meta: metaBase };
 
   const sigOK = await verifyJwsSignature(jws, jwk);
-  if (!sigOK) return { ok: false, reason: 'bad_signature' };
-
-  const payloadObj = decodeJwsPayload(jws);
-  const vcType = (Array.isArray(payloadObj?.vc?.type) ? payloadObj.vc.type[0] : payloadObj?.vc?.type) ||
-                 (Array.isArray(payloadObj?.type) ? payloadObj.type[0] : payloadObj?.type) ||
-                 'VC';
-  const holderName = pickHolderName(payloadObj);
+  if (!sigOK) return { ok: false, reason: 'bad_signature', meta: metaBase };
 
   if (anchoring?.state === 'anchored') {
     const batch = await AnchorBatch.findOne({ batch_id: anchoring.batch_id }).lean();
-    if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
+    if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing', meta: metaBase };
 
     const leaf = keccak256(fromB64url(digest));
     const included = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
-    if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
+    if (!included) return { ok: false, reason: 'merkle_proof_invalid', meta: metaBase };
 
     return {
       ok: true,
@@ -238,10 +255,8 @@ async function verifyStatelessPayload(payload) {
         valid: true,
         reason: 'ok',
         meta: {
-          vc_type: vcType,
-          holder_name: holderName,
-          anchoring: { ...anchoring, merkle_root: batch.merkle_root },
-          digest,
+          ...metaBase,
+          anchoring: { ...(metaBase.anchoring || {}), merkle_root: batch.merkle_root },
         },
       },
     };
@@ -252,12 +267,7 @@ async function verifyStatelessPayload(payload) {
     result: {
       valid: true,
       reason: 'not_anchored',
-      meta: {
-        vc_type: vcType,
-        holder_name: holderName,
-        anchoring: anchoring || null,
-        digest,
-      },
+      meta: metaBase,
     },
   };
 }
@@ -362,10 +372,15 @@ const getSession = asyncHandler(async (req, res) => {
   if (!sess) return res.status(404).json({ message: 'Session not found' });
 
   res.set('Cache-Control', 'no-store');
+
+  // 🚫 never expose cred_hint to the polling UI
+  const safeRequest = { ...(sess.request || {}) };
+  delete safeRequest.cred_hint;
+
   res.json({
     session_id: sess.session_id,
     employer: sess.employer,
-    request: sess.request,
+    request: safeRequest,
     result: sess.result,
     expires_at: sess.expires_at,
   });
@@ -427,7 +442,8 @@ const submitPresentation = asyncHandler(async (req, res) => {
 
   if (!outcome.ok) {
     const reason = outcome.reason || 'failed';
-    sess.result = { valid: false, reason };
+    const meta = outcome.meta || outcome.result?.meta || undefined;
+    sess.result = meta ? { valid: false, reason, meta } : { valid: false, reason };
     await sess.save();
 
     // 🔔 audit: failed verification
@@ -443,7 +459,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
     }).catch(() => {});
 
     const code = outcome.reason === 'bad_request' ? 400 : 200;
-    return res.status(code).json({ ok: false, reason });
+    return res.status(code).json({ ok: false, reason, result: sess.result });
   }
 
   // success (valid: true, reason: 'ok' | 'not_anchored')
