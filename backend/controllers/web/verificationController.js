@@ -25,6 +25,24 @@ function getAuditLogAuth() {
     return AuditLogAuth;
   } catch { return null; }
 }
+// helper near the top
+const pickHolderName = (payloadObj) =>
+  payloadObj?.credentialSubject?.fullName ||
+  payloadObj?.credentialSubject?.name ||
+  payloadObj?.subject?.fullName ||
+  payloadObj?.subject?.name ||
+  null;
+
+// decode a JWS payload (no verify here)
+function decodeJwsPayload(jws) {
+  try {
+    const [, b64] = String(jws).split(".");
+    if (!b64) return null;
+    const buf = fromB64url(b64);
+    return JSON.parse(buf.toString("utf8"));
+  } catch { return null; }
+}
+
 /**
  * emitVerifyAudit — best-effort writer to the auth DB's AuditLog.
  * Avoids storing sensitive payloads; uses meta for small, non-secret context.
@@ -146,7 +164,18 @@ async function verifyByCredentialId(credential_id) {
   if (signed.status === 'revoked') return { ok: false, reason: 'not_found_or_revoked' };
 
   if (signed.anchoring?.state !== 'anchored') {
-    return { ok: true, result: { valid: true, reason: 'not_anchored' } };
+    return {
+      ok: true,
+      result: {
+        valid: true,
+        reason: 'not_anchored',
+        meta: {
+          vc_type: signed.type || signed.meta?.type || 'VC',
+          holder_name: signed.studentFullName || signed.meta?.fullName || null,
+          anchoring: signed.anchoring || null,
+        },
+      },
+    };
   }
 
   const recomputed = digestJws(signed.jws, signed.salt);
@@ -159,8 +188,24 @@ async function verifyByCredentialId(credential_id) {
   const included = verifyProof(leaf, signed.anchoring.merkle_proof || [], batch.merkle_root);
   if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
 
-  return { ok: true, result: { valid: true, reason: 'ok' } };
+  return {
+    ok: true,
+    result: {
+      valid: true,
+      reason: 'ok',
+      meta: {
+        vc_type: signed.type || signed.meta?.type || 'VC',
+        holder_name: signed.studentFullName || signed.meta?.fullName || null,
+        anchoring: {
+          ...signed.anchoring,
+          merkle_root: batch.merkle_root,
+        },
+        digest: signed.digest,
+      },
+    },
+  };
 }
+
 
 async function verifyStatelessPayload(payload) {
   const { jws, salt, digest, anchoring, alg, kid, jwk } = payload || {};
@@ -173,6 +218,12 @@ async function verifyStatelessPayload(payload) {
   const sigOK = await verifyJwsSignature(jws, jwk);
   if (!sigOK) return { ok: false, reason: 'bad_signature' };
 
+  const payloadObj = decodeJwsPayload(jws);
+  const vcType = (Array.isArray(payloadObj?.vc?.type) ? payloadObj.vc.type[0] : payloadObj?.vc?.type) ||
+                 (Array.isArray(payloadObj?.type) ? payloadObj.type[0] : payloadObj?.type) ||
+                 'VC';
+  const holderName = pickHolderName(payloadObj);
+
   if (anchoring?.state === 'anchored') {
     const batch = await AnchorBatch.findOne({ batch_id: anchoring.batch_id }).lean();
     if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing' };
@@ -180,10 +231,35 @@ async function verifyStatelessPayload(payload) {
     const leaf = keccak256(fromB64url(digest));
     const included = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
     if (!included) return { ok: false, reason: 'merkle_proof_invalid' };
-    return { ok: true, result: { valid: true, reason: 'ok' } };
+
+    return {
+      ok: true,
+      result: {
+        valid: true,
+        reason: 'ok',
+        meta: {
+          vc_type: vcType,
+          holder_name: holderName,
+          anchoring: { ...anchoring, merkle_root: batch.merkle_root },
+          digest,
+        },
+      },
+    };
   }
 
-  return { ok: true, result: { valid: true, reason: 'not_anchored' } };
+  return {
+    ok: true,
+    result: {
+      valid: true,
+      reason: 'not_anchored',
+      meta: {
+        vc_type: vcType,
+        holder_name: holderName,
+        anchoring: anchoring || null,
+        digest,
+      },
+    },
+  };
 }
 
 /* ---------- Controllers ---------- */
