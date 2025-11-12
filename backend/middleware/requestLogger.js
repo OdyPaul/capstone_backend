@@ -1,7 +1,7 @@
 // middleware/requestLogger.js
 const { pub } = require('../lib/redis');
 const { getAuthConn, getVcConn, getStudentsConn } = require('../config/db');
-const AuditLogSchema = require('../models/common/auditLog.schema'); // <-- schema only
+const AuditLogSchema = require('../models/common/auditLog.schema');
 
 let AuditLogAuth = null;
 let AuditLogVc = null;
@@ -33,15 +33,25 @@ function getAuditModel(db) {
     }
     return AuditLogVc;
   } catch {
-    return null; // fail-open: never break requests because of logging
+    return null; // fail-open
   }
 }
 
-/** requestLogger(routeTag, { db: 'auth' | 'vc' | 'students' }) (default db = 'vc') */
+/**
+ * requestLogger(routeTag, { db?: 'auth'|'vc'|'students', methods?: string[] })
+ * Defaults to logging only write methods: POST, PUT, PATCH, DELETE
+ */
+const DEFAULT_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 module.exports = function requestLogger(routeTag = '', opts = {}) {
   const db = (opts && opts.db) || 'vc';
+  const methods = new Set((opts && opts.methods) || DEFAULT_METHODS);
 
   return function (req, res, next) {
+    // Only log selected HTTP methods
+    const method = String(req.method || '').toUpperCase();
+    if (!methods.has(method)) return next(); // don't even attach the finish handler
+
     const start = Date.now();
 
     res.on('finish', async () => {
@@ -55,7 +65,7 @@ module.exports = function requestLogger(routeTag = '', opts = {}) {
           actorRole: req.user?.role || null,
           ip:        req.ip,
           ua:        req.headers['user-agent'] || '',
-          method:    req.method,
+          method,
           path:      (req.originalUrl || req.url || '').split('?')[0],
           status:    res.statusCode,
           latencyMs: Date.now() - start,

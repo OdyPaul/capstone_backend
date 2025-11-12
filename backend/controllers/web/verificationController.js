@@ -1,3 +1,4 @@
+// backend/controllers/web/verificationController.js
 const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
@@ -231,7 +232,7 @@ async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
   if (!signed) return { ok: false, reason: 'not_found_or_revoked' };
 
-  // NEW: derive vc_type + holder_name from vc_payload / user
+  // derive vc_type + holder_name from vc_payload / user
   const { vcType, holderName } = await inferTypeAndHolderFromSigned(signed);
 
   const metaBase = {
@@ -357,6 +358,7 @@ const createSession = asyncHandler(async (req, res) => {
   const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
 
   const hint_key = crypto.randomBytes(6).toString('base64url');
+  const nonce = crypto.randomBytes(16).toString('base64url'); // ← per-session nonce
 
   await VerificationSession.create({
     session_id,
@@ -366,14 +368,20 @@ const createSession = asyncHandler(async (req, res) => {
       purpose: 'Hiring',
       cred_hint: credential_id || null,
       hint_key,
+      nonce, // store nonce in request
     },
     result: { valid: false, reason: 'pending' },
     expires_at,
   });
 
   const UI_BASE =
-    String(ui_base || process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL ||
-      process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+    String(
+      ui_base ||
+      process.env.FRONTEND_BASE_URL ||
+      process.env.UI_BASE_URL ||
+      process.env.BASE_URL ||
+      `${req.protocol}://${req.get('host')}`
+    ).replace(/\/+$/, '');
 
   function buildVerifyUrl(base, session, hint) {
     const hasPlaceholder = /\{session\}/.test(base);
@@ -454,14 +462,14 @@ const getSession = asyncHandler(async (req, res) => {
 
 const submitPresentation = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
-  const { credential_id, payload, decision } = req.body || {};
+  const { credential_id, payload, decision, nonce } = req.body || {};
   const now = new Date();
 
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
   if (isFinal(sess.result)) {
     return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
-    }
+  }
   if (sess.expires_at < now) {
     sess.result = { valid: false, reason: 'expired_session' };
     sess.markModified('result');
@@ -500,6 +508,24 @@ const submitPresentation = asyncHandler(async (req, res) => {
     return res.json({ ok: true, session: sess.session_id, result: sess.result });
   }
 
+  // --- Nonce check (bind presentation to this session)
+  const expectedNonce = sess?.request?.nonce || null;
+  if (expectedNonce) {
+    if (!nonce) {
+      sess.result = { valid: false, reason: 'nonce_required' };
+      sess.markModified('result');
+      await sess.save();
+      return res.status(400).json({ ok: false, reason: 'nonce_required' });
+    }
+    if (String(nonce) !== String(expectedNonce)) {
+      sess.result = { valid: false, reason: 'nonce_mismatch' };
+      sess.markModified('result');
+      await sess.save();
+      return res.status(400).json({ ok: false, reason: 'nonce_mismatch' });
+    }
+  }
+
+  // --- Verify VC (by id OR stateless payload)
   let outcome;
   if (credential_id && !payload) outcome = await verifyByCredentialId(credential_id);
   else if (payload && !credential_id) outcome = await verifyStatelessPayload(payload);
@@ -530,7 +556,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
   // success
   sess.result = outcome.result;
 
-  // --- Attach printable snapshot & signed print URL (minimal edit) ---
+  // --- Attach printable snapshot & signed print URL (for portal "Request printable VC")
   try {
     const { _buildSignedTorFromSessionUrl } = require('./pdfController');
     const UI_BASE = String(process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
@@ -549,6 +575,10 @@ const submitPresentation = asyncHandler(async (req, res) => {
       sess.result.meta = { ...(sess.result.meta || {}), printable };
       const ttl = Number(process.env.PRINT_URL_TTL_MIN || 15);
       const printUrl = _buildSignedTorFromSessionUrl({ base: UI_BASE, sessionId: sess.session_id, ttlMin: ttl });
+      // keep a list for single-use enforcement in pdf controller
+      if (!Array.isArray(sess.result.meta.print_tokens_used)) {
+        sess.result.meta.print_tokens_used = [];
+      }
       sess.result.meta.print_url = printUrl;
     }
     sess.markModified('result');
@@ -580,10 +610,15 @@ const sessionQrPng = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
   const size = Math.min(Number(req.query.size) || 220, 800);
 
+  // Load session to get the nonce
+  const sess = await VerificationSession.findOne({ session_id: sessionId }).lean();
+  if (!sess) return res.status(404).end();
+
   const payload = {
     t: 'vc-session',
     v: 1,
     session: sessionId,
+    nonce: sess?.request?.nonce || null,   // include nonce
     api: (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '') + '/api',
     ts: Date.now(),
   };

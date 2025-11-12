@@ -12,6 +12,7 @@ const RL_BEGIN   = rateLimitRedis({ prefix: 'rl:veri:begin',   windowMs: 60_000,
 const RL_POLL    = rateLimitRedis({ prefix: 'rl:veri:poll',    windowMs: 60_000, max: 240 });
 const RL_PRESENT = rateLimitRedis({ prefix: 'rl:veri:present', windowMs: 60_000, max: 60 });
 
+
 // ---- Validation
 const vSessionParam = validate({
   params: z.object({
@@ -45,7 +46,9 @@ const vBeginBody = validate({
 // Either credential_id OR payload
 const PresentWithId = z.object({
   credential_id: z.string().max(256),
+  nonce: z.string().max(180).optional(),
 }).strict();
+
 
 const PresentWithPayload = z.object({
   payload: z.object({
@@ -57,6 +60,7 @@ const PresentWithPayload = z.object({
     kid: z.string().optional(),
     jwk: z.any().optional(),
   }).strict(),
+  nonce: z.string().max(180).optional(),
 }).strict();
 
 const vPresentBody = validate({

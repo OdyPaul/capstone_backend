@@ -6,6 +6,6 @@ const pdfCtrl = require('../../controllers/web/pdfController');
 
 router.get('/tor/:studentId/pdf', protect, admin, pdfCtrl.renderTorPdf);
 
-router.get('/tor/from-session/pdf-signed', pdfCtrl.renderTorPdfFromSessionSigned);
+router.get("/pdf/tor-from-session", torFromSessionSigned);
 
 module.exports = router;
