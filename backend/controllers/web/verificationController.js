@@ -1,4 +1,3 @@
-// controllers/web/verificationController.js
 const asyncHandler = require('express-async-handler');
 const keccak256   = require('keccak256');
 const crypto      = require('crypto');
@@ -55,6 +54,32 @@ function decodeJwsPayload(jws) {
     const buf = fromB64url(b64);
     return JSON.parse(buf.toString('utf8'));
   } catch { return null; }
+}
+function extractPrintableFromPayload(payloadObj) {
+  const cs = payloadObj?.credentialSubject || payloadObj?.subject || {};
+  const mapSubj = (s = {}) => ({
+    yearLevel: s.yearLevel || s.year || '',
+    semester: s.semester || s.term || '',
+    subjectCode: s.subjectCode || s.code || '',
+    subjectDescription: s.subjectDescription || s.title || s.name || '',
+    finalGrade: s.finalGrade ?? s.grade ?? '',
+    units: s.units ?? s.credit ?? s.credits ?? '',
+  });
+
+  return {
+    fullName: cs.fullName || cs.name || '',
+    studentNumber: cs.studentNumber || cs.student_id || cs.id || '',
+    address: cs.address || '',
+    entranceCredentials: cs.entranceCredentials || '',
+    highSchool: cs.highSchool || '',
+    program: cs.program || cs.course || '',
+    major: cs.major || '',
+    placeOfBirth: cs.placeOfBirth || cs.birthPlace || '',
+    dateAdmission: cs.dateAdmission || cs.admissionDate || '',
+    dateGraduated: cs.dateGraduated || cs.graduationDate || '',
+    gwa: cs.gwa || cs.GWA || '',
+    subjects: Array.isArray(cs.subjects) ? cs.subjects.map(mapSubj) : [],
+  };
 }
 
 /**
@@ -436,7 +461,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
   if (!sess) return res.status(404).json({ message: 'Session not found' });
   if (isFinal(sess.result)) {
     return res.json({ ok: !!sess.result.valid, session: sess.session_id, result: sess.result });
-  }
+    }
   if (sess.expires_at < now) {
     sess.result = { valid: false, reason: 'expired_session' };
     sess.markModified('result');
@@ -504,7 +529,31 @@ const submitPresentation = asyncHandler(async (req, res) => {
 
   // success
   sess.result = outcome.result;
-  sess.markModified('result');
+
+  // --- Attach printable snapshot & signed print URL (minimal edit) ---
+  try {
+    const { _buildSignedTorFromSessionUrl } = require('./pdfController');
+    const UI_BASE = String(process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+    let printable = null;
+
+    if (payload && payload.jws) {
+      const pObj = decodeJwsPayload(payload.jws) || null;
+      if (pObj) printable = extractPrintableFromPayload(pObj);
+    } else if (credential_id) {
+      const signed = await loadSignedVCByCredentialId(credential_id);
+      const pObj = signed?.vc_payload || (signed?.jws ? decodeJwsPayload(signed.jws) : null) || null;
+      if (pObj) printable = extractPrintableFromPayload(pObj);
+    }
+
+    if (printable) {
+      sess.result.meta = { ...(sess.result.meta || {}), printable };
+      const ttl = Number(process.env.PRINT_URL_TTL_MIN || 15);
+      const printUrl = _buildSignedTorFromSessionUrl({ base: UI_BASE, sessionId: sess.session_id, ttlMin: ttl });
+      sess.result.meta.print_url = printUrl;
+    }
+    sess.markModified('result');
+  } catch { /* non-fatal */ }
+
   await sess.save();
 
   emitVerifyAudit({
