@@ -16,7 +16,7 @@ const RL_PRESENT = rateLimitRedis({ prefix: 'rl:veri:present', windowMs: 60_000,
 // ---- Validation
 const vSessionParam = validate({
   params: z.object({
-    sessionId: z.string().regex(/^prs_[A-Za-z0-9\-_]{6,32}$/),
+    sessionId: z.string().regex(/^(?:prs|ors)_[A-Za-z0-9\-_]{6,32}$/),
   }).strict(),
 });
 
