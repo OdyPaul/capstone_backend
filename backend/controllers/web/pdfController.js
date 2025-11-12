@@ -9,6 +9,9 @@ const Student = require("../../models/students/studentModel");
 const VerificationSession = require("../../models/web/verificationSessionModel");
 const launchBrowser = require("../../utils/launchBrowser");
 
+/* ------------ tiny cross-version delay helper (replaces waitForTimeout) ------------ */
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
 /* ------------------------------- Helpers ------------------------------- */
 function toISODate(d) { return d ? new Date(d).toISOString().split("T")[0] : ""; }
 
@@ -97,7 +100,7 @@ async function compileTemplate() {
   return hbs.compile(source);
 }
 
-function rowsToPages(baseRows, _admissionDate, bg1, bg2, firstCount = 23, nextCount = 31) {
+function rowsToPages(baseRows, admissionDate, bg1, bg2, firstCount = 23, nextCount = 31) {
   const pageChunks = paginateRows(baseRows, firstCount, nextCount);
   return pageChunks.map((chunk, idx, arr) => {
     let prevKey = null;
@@ -108,11 +111,6 @@ function rowsToPages(baseRows, _admissionDate, bg1, bg2, firstCount = 23, nextCo
     });
     return { rows, continues: idx < arr.length - 1, bg: idx === 0 ? (bg1 || "") : (bg2 || bg1 || "") };
   });
-}
-
-function ensureAtLeastOnePage(pages, bg1, bg2) {
-  if (Array.isArray(pages) && pages.length) return pages;
-  return [{ rows: [], continues: false, bg: bg1 || bg2 || "" }];
 }
 
 /* --------------------------- HMAC & Signed URL -------------------------- */
@@ -131,15 +129,12 @@ function _buildSignedTorFromSessionUrl({ base, sessionId, ttlMin = 15 }) {
 }
 
 /* ------------------------------ Controllers ----------------------------- */
-/**
- * Admin route: render TOR from Student doc using your Handlebars template.
- * GET /api/web/tor/:studentId/pdf  (protected)
- */
+/** ADMIN: render TOR from Student doc (protected) */
 const renderTorPdf = asyncHandler(async (req, res) => {
   const student = await Student.findById(req.params.studentId).lean();
   if (!student) { res.status(404); throw new Error("Student not found"); }
 
-  // Optional short-lived session -> verify URL printed on template
+  // Optional short-lived session
   const sessionId = "prs_" + Math.random().toString(36).slice(2, 10);
   const expires_at = new Date(Date.now() + 48 * 3600 * 1000);
   await VerificationSession.create({
@@ -149,12 +144,13 @@ const renderTorPdf = asyncHandler(async (req, res) => {
     result: { valid: false, reason: "pending" },
     expires_at,
   });
+
   const UI_BASE = (process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL || process.env.BASE_URL || "").replace(/\/+$/,"");
   const verifyUrl = `${UI_BASE}/verify/${sessionId}`;
 
   const baseRows = buildRows(student.subjects || [], student.dateAdmission);
   const { bg1, bg2 } = await loadBackgrounds();
-  const pages = ensureAtLeastOnePage(rowsToPages(baseRows, student.dateAdmission, bg1, bg2, 23, 31), bg1, bg2);
+  const pages = rowsToPages(baseRows, student.dateAdmission, bg1, bg2, 23, 31);
   const tpl = await compileTemplate();
 
   const html = tpl({
@@ -168,7 +164,7 @@ const renderTorPdf = asyncHandler(async (req, res) => {
     major: student.major || "",
     placeOfBirth: student.placeOfBirth || "",
     dateAdmission: toISODate(student.dateAdmission),
-    dateOfBirth: "", // if available, fill here
+    dateOfBirth: "",
     dateGraduated: toISODate(student.dateGraduated),
     dateIssued: toISODate(new Date()),
     gwa: student.gwa,
@@ -180,7 +176,7 @@ const renderTorPdf = asyncHandler(async (req, res) => {
   try {
     const page = await browser.newPage();
 
-    // Avoid hanging on external requests
+    // Block external requests (keeps Render happy)
     await page.setRequestInterception(true);
     page.on("request", (r) => {
       const u = r.url();
@@ -188,14 +184,13 @@ const renderTorPdf = asyncHandler(async (req, res) => {
       return r.continue();
     });
 
-    page.setDefaultNavigationTimeout(120000);
-    page.setDefaultTimeout(120000);
-
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.emulateMediaType("screen");
-    try { await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())); } catch {}
-    await page.waitForTimeout(80);
 
+    // Wait for fonts; tiny settle to ensure background images painted
+    try { if (page.evaluate) await page.evaluate(() => (document.fonts && document.fonts.ready) ? document.fonts.ready : null); } catch {}
+    await delay(150); // replaces page.waitForTimeout(150)
+
+    await page.emulateMediaType("screen");
     const pdf = await page.pdf({
       format: "A4",
       printBackground: true,
@@ -212,11 +207,7 @@ const renderTorPdf = asyncHandler(async (req, res) => {
   }
 });
 
-/**
- * Public signed route: render TOR from completed verification session,
- * using the SAME Handlebars template + PNG backgrounds.
- * GET /api/web/pdf/tor-from-session?sid=...&exp=...&tok=...&sig=...
- */
+/** PUBLIC: render TOR from verification session with signed URL */
 const torFromSessionSigned = asyncHandler(async (req, res) => {
   const { sid, exp, tok, sig } = req.query || {};
   const PRINT_URL_SECRET = process.env.PRINT_URL_SECRET || "dev-secret-change-me";
@@ -238,12 +229,11 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
   if (!(r.valid || r.reason === "not_anchored")) return res.status(403).send("Verification failed");
 
   const meta = r.meta || {};
-  const printable = meta.printable || {}; // produced by verificationController.submitPresentation
+  const printable = meta.printable || {};
 
-  // Build rows/pages from printable payload
   const baseRows = buildRows(Array.isArray(printable.subjects) ? printable.subjects : [], printable.dateAdmission || null);
   const { bg1, bg2 } = await loadBackgrounds();
-  const pages = ensureAtLeastOnePage(rowsToPages(baseRows, printable.dateAdmission || null, bg1, bg2, 23, 31), bg1, bg2);
+  const pages = rowsToPages(baseRows, printable.dateAdmission || null, bg1, bg2, 23, 31);
 
   const UI_BASE = (process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL || process.env.BASE_URL || "").replace(/\/+$/,"");
   const verifyUrl = `${UI_BASE}/verify/${sid}`;
@@ -260,7 +250,7 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
     major: printable.major || "",
     placeOfBirth: printable.placeOfBirth || "",
     dateAdmission: toISODate(printable.dateAdmission || ""),
-    dateOfBirth: "", // if available in your printable, add and map
+    dateOfBirth: "",
     dateGraduated: toISODate(printable.dateGraduated || ""),
     dateIssued: toISODate(new Date()),
     gwa: printable.gwa || "",
@@ -271,20 +261,13 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
-
-    // Block externals; everything is inline/data:
-    await page.setRequestInterception(true);
-    page.on("request", (r) => {
-      const u = r.url();
-      if (u.startsWith("http://") || u.startsWith("https://")) return r.abort();
-      return r.continue();
-    });
-
     await page.setContent(html, { waitUntil: "domcontentloaded" });
-    await page.emulateMediaType("screen");
-    try { await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())); } catch {}
-    await page.waitForTimeout(80);
 
+    // Wait for fonts & a short settle instead of page.waitForTimeout
+    try { if (page.evaluate) await page.evaluate(() => (document.fonts && document.fonts.ready) ? document.fonts.ready : null); } catch {}
+    await delay(150);
+
+    await page.emulateMediaType("screen");
     const pdf = await page.pdf({
       format: "A4",
       printBackground: true,
@@ -310,7 +293,7 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  _buildSignedTorFromSessionUrl, // used by verificationController to inject a signed print link
-  torFromSessionSigned,          // public signed route
-  renderTorPdf,                  // admin/manual route using Student + template
+  _buildSignedTorFromSessionUrl,
+  torFromSessionSigned,
+  renderTorPdf,
 };

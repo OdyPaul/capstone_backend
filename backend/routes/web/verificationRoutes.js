@@ -26,7 +26,7 @@ const vCreateBody = validate({
     contact: z.string().max(120).optional(),
     types: z.array(z.string().max(40)).min(1).max(8).optional(),
     ttlHours: z.coerce.number().int().min(1).max(168).optional(),
-    ui_base: z.string().max(300).optional(), // e.g. http://localhost:5173/verification-portal
+    ui_base: z.string().max(300).optional(), 
     credential_id: z.string().max(256).optional(),
   }).strict(),
 });
