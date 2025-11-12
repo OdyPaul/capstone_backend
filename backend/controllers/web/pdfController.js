@@ -97,7 +97,7 @@ async function compileTemplate() {
   return hbs.compile(source);
 }
 
-function rowsToPages(baseRows, admissionDate, bg1, bg2, firstCount = 23, nextCount = 31) {
+function rowsToPages(baseRows, _admissionDate, bg1, bg2, firstCount = 23, nextCount = 31) {
   const pageChunks = paginateRows(baseRows, firstCount, nextCount);
   return pageChunks.map((chunk, idx, arr) => {
     let prevKey = null;
@@ -108,6 +108,11 @@ function rowsToPages(baseRows, admissionDate, bg1, bg2, firstCount = 23, nextCou
     });
     return { rows, continues: idx < arr.length - 1, bg: idx === 0 ? (bg1 || "") : (bg2 || bg1 || "") };
   });
+}
+
+function ensureAtLeastOnePage(pages, bg1, bg2) {
+  if (Array.isArray(pages) && pages.length) return pages;
+  return [{ rows: [], continues: false, bg: bg1 || bg2 || "" }];
 }
 
 /* --------------------------- HMAC & Signed URL -------------------------- */
@@ -149,7 +154,7 @@ const renderTorPdf = asyncHandler(async (req, res) => {
 
   const baseRows = buildRows(student.subjects || [], student.dateAdmission);
   const { bg1, bg2 } = await loadBackgrounds();
-  const pages = rowsToPages(baseRows, student.dateAdmission, bg1, bg2, 23, 31);
+  const pages = ensureAtLeastOnePage(rowsToPages(baseRows, student.dateAdmission, bg1, bg2, 23, 31), bg1, bg2);
   const tpl = await compileTemplate();
 
   const html = tpl({
@@ -174,17 +179,22 @@ const renderTorPdf = asyncHandler(async (req, res) => {
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
+
+    // Avoid hanging on external requests
     await page.setRequestInterception(true);
     page.on("request", (r) => {
       const u = r.url();
       if (u.startsWith("http://") || u.startsWith("https://")) return r.abort();
       return r.continue();
     });
+
     page.setDefaultNavigationTimeout(120000);
     page.setDefaultTimeout(120000);
 
     await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.emulateMediaType("screen");
+    try { await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())); } catch {}
+    await page.waitForTimeout(80);
 
     const pdf = await page.pdf({
       format: "A4",
@@ -233,7 +243,7 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
   // Build rows/pages from printable payload
   const baseRows = buildRows(Array.isArray(printable.subjects) ? printable.subjects : [], printable.dateAdmission || null);
   const { bg1, bg2 } = await loadBackgrounds();
-  const pages = rowsToPages(baseRows, printable.dateAdmission || null, bg1, bg2, 23, 31);
+  const pages = ensureAtLeastOnePage(rowsToPages(baseRows, printable.dateAdmission || null, bg1, bg2, 23, 31), bg1, bg2);
 
   const UI_BASE = (process.env.FRONTEND_BASE_URL || process.env.UI_BASE_URL || process.env.BASE_URL || "").replace(/\/+$/,"");
   const verifyUrl = `${UI_BASE}/verify/${sid}`;
@@ -261,8 +271,19 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
   const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
+
+    // Block externals; everything is inline/data:
+    await page.setRequestInterception(true);
+    page.on("request", (r) => {
+      const u = r.url();
+      if (u.startsWith("http://") || u.startsWith("https://")) return r.abort();
+      return r.continue();
+    });
+
     await page.setContent(html, { waitUntil: "domcontentloaded" });
     await page.emulateMediaType("screen");
+    try { await page.evaluate(() => (document.fonts ? document.fonts.ready : Promise.resolve())); } catch {}
+    await page.waitForTimeout(80);
 
     const pdf = await page.pdf({
       format: "A4",
@@ -289,10 +310,7 @@ const torFromSessionSigned = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  // used by verificationController to inject a signed print link
-  _buildSignedTorFromSessionUrl,
-  // public signed route
-  torFromSessionSigned,
-  // admin/manual route using Student + template
-  renderTorPdf,
+  _buildSignedTorFromSessionUrl, // used by verificationController to inject a signed print link
+  torFromSessionSigned,          // public signed route
+  renderTorPdf,                  // admin/manual route using Student + template
 };
