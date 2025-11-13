@@ -20,23 +20,36 @@ const vcRequestSchema = new mongoose.Schema(
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student_Profiles', required: true, index: true },
 
     // ✅ denormalized identifiers for reliable rendering (even without $lookup)
-    studentNumber:   { type: String, index: true, default: null },   // <-- NEW
-    studentFullName: { type: String, default: null },                // optional
-    studentProgram:  { type: String, default: null },                // optional
-    studentPhotoUrl: { type: String, default: null },                // optional
+    studentNumber:   { type: String, index: true, default: null },
+    studentFullName: { type: String, default: null },
+    studentProgram:  { type: String, default: null },
+    studentPhotoUrl: { type: String, default: null },
 
-    type:    { type: String, enum: ['TOR', 'DIPLOMA'], required: true },
+    type: { type: String, enum: ['TOR', 'DIPLOMA'], required: true },
 
     // normalize to lowercase so it matches enum
-    purpose: { 
+    purpose: {
       type: String,
       enum: PURPOSES,
       required: true,
       set: (v) => String(v || '').trim().toLowerCase(),
     },
 
+    // ✅ NEW: whether the requester wants the VC anchored immediately
+    anchorNow: {
+      type: Boolean,
+      default: false,
+    },
+
     status:     { type: String, enum: ['pending', 'approved', 'rejected', 'issued'], default: 'pending', index: true },
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+    // ✅ NEW: optional link to the VC draft auto-created for this request
+    draft: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'VcDraft',
+      default: null,
+    },
   },
   { timestamps: true, bufferCommands: false }
 );

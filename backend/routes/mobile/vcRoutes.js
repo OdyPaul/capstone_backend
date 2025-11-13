@@ -60,10 +60,14 @@ const makeParamsValidator = (schema) => {
 
 /* --------------------------------- schemas --------------------------------- */
 const BodyCreate = z
-  ? z.object({
-      type: z.enum(['TOR', 'DIPLOMA']),
-      purpose: z.string().min(3).max(120),
-    }).passthrough()
+  ? z
+      .object({
+        type: z.enum(['TOR', 'DIPLOMA']),
+        purpose: z.string().min(3).max(120),
+        // ✅ NEW: optional anchor flag (matches what frontend sends & backend expects)
+        anchorNow: z.boolean().optional(),
+      })
+      .passthrough()
   : null;
 
 const ParamsId  = z ? z.object({ id: z.string().regex(/^[0-9a-fA-F]{24}$/) }) : null;
@@ -83,6 +87,7 @@ router.get('/', protect, admin, RL_ADMIN, ctrl.getAllVCRequests);
 router.get('/:id', protect, admin, RL_ADMIN, makeParamsValidator(ParamsId), ctrl.getVCRequestById);
 
 // Admin: review (approve/reject/issue)
+// (You can leave this even if you "don't use review" now; it just won't be called.)
 router.patch(
   '/:id',
   protect,

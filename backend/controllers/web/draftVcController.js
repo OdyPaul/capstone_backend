@@ -1,4 +1,3 @@
-// controllers/web/draftVcController.js
 const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
 const VcDraft = require('../../models/web/vcDraft');
@@ -25,7 +24,9 @@ async function createDraftWithUniqueTx(doc, retries = 5) {
     try {
       return await VcDraft.create(doc);
     } catch (e) {
-      const dup = e?.code === 11000 && (e?.keyPattern?.client_tx || String(e?.message || '').includes('client_tx'));
+      const dup =
+        e?.code === 11000 &&
+        (e?.keyPattern?.client_tx || String(e?.message || '').includes('client_tx'));
       if (!dup) throw e;
       doc.client_tx = genClientTx7(); // regenerate and retry
     }
@@ -41,38 +42,56 @@ function inferKind(draftType, templateVc) {
   if (t.includes('tor')) return 'tor';
   if (t.includes('diploma')) return 'diploma';
 
-  const arr = Array.isArray(templateVc?.type) ? templateVc.type.map(s => String(s).toLowerCase()) : [];
-  if (arr.some(s => s.includes('tor'))) return 'tor';
-  if (arr.some(s => s.includes('diploma'))) return 'diploma';
+  const arr = Array.isArray(templateVc?.type)
+    ? templateVc.type.map((s) => String(s).toLowerCase())
+    : [];
+  if (arr.some((s) => s.includes('tor'))) return 'tor';
+  if (arr.some((s) => s.includes('diploma'))) return 'diploma';
 
   return 'diploma';
 }
 
 // ---------- core ----------
+// ✅ NOTE: now accepts anchorNow (boolean)
 async function createOneDraft({
-  studentId, templateId, type, purpose, expiration, overrides, clientTx,
+  studentId,
+  templateId,
+  type,
+  purpose,
+  expiration,
+  overrides,
+  clientTx,
+  anchorNow,
 }) {
   if (!studentId || !templateId || !type || !purpose) {
     const err = new Error('Missing studentId, templateId, type or purpose');
-    err.status = 400; throw err;
+    err.status = 400;
+    throw err;
   }
   if (!mongoose.isValidObjectId(studentId) || !mongoose.isValidObjectId(templateId)) {
     const err = new Error('Invalid ObjectId');
-    err.status = 400; throw err;
+    err.status = 400;
+    throw err;
   }
 
   const template = await VcTemplate.findById(templateId);
-  if (!template) { const e = new Error('Template not found'); e.status = 404; throw e; }
+  if (!template) {
+    const e = new Error('Template not found');
+    e.status = 404;
+    throw e;
+  }
 
   const student = await Student.findById(studentId).lean();
-  if (!student) { const e = new Error('Student not found'); e.status = 404; throw e; }
+  if (!student) {
+    const e = new Error('Student not found');
+    e.status = 404;
+    throw e;
+  }
 
-  // Use template attributes if present; otherwise fallback to defaults
   const hasAttrs = Array.isArray(template.attributes) && template.attributes.length > 0;
   const kind = inferKind(type, template.vc);
   const attributes = hasAttrs ? template.attributes : getDefaults(kind);
 
-  // Local effective template used for building/validating data
   const effectiveTemplate = {
     ...template.toObject(),
     attributes,
@@ -82,7 +101,8 @@ async function createOneDraft({
   const { valid, errors } = validateAgainstTemplate(effectiveTemplate, data);
   if (!valid) {
     const e = new Error('Validation failed: ' + errors.join('; '));
-    e.status = 400; throw e;
+    e.status = 400;
+    throw e;
   }
 
   // Prevent duplicate *draft* (same student/template/purpose) while status='draft'
@@ -97,7 +117,7 @@ async function createOneDraft({
   // Create the draft
   let draft = await createDraftWithUniqueTx({
     template: template._id,
-    student:  student._id,
+    student: student._id,
     type,
     purpose,
     data,
@@ -114,9 +134,10 @@ async function createOneDraft({
       $setOnInsert: {
         amount,
         currency: 'PHP',
-        anchorNow: false,
-        notes: `Auto-created for draft ${draft._id} (client_tx ${draft.client_tx})`
-      }
+        // ✅ Respect requested anchorNow; default false
+        anchorNow: !!anchorNow,
+        notes: `Auto-created for draft ${draft._id} (client_tx ${draft.client_tx})`,
+      },
     },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
@@ -130,7 +151,11 @@ async function createOneDraft({
 
   // Populate for response
   draft = await draft
-    .populate({ path: 'student', model: Student, select: 'fullName studentNumber program dateGraduated' })
+    .populate({
+      path: 'student',
+      model: Student,
+      select: 'fullName studentNumber program dateGraduated',
+    })
     .populate({ path: 'template', select: 'name slug version price' });
 
   return { status: 'created', draft };
@@ -144,15 +169,16 @@ exports.createDraft = asyncHandler(async (req, res) => {
     const results = [];
     for (const item of body) {
       try {
+        // item may contain anchorNow already
         const r = await createOneDraft(item);
         results.push(r);
       } catch (e) {
         results.push({ status: 'error', error: e.message, input: item });
       }
     }
-    const created = results.filter(r => r.status === 'created').map(r => r.draft);
-    const duplicates = results.filter(r => r.status === 'duplicate').map(r => r.draft);
-    const errors = results.filter(r => r.status === 'error');
+    const created = results.filter((r) => r.status === 'created').map((r) => r.draft);
+    const duplicates = results.filter((r) => r.status === 'duplicate').map((r) => r.draft);
+    const errors = results.filter((r) => r.status === 'error');
 
     return res.status(created.length ? 201 : 200).json({
       createdCount: created.length,
@@ -164,46 +190,67 @@ exports.createDraft = asyncHandler(async (req, res) => {
     });
   }
 
-  const { studentId, templateId, type, purpose, expiration, overrides, clientTx } = body;
-  const result = await createOneDraft({ studentId, templateId, type, purpose, expiration, overrides, clientTx });
+  const {
+    studentId,
+    templateId,
+    type,
+    purpose,
+    expiration,
+    overrides,
+    clientTx,
+    anchorNow,
+  } = body;
+  const result = await createOneDraft({
+    studentId,
+    templateId,
+    type,
+    purpose,
+    expiration,
+    overrides,
+    clientTx,
+    anchorNow,
+  });
   if (result.status === 'duplicate') {
     return res.status(409).json({ message: 'Draft already exists', draft: result.draft });
   }
   res.status(201).json(result.draft);
 });
-// controllers/web/draftVcController.js
+
 exports.getDrafts = asyncHandler(async (req, res) => {
   const { type, range, program, q, template, clientTx, tx, status } = req.query;
 
-  // --- base filter ---
   const filter = {};
 
   if (type && type !== 'All') filter.type = type;
   if (template && mongoose.isValidObjectId(template)) filter.template = template;
 
-    // ✅ NEW: do NOT default to 'draft' when status is missing.
-  // Only apply a status filter if the caller explicitly sent one and it isn't "All".
   const hasStatusParam = Object.prototype.hasOwnProperty.call(req.query, 'status');
   if (hasStatusParam && status !== 'All') {
-    filter.status = status;  // 'draft' | 'signed' | 'anchored'
+    filter.status = status; // 'draft' | 'signed' | 'anchored'
   }
 
-  // 🔹 TX: accept either ?clientTx=1234567 OR ?tx=1234567 and match either client_tx or payment_tx_no
   const txValue = (clientTx || tx) ? String(clientTx || tx).trim() : '';
   if (txValue) {
-    filter.$or = [
-      { client_tx: txValue },
-      { payment_tx_no: txValue },
-    ];
+    filter.$or = [{ client_tx: txValue }, { payment_tx_no: txValue }];
   }
 
-  // 🔹 Range
   if (range && range !== 'All') {
     let start = null;
-    if (range === 'today') { start = new Date(); start.setHours(0, 0, 0, 0); }
-    if (range === '1w')    { start = new Date(Date.now() - 7 * 864e5); }
-    if (range === '1m')    { start = new Date(); start.setMonth(start.getMonth() - 1); }
-    if (range === '6m')    { start = new Date(); start.setMonth(start.getMonth() - 6); }
+    if (range === 'today') {
+      start = new Date();
+      start.setHours(0, 0, 0, 0);
+    }
+    if (range === '1w') {
+      start = new Date(Date.now() - 7 * 864e5);
+    }
+    if (range === '1m') {
+      start = new Date();
+      start.setMonth(start.getMonth() - 1);
+    }
+    if (range === '6m') {
+      start = new Date();
+      start.setMonth(start.getMonth() - 6);
+    }
     if (start) filter.createdAt = { $gte: start };
   }
 
@@ -217,12 +264,11 @@ exports.getDrafts = asyncHandler(async (req, res) => {
     .populate({ path: 'template', select: 'name slug version price' })
     .sort({ createdAt: -1 });
 
-  if (program && program !== 'All') drafts = drafts.filter(d => d.student);
+  if (program && program !== 'All') drafts = drafts.filter((d) => d.student);
 
-  // 🔹 q-search (client-side)
   if (q) {
     const needle = q.toLowerCase();
-    drafts = drafts.filter(d => {
+    drafts = drafts.filter((d) => {
       const s = d.student || {};
       return (
         (s.fullName || '').toLowerCase().includes(needle) ||
@@ -239,48 +285,45 @@ exports.getDrafts = asyncHandler(async (req, res) => {
   res.json(drafts);
 });
 
-
-
-
-// controllers/web/draftVcController.js
-
 exports.deleteDraft = asyncHandler(async (req, res) => {
   const draftId = req.params.id;
 
-  // 1) Only allow deleting true "draft"
   const draft = await VcDraft.findById(draftId).select('_id status').lean();
-  if (!draft) { res.status(404); throw new Error('Draft not found'); }
+  if (!draft) {
+    res.status(404);
+    throw new Error('Draft not found');
+  }
   if (draft.status !== 'draft') {
     res.status(409);
     throw new Error('Cannot delete: draft is no longer in "draft" status');
   }
 
-  // 2) Transaction to avoid races with payment state changes
   const session = await VcDraft.db.startSession();
   let pendingDeleted = 0;
 
   try {
     await session.withTransaction(async () => {
-      // Block deletion if any paid/consumed payments exist
-      const blocking = await Payment
-        .countDocuments({ draft: draftId, status: { $in: ['paid', 'consumed'] } })
-        .session(session);
+      const blocking = await Payment.countDocuments({
+        draft: draftId,
+        status: { $in: ['paid', 'consumed'] },
+      }).session(session);
 
       if (blocking > 0) {
         res.status(409);
-        throw new Error('Draft has paid/consumed payments. Void/refund first before deleting.');
+        throw new Error(
+          'Draft has paid/consumed payments. Void/refund first before deleting.'
+        );
       }
 
-      // Remove any pending payments tied to this draft
-      const delRes = await Payment
-        .deleteMany({ draft: draftId, status: 'pending' })
-        .session(session);
+      const delRes = await Payment.deleteMany({
+        draft: draftId,
+        status: 'pending',
+      }).session(session);
       pendingDeleted = delRes.deletedCount || 0;
 
-      // Delete the draft (still ensure it’s in "draft" state)
-      const dRes = await VcDraft
-        .deleteOne({ _id: draftId, status: 'draft' })
-        .session(session);
+      const dRes = await VcDraft.deleteOne({ _id: draftId, status: 'draft' }).session(
+        session
+      );
 
       if (dRes.deletedCount !== 1) {
         res.status(409);
@@ -288,14 +331,16 @@ exports.deleteDraft = asyncHandler(async (req, res) => {
       }
     });
 
-    // 3) Success — return shape your reducer expects
     return res.json({
       _id: draftId,
       deleted: true,
       pending_payments_deleted: pendingDeleted,
-      message: 'Draft deleted'
+      message: 'Draft deleted',
     });
   } finally {
     await session.endSession();
   }
 });
+
+// ✅ Export internal helper so mobile VC requests can reuse the same logic
+exports.createDraftFromRequest = createOneDraft;
