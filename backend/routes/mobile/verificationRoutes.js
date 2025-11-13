@@ -1,3 +1,4 @@
+// routes/mobile/verificationRoutes.js
 const express = require('express');
 const router = express.Router();
 
@@ -22,6 +23,7 @@ const createSchema = z.object({
   }).strip(),
   selfieImageId: objectId(),
   idImageId: objectId(),
+  // ❌ did removed entirely
 }).strip();
 
 const listSchema = z.object({
@@ -38,18 +40,18 @@ const idParam = z.object({ id: objectId() }).strict();
 const verifyBody = z.object({ studentId: objectId().optional() }).strip();
 const rejectBody = z.object({ reason: z.string().trim().max(240).optional() }).strip();
 
-// ---------- Rate limits (Redis w/ local fallback) ----------
+// ---------- Rate limits ----------
 const rlStudentCreate = rateLimitRedis({
   prefix: 'rl:vr:create',
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 4,                   // up to 4 submissions / window / user
+  windowMs: 10 * 60 * 1000,
+  max: 4,
   keyFn: (req) => req.user?._id || req.ip,
 });
 
 const rlStudentMine = rateLimitRedis({
   prefix: 'rl:vr:mine',
-  windowMs: 60 * 1000, // 1 minute
-  max: 30,             // list own requests often is fine
+  windowMs: 60 * 1000,
+  max: 30,
   keyFn: (req) => req.user?._id || req.ip,
 });
 
@@ -70,7 +72,7 @@ const rlAdminGet = rateLimitRedis({
 const rlAdminAction = rateLimitRedis({
   prefix: 'rl:vr:act',
   windowMs: 60 * 1000,
-  max: 30, // verify/reject actions
+  max: 30,
   keyFn: (req) => req.user?._id || req.ip,
 });
 
@@ -95,7 +97,8 @@ router.get(
 // ---------- ADMIN ----------
 router.get(
   '/',
-  protect, admin,
+  protect,
+  admin,
   rlAdminList,
   validate({ query: listSchema }),
   requestLogger('verification.admin.list', { db: 'auth' }),
@@ -104,7 +107,8 @@ router.get(
 
 router.get(
   '/:id',
-  protect, admin,
+  protect,
+  admin,
   rlAdminGet,
   validate({ params: idParam }),
   requestLogger('verification.admin.get', { db: 'auth' }),
@@ -113,7 +117,8 @@ router.get(
 
 router.post(
   '/:id/verify',
-  protect, admin,
+  protect,
+  admin,
   rlAdminAction,
   validate({ params: idParam, body: verifyBody }),
   requestLogger('verification.admin.verify', { db: 'auth' }),
@@ -122,7 +127,8 @@ router.post(
 
 router.post(
   '/:id/reject',
-  protect, admin,
+  protect,
+  admin,
   rlAdminAction,
   validate({ params: idParam, body: rejectBody }),
   requestLogger('verification.admin.reject', { db: 'auth' }),
