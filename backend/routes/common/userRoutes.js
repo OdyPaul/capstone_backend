@@ -9,13 +9,11 @@ const {
   loginMobileUser,
   getUsers,
   getMe,
-  updateUserDID,
   logoutWebUser,
   updateWebUser,
 } = require("../../controllers/common/userController");
 
 const { requestOtp, verifyOtp } = require("../../controllers/mobile/otpController");
-
 const { protect, allowRoles } = require("../../middleware/authMiddleware");
 const { rateLimitRedis } = require("../../middleware/rateLimitRedis");
 const { z, validate } = require("../../middleware/validate");
@@ -41,19 +39,18 @@ const createWebUserSchema = {
     password: z.string().min(8).max(200),
     contactNo: z.string().trim().max(50).optional().nullable(),
     role: z.enum(["admin", "superadmin", "developer"]).default("admin"),
-    // Prefer staged upload via profileImageId, but allow direct URL/data-URI too:
     profilePicture: z.union([
       z.string().url(),
       z.string().startsWith("data:image/")
     ]).optional().nullable(),
-    // If you use staged uploads, uncomment this:
-    // profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+    // profileImageId allowed if needed
+    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
   }).strip(),
 };
 
 const updateWebUserSchema = {
   params: z.object({
-    id: z.string().regex(/^[a-fA-F0-9]{24}$/)
+    id: z.string().regex(/^[a-fA-F0-9]{24}$/),
   }),
   body: z.object({
     username: z.string().trim().min(2).max(100).optional(),
@@ -71,11 +68,10 @@ const updateWebUserSchema = {
     ]).optional().nullable(),
     profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
 
-
-    // ✅ keep these so the controller can read them
-   currentPassword: z.string().min(1).max(200).optional(),
-   passwordCurrent: z.string().min(1).max(200).optional(),
-   adminPassword: z.string().min(1).max(200).optional(),
+    // Required for superadmin update password verification
+    currentPassword: z.string().min(1).max(200).optional(),
+    passwordCurrent: z.string().min(1).max(200).optional(),
+    adminPassword: z.string().min(1).max(200).optional(),
   }).strip(),
 };
 
@@ -115,7 +111,7 @@ web.post(
 // Current web user
 web.get("/users/me", protect, requestLogger("web.me", { db: "auth" }), getMe);
 
-// List users (admin/superadmin/developer)
+// List users
 web.get(
   "/users",
   protect,
@@ -124,7 +120,7 @@ web.get(
   getUsers
 );
 
-// Update web user (auth rules enforced in controller)
+// Update web user
 web.put(
   "/users/:id",
   protect,
@@ -133,7 +129,7 @@ web.put(
   updateWebUser
 );
 
-// Logout (stateless audit)
+// Logout
 web.post(
   "/users/logout",
   protect,
@@ -162,22 +158,13 @@ mobile.post(
     prefix: "rl:otp:verify",
     windowMs: 60_000,
     max: 10,
-    keyFn: (req) => `${req.ip}|${(req.body?.email || "").toLowerCase()}`
+    keyFn: (req) => `${req.ip}|${(req.body?.email || "").toLowerCase()}`,
   }),
   requestLogger("mobile.otp.verify", { db: "auth" }),
   verifyOtp
 );
 
-
-// Link/Unlink DID
-mobile.put(
-  "/:id/did",
-  protect,
-  requestLogger("mobile.did.update", { db: "auth" }),
-  updateUserDID
-);
-
-// Register (requires OTP session)
+// Register (after OTP)
 mobile.post(
   "/users",
   requireOtpSession,
@@ -185,7 +172,7 @@ mobile.post(
   registerMobileUser
 );
 
-// Login
+// Mobile login
 mobile.post(
   "/users/login",
   requestLogger("mobile.login", { db: "auth" }),
