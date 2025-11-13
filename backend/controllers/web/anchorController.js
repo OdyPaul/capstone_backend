@@ -1,61 +1,83 @@
-// controllers/web/anchorController.js
-const asyncHandler = require('express-async-handler');
-const mongoose = require('mongoose');
-const SignedVC = require('../../models/web/signedVcModel');
-const { enqueueAnchorNow } = require('../../queues/vc.queue');
-const { commitBatch } = require('../../services/anchorBatchService');
-const AnchorBatch = require('../../models/web/anchorBatchModel');
+const asyncHandler = require("express-async-handler");
+const mongoose = require("mongoose");
+const SignedVC = require("../../models/web/signedVcModel");
+const { enqueueAnchorNow } = require("../../queues/vc.queue");
+const { commitBatch } = require("../../services/anchorBatchService");
+const AnchorBatch = require("../../models/web/anchorBatchModel");
+
 // -------------------- REQUEST “ANCHOR NOW” (queue only) --------------------
 exports.requestNow = asyncHandler(async (req, res) => {
   const credId = req.params.credId;
   if (!mongoose.Types.ObjectId.isValid(credId)) {
-    res.status(400); throw new Error('Invalid credential id');
+    res.status(400);
+    throw new Error("Invalid credential id");
   }
 
-  const doc = await SignedVC.findById(credId).select('_id status anchoring');
-  if (!doc) { res.status(404); throw new Error('Credential not found'); }
-  if (doc.status !== 'active') { res.status(409); throw new Error('Credential not active'); }
-  if (doc.anchoring?.state === 'anchored') {
-    return res.json({ message: 'Already anchored', credential_id: credId, txHash: doc.anchoring.tx_hash });
+  const doc = await SignedVC.findById(credId).select(
+    "_id status anchoring"
+  );
+  if (!doc) {
+    res.status(404);
+    throw new Error("Credential not found");
   }
-  if (doc.anchoring?.state === 'queued' && doc.anchoring?.queue_mode === 'now') {
-    return res.json({ message: 'Already queued for NOW review', credential_id: credId });
+  if (doc.status !== "active") {
+    res.status(409);
+    throw new Error("Credential not active");
+  }
+  if (doc.anchoring?.state === "anchored") {
+    return res.json({
+      message: "Already anchored",
+      credential_id: credId,
+      txHash: doc.anchoring.tx_hash,
+    });
+  }
+  if (
+    doc.anchoring?.state === "queued" &&
+    doc.anchoring?.queue_mode === "now"
+  ) {
+    return res.json({
+      message: "Already queued for NOW review",
+      credential_id: credId,
+    });
   }
 
   await SignedVC.updateOne(
-    { _id: credId, 'anchoring.state': { $ne: 'anchored' } },
+    { _id: credId, "anchoring.state": { $ne: "anchored" } },
     {
       $set: {
-        'anchoring.state': 'queued',
-        'anchoring.queue_mode': 'now',
-        'anchoring.requested_at': new Date(),
-        'anchoring.requested_by': req.user?._id || null,
+        "anchoring.state": "queued",
+        "anchoring.queue_mode": "now",
+        "anchoring.requested_at": new Date(),
+        "anchoring.requested_by": req.user?._id || null,
         // ensure clean approval flags on enqueue
-        'anchoring.approved_mode': null,
-        'anchoring.approved_at': null,
-        'anchoring.approved_by': null,
-      }
+        "anchoring.approved_mode": null,
+        "anchoring.approved_at": null,
+        "anchoring.approved_by": null,
+      },
     }
   );
 
   // enqueue worker job (doesn't anchor until confirmed)
   await enqueueAnchorNow(credId);
 
-  res.json({ message: 'Queued for NOW review', credential_id: credId });
+  res.json({ message: "Queued for NOW review", credential_id: credId });
 });
 
 // -------------------- LIST QUEUE --------------------
 exports.listQueue = asyncHandler(async (req, res) => {
-  const { mode = 'all', approved = 'all' } = req.query;
-  const filter = { 'anchoring.state': 'queued' };
-  if (mode !== 'all') filter['anchoring.queue_mode'] = mode;
-  if (approved === 'true')  filter['anchoring.approved_mode'] = { $in: ['single', 'batch'] };
-  if (approved === 'false') filter['anchoring.approved_mode'] = null;
+  const { mode = "all", approved = "all" } = req.query;
+  const filter = { "anchoring.state": "queued" };
+  if (mode !== "all") filter["anchoring.queue_mode"] = mode;
+  if (approved === "true")
+    filter["anchoring.approved_mode"] = { $in: ["single", "batch"] };
+  if (approved === "false") filter["anchoring.approved_mode"] = null;
 
   const docs = await SignedVC.find(filter)
-    .select('_id template_id status anchoring createdAt vc_payload digest')
+    .select(
+      "_id template_id status anchoring createdAt vc_payload digest"
+    )
     // Prefer most recently requested first, fall back to createdAt
-    .sort({ 'anchoring.requested_at': -1, createdAt: -1 })
+    .sort({ "anchoring.requested_at": -1, createdAt: -1 })
     .lean();
 
   res.json(docs);
@@ -64,35 +86,70 @@ exports.listQueue = asyncHandler(async (req, res) => {
 // -------------------- APPROVE QUEUED --------------------
 exports.approveQueued = asyncHandler(async (req, res) => {
   const { credIds = [], approved_mode } = req.body || {};
-  if (!Array.isArray(credIds) || credIds.length === 0) { res.status(400); throw new Error('credIds required'); }
-  if (!['single','batch'].includes(approved_mode)) { res.status(400); throw new Error('approved_mode must be "single" or "batch"'); }
+  if (!Array.isArray(credIds) || credIds.length === 0) {
+    res.status(400);
+    throw new Error("credIds required");
+  }
+  if (!["single", "batch"].includes(approved_mode)) {
+    res.status(400);
+    throw new Error('approved_mode must be "single" or "batch"');
+  }
 
   const result = await SignedVC.updateMany(
-    { _id: { $in: credIds }, 'anchoring.state': 'queued' },
-    { $set: { 'anchoring.approved_mode': approved_mode, 'anchoring.approved_at': new Date(), 'anchoring.approved_by': req.user?._id || null } }
+    { _id: { $in: credIds }, "anchoring.state": "queued" },
+    {
+      $set: {
+        "anchoring.approved_mode": approved_mode,
+        "anchoring.approved_at": new Date(),
+        "anchoring.approved_by": req.user?._id || null,
+      },
+    }
   );
 
-  res.json({ message: 'Approved', matched: result.matchedCount, modified: result.modifiedCount });
+  res.json({
+    message: "Approved",
+    matched: result.matchedCount,
+    modified: result.modifiedCount,
+  });
 });
 
 // -------------------- RUN SINGLE (one leaf) --------------------
 exports.runSingle = asyncHandler(async (req, res) => {
   const credId = req.params.credId;
   if (!mongoose.Types.ObjectId.isValid(credId)) {
-    res.status(400); throw new Error('Invalid credential id');
+    res.status(400);
+    throw new Error("Invalid credential id");
   }
-  const doc = await SignedVC.findById(credId).select('_id digest status anchoring').lean();
-  if (!doc) { res.status(404); throw new Error('Credential not found'); }
-  if (doc.status !== 'active') { res.status(409); throw new Error('Credential not active'); }
-  if (doc.anchoring?.state === 'anchored') {
-    return res.json({ message:'Already anchored', credential_id: credId, txHash: doc.anchoring.tx_hash });
+  const doc = await SignedVC.findById(credId)
+    .select("_id digest status anchoring")
+    .lean();
+  if (!doc) {
+    res.status(404);
+    throw new Error("Credential not found");
   }
-  if (!(doc.anchoring?.state === 'queued' && doc.anchoring?.approved_mode === 'single')) {
-    res.status(409); throw new Error('Credential not approved for single anchoring');
+  if (doc.status !== "active") {
+    res.status(409);
+    throw new Error("Credential not active");
+  }
+  if (doc.anchoring?.state === "anchored") {
+    return res.json({
+      message: "Already anchored",
+      credential_id: credId,
+      txHash: doc.anchoring.tx_hash,
+    });
+  }
+  if (
+    !(
+      doc.anchoring?.state === "queued" &&
+      doc.anchoring?.approved_mode === "single"
+    )
+  ) {
+    res.status(409);
+    throw new Error("Credential not approved for single anchoring");
   }
 
-  const { batch_id, txHash } = await commitBatch([doc], 'single');
-  res.json({ message: 'Anchored (single)', batch_id, txHash });
+  const { batch_id, txHash } = await commitBatch([doc], "single");
+  res.json({ message: "Anchored (single)", batch_id, txHash });
 });
 
 // -------------------- MINT BATCH (cron/admin/EOD) --------------------
@@ -101,20 +158,32 @@ exports.runSingle = asyncHandler(async (req, res) => {
 //   - batch:  only items with queue_mode === 'batch'
 //   - all:    any queue_mode (legacy behavior)
 exports.mintBatch = asyncHandler(async (req, res) => {
-  const { mode = 'all' } = req.query;
+  const { mode = "all" } = req.query;
   const filter = {
-    'anchoring.state': 'queued',
-    'anchoring.approved_mode': 'batch',
-    status: 'active',
+    "anchoring.state": "queued",
+    "anchoring.approved_mode": "batch",
+    status: "active",
   };
-  if (mode === 'now')   filter['anchoring.queue_mode'] = 'now';
-  if (mode === 'batch') filter['anchoring.queue_mode'] = 'batch';
+  if (mode === "now") filter["anchoring.queue_mode"] = "now";
+  if (mode === "batch") filter["anchoring.queue_mode"] = "batch";
 
-  const docs = await SignedVC.find(filter).select('_id digest').lean();
-  if (!docs.length) return res.json({ message: 'Nothing to anchor', count: 0 });
+  const docs = await SignedVC.find(filter)
+    .select("_id digest")
+    .lean();
+  if (!docs.length)
+    return res.json({ message: "Nothing to anchor", count: 0 });
 
-  const { batch_id, txHash, count } = await commitBatch(docs, 'batch');
-  res.json({ message: 'Anchored (batch)', batch_id, txHash, count, mode });
+  const { batch_id, txHash, count } = await commitBatch(
+    docs,
+    "batch"
+  );
+  res.json({
+    message: "Anchored (batch)",
+    batch_id,
+    txHash,
+    count,
+    mode,
+  });
 });
 
 // -------------------- LIST NON-"NOW" by AGE WINDOW --------------------
@@ -122,27 +191,31 @@ exports.mintBatch = asyncHandler(async (req, res) => {
 // Returns ACTIVE, NOT ANCHORED, and NOT queued as 'now' within the age window.
 exports.listNonNowAged = asyncHandler(async (req, res) => {
   const minDays = Math.max(0, Number(req.query.minDays ?? 0));
-  const maxDays = req.query.maxDays == null ? null : Math.max(0, Number(req.query.maxDays));
+  const maxDays =
+    req.query.maxDays == null
+      ? null
+      : Math.max(0, Number(req.query.maxDays));
 
   const now = new Date();
   const minTs = new Date(now.getTime() - minDays * 864e5);
-  const createdLt = maxDays == null ? null : new Date(now.getTime() - maxDays * 864e5);
+  const createdLt =
+    maxDays == null ? null : new Date(now.getTime() - maxDays * 864e5);
 
-  const filter = {
-    status: 'active',
-    $or: [
-      { 'anchoring.state': { $exists: false } },
-      { 'anchoring.state': { $ne: 'anchored' } },
-    ],
-    $orQueue: [{ 'anchoring.queue_mode': { $exists: false } }, { 'anchoring.queue_mode': { $ne: 'now' } }],
-  };
-
-  // Mongo doesn't allow two $or at same level; re-compose:
   const realFilter = {
-    status: 'active',
+    status: "active",
     $and: [
-      { $or: [{ 'anchoring.state': { $exists: false } }, { 'anchoring.state': { $ne: 'anchored' } }] },
-      { $or: [{ 'anchoring.queue_mode': { $exists: false } }, { 'anchoring.queue_mode': { $ne: 'now' } }] },
+      {
+        $or: [
+          { "anchoring.state": { $exists: false } },
+          { "anchoring.state": { $ne: "anchored" } },
+        ],
+      },
+      {
+        $or: [
+          { "anchoring.queue_mode": { $exists: false } },
+          { "anchoring.queue_mode": { $ne: "now" } },
+        ],
+      },
       { createdAt: { $lte: minTs } }, // age >= minDays
     ],
   };
@@ -151,26 +224,149 @@ exports.listNonNowAged = asyncHandler(async (req, res) => {
   }
 
   const docs = await SignedVC.find(realFilter)
-    .select('_id template_id createdAt anchoring')
+    .select("_id template_id createdAt anchoring")
     .sort({ createdAt: -1 })
     .lean();
 
   res.json(docs);
 });
 
+// -------------------- LIST ANCHORED BATCHES --------------------
 exports.listBatches = asyncHandler(async (req, res) => {
   const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 200)));
-  const chainId = req.query.chain_id ? Number(req.query.chain_id) : undefined;
+  const chainId = req.query.chain_id
+    ? Number(req.query.chain_id)
+    : undefined;
   const filter = {};
   if (Number.isFinite(chainId)) filter.chain_id = chainId;
 
   const rows = await AnchorBatch.find(filter)
-    .select('batch_id merkle_root tx_hash chain_id count anchored_at createdAt')
+    .select(
+      "batch_id merkle_root tx_hash chain_id count anchored_at createdAt"
+    )
     .sort({ anchored_at: -1, createdAt: -1 })
     .limit(limit)
     .lean();
 
   res.json(rows);
+});
+
+// ---------- NEW: simple candidates list for unanchored issued VCs ----------
+// GET /api/web/anchor/candidates?q=&range=&queue=
+exports.listCandidates = asyncHandler(async (req, res) => {
+  const { q, range = "1m", queue = "all" } = req.query;
+
+  const and = [
+    { status: "active" },
+    {
+      $or: [
+        { "anchoring.state": { $exists: false } },
+        { "anchoring.state": { $ne: "anchored" } },
+      ],
+    },
+  ];
+
+  // queue filter
+  if (queue === "queued") {
+    and.push({ "anchoring.state": "queued" });
+  } else if (queue === "not_queued") {
+    and.push({
+      $or: [
+        { "anchoring.state": { $exists: false } },
+        { "anchoring.state": { $ne: "queued" } },
+      ],
+    });
+  }
+
+  // range filter
+  if (range && range !== "All") {
+    const now = new Date();
+    let days = 0;
+    if (range === "today") days = 1;
+    if (range === "1w") days = 7;
+    if (range === "1m") days = 30;
+    if (range === "6m") days = 180;
+    if (days > 0) {
+      const from = new Date(now.getTime() - days * 864e5);
+      and.push({ createdAt: { $gte: from } });
+    }
+  }
+
+  // search filter
+  if (q && String(q).trim()) {
+    const qq = String(q).trim();
+    const safe = qq.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const rx = new RegExp(safe, "i");
+    const orFields = [
+      { "vc_payload.credentialSubject.fullName": rx },
+      { "vc_payload.credentialSubject.program": rx },
+      { "vc_payload.credentialSubject.studentNumber": rx },
+      { template_id: rx },
+    ];
+
+    if (mongoose.Types.ObjectId.isValid(qq)) {
+      orFields.push({ _id: new mongoose.Types.ObjectId(qq) });
+    }
+
+    and.push({ $or: orFields });
+  }
+
+  const filter = { $and: and };
+
+  const docs = await SignedVC.find(filter)
+    .select(
+      "_id template_id status anchoring createdAt vc_payload digest"
+    )
+    .sort({ createdAt: -1 })
+    .limit(1000)
+    .lean();
+
+  res.json(docs);
+});
+
+// ---------- NEW: mint-selected (always batch, even if 1) ----------
+// POST /api/web/anchor/mint-selected { credIds: [] }
+exports.mintSelected = asyncHandler(async (req, res) => {
+  const { credIds = [] } = req.body || {};
+  if (!Array.isArray(credIds) || credIds.length === 0) {
+    res.status(400);
+    throw new Error("credIds required");
+  }
+
+  const ids = credIds
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  if (!ids.length) {
+    res.status(400);
+    throw new Error("No valid credential ids");
+  }
+
+  const docs = await SignedVC.find({
+    _id: { $in: ids },
+    status: "active",
+    $or: [
+      { "anchoring.state": { $exists: false } },
+      { "anchoring.state": { $ne: "anchored" } },
+    ],
+  })
+    .select("_id digest")
+    .lean();
+
+  if (!docs.length) {
+    return res.json({ message: "Nothing to anchor", count: 0 });
+  }
+
+  const { batch_id, txHash, count } = await commitBatch(
+    docs,
+    "batch"
+  );
+  res.json({
+    message: "Anchored (selected batch)",
+    batch_id,
+    txHash,
+    count,
+  });
 });
 
 // Legacy alias
