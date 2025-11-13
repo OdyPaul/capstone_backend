@@ -2,12 +2,12 @@
 const { isValidObjectId } = require("mongoose");
 
 const VerificationRequest = require("../../models/mobile/verificationRequestModel");
-const Image = require("../../models/mobile/imageModel"); // may be on a different conn
-const User = require("../../models/common/userModel");   // may be on a different conn
-const Student = require("../../models/students/studentModel"); // may be on a different conn
+const Image = require("../../models/mobile/imageModel");
+const User = require("../../models/common/userModel");
+const Student = require("../../models/students/studentModel");
 const { enqueueVerify, enqueueReject } = require("../../queues/verification.queue");
 
-/* ---------- 👇 minimal audit helpers (auth DB) ---------- */
+/* ---------- Audit Helpers ---------- */
 const { getAuthConn } = require("../../config/db");
 const AuditLogSchema = require("../../models/common/auditLog.schema");
 
@@ -17,23 +17,24 @@ function getAuditLogAuth() {
     if (!AuditLogAuth) {
       const conn = getAuthConn();
       if (!conn) return null;
-      AuditLogAuth = conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
+      AuditLogAuth =
+        conn.models.AuditLog || conn.model("AuditLog", AuditLogSchema);
     }
     return AuditLogAuth;
   } catch {
-    return null; // never break requests because of logging
+    return null;
   }
 }
 
 async function emitVerificationAudit({
   actorId,
   actorRole,
-  event,            // e.g., 'verification.requested'
-  recipients = [],  // array of ObjectId strings
-  targetId,         // verification request _id
+  event,
+  recipients = [],
+  targetId,
   title,
   body,
-  extra = {},       // any additional meta fields
+  extra = {},
 }) {
   try {
     const AuditLog = getAuditLogAuth();
@@ -57,27 +58,25 @@ async function emitVerificationAudit({
       paymentId: null,
       vcId: null,
       meta: {
-        event,                // canonical event key
-        recipients,           // who should see this in Activity
+        event,
+        recipients,
         targetKind: "verification",
         targetId: targetId || null,
         title: title || null,
         body: body || null,
-        ...extra,             // safe extras (e.g., current status)
+        ...extra,
       },
     };
 
     await AuditLog.create(doc);
-  } catch {
-    // swallow — audit must never affect normal flow
-  }
+  } catch {}
 }
-/* ---------- 👆 minimal audit helpers (auth DB) ---------- */
 
-// -------- Helpers --------
+/* ---------- Helpers ---------- */
 function toBool(v) {
   if (typeof v === "boolean") return v;
-  if (typeof v === "string") return ["1", "true", "yes", "y"].includes(v.toLowerCase());
+  if (typeof v === "string")
+    return ["1", "true", "yes", "y"].includes(v.toLowerCase());
   return false;
 }
 
@@ -101,12 +100,6 @@ function safeDate(d) {
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
 
-/**
- * Some referenced models may live on a *different* Mongoose connection.
- * Populating across connections throws "MissingSchemaError".
- * We only populate if the model is registered on the SAME connection
- * as VerificationRequest.
- */
 function canPopulateModel(modelName) {
   try {
     const models = VerificationRequest?.db?.models || {};
@@ -120,40 +113,51 @@ function buildPopulateList({ withImages = false } = {}) {
   const pops = [];
 
   if (canPopulateModel("User")) {
-    pops.push({ path: "user", select: "email username fullName role" });
+    pops.push({
+      path: "user",
+      select: "email username fullName role",
+    });
   }
-  // NOTE: your schema uses ref: "Student_Profiles"
+
   if (canPopulateModel("Student_Profiles")) {
-    pops.push({ path: "student", select: "fullName studentNumber program" });
+    pops.push({
+      path: "student",
+      select: "fullName studentNumber program",
+    });
   }
+
   if (withImages && canPopulateModel("Image")) {
     pops.push({ path: "selfieImage", select: "url" });
     pops.push({ path: "idImage", select: "url" });
   }
+
   return pops;
 }
 
-// ===== Student submits a verification request =====
-// @route POST /api/verification-request
-// @access Private (student)
+/* ============================================================
+   STUDENT: CREATE VERIFICATION REQUEST
+   (DID REMOVED COMPLETELY)
+   ============================================================ */
 exports.createVerificationRequest = async (req, res) => {
   try {
-    let { personal, education, selfieImageId, idImageId, did } = req.body || {};
+    let { personal, education, selfieImageId, idImageId } = req.body || {};
 
     if (!personal || !education) {
-      return res.status(400).json({ message: "Personal and education info required" });
+      return res
+        .status(400)
+        .json({ message: "Personal and education info required" });
     }
+
     if (!selfieImageId || !idImageId) {
-      return res.status(400).json({ message: "Selfie and ID images are required" });
+      return res
+        .status(400)
+        .json({ message: "Selfie and ID images are required" });
     }
-    if (!did) {
-      return res.status(400).json({ message: "DID is required. Please link your wallet first." });
-    }
+
     if (!req.user || !req.user._id) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    // Parse JSON if sent as strings (from RN or form-data)
     personal = parseJsonMaybe(personal, "personal");
     education = parseJsonMaybe(education, "education");
 
@@ -163,21 +167,20 @@ exports.createVerificationRequest = async (req, res) => {
       education,
       selfieImage: selfieImageId,
       idImage: idImageId,
-      did,
       status: "pending",
     });
 
-    // Link images back to the request (best-effort)
     try {
       await Promise.all([
-        Image.findByIdAndUpdate(selfieImageId, { ownerRequest: verification._id }).catch(() => {}),
-        Image.findByIdAndUpdate(idImageId, { ownerRequest: verification._id }).catch(() => {}),
+        Image.findByIdAndUpdate(selfieImageId, {
+          ownerRequest: verification._id,
+        }).catch(() => {}),
+        Image.findByIdAndUpdate(idImageId, {
+          ownerRequest: verification._id,
+        }).catch(() => {}),
       ]);
-    } catch {
-      // ignore linking failures; not fatal for creation
-    }
+    } catch {}
 
-    // 🔔 Emit Activity: verification.requested (recipient: the student)
     emitVerificationAudit({
       actorId: req.user._id,
       actorRole: req.user.role || null,
@@ -185,40 +188,43 @@ exports.createVerificationRequest = async (req, res) => {
       recipients: [String(req.user._id)],
       targetId: verification._id,
       title: "Verification request submitted",
-      body: "We received your verification details. You'll be notified once reviewed.",
+      body: "We received your verification details.",
       extra: { status: "pending", selfieImageId, idImageId },
     });
 
     return res.status(201).json(verification);
   } catch (err) {
-    if (err?.code === 11000 && (err?.keyPattern?.did || err?.keyValue?.did)) {
-      return res.status(409).json({ message: "DID already used in another request" });
-    }
     console.error("createVerificationRequest error:", err?.message, err?.stack);
-    return res.status(err.statusCode || 500).json({
-      message: err.message || "Failed to submit verification",
-    });
+    return res
+      .status(err.statusCode || 500)
+      .json({ message: err.message || "Failed to submit verification" });
   }
 };
 
-// ===== Admin: queue verify (optionally link to Student in worker) =====
-// @route POST /api/verification-request/:id/verify
-// @access Private (admin)
+/* ============================================================
+   ADMIN: QUEUE VERIFY
+   ============================================================ */
 exports.verifyRequest = async (req, res) => {
   try {
     const { id } = req.params;
     const { studentId } = req.body || {};
 
-    if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
-    if (studentId && !isValidObjectId(studentId)) {
+    if (!isValidObjectId(id))
+      return res.status(400).json({ message: "Invalid id" });
+    if (studentId && !isValidObjectId(studentId))
       return res.status(400).json({ message: "Invalid studentId" });
-    }
 
-    // Light existence check so we can fail fast (need user to notify)
-    const vr = await VerificationRequest.findById(id).select("_id status user");
-    if (!vr) return res.status(404).json({ message: "Request not found" });
+    const vr = await VerificationRequest.findById(id).select(
+      "_id status user"
+    );
+
+    if (!vr)
+      return res.status(404).json({ message: "Request not found" });
+
     if (vr.status !== "pending") {
-      return res.status(409).json({ message: `Request is ${vr.status}, not pending` });
+      return res
+        .status(409)
+        .json({ message: `Request is ${vr.status}, not pending` });
     }
 
     await enqueueVerify({
@@ -228,7 +234,6 @@ exports.verifyRequest = async (req, res) => {
       actorRole: req.user?.role || null,
     });
 
-    // 🔔 Emit Activity: verification.queued (recipient: the student)
     emitVerificationAudit({
       actorId: req.user?._id || null,
       actorRole: req.user?.role || null,
@@ -236,34 +241,42 @@ exports.verifyRequest = async (req, res) => {
       recipients: [String(vr.user)],
       targetId: vr._id,
       title: "Verification in progress",
-      body: "An admin has started reviewing your verification request.",
+      body: "An admin has started reviewing your request.",
       extra: { status: "in_review" },
     });
 
     return res
       .status(202)
-      .json({ queued: true, action: "verify", requestId: id, studentId: studentId || null });
+      .json({ queued: true, action: "verify", requestId: id });
   } catch (err) {
-    console.error("verifyRequest enqueue error:", err?.message, err?.stack);
-    return res.status(500).json({ message: err.message || "Failed to queue verify" });
+    console.error("verifyRequest error:", err?.message, err?.stack);
+    return res
+      .status(500)
+      .json({ message: err.message || "Failed to queue verify" });
   }
 };
 
-// ===== Admin: queue reject =====
-// @route POST /api/verification-request/:id/reject
-// @access Private (admin)
+/* ============================================================
+   ADMIN: QUEUE REJECTION
+   ============================================================ */
 exports.rejectRequest = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body || {};
 
-    if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
+    if (!isValidObjectId(id))
+      return res.status(400).json({ message: "Invalid id" });
 
-    // Light existence check (need user to notify)
-    const vr = await VerificationRequest.findById(id).select("_id status user");
-    if (!vr) return res.status(404).json({ message: "Request not found" });
+    const vr = await VerificationRequest.findById(id).select(
+      "_id status user"
+    );
+    if (!vr)
+      return res.status(404).json({ message: "Request not found" });
+
     if (vr.status !== "pending") {
-      return res.status(409).json({ message: `Request is ${vr.status}, not pending` });
+      return res
+        .status(409)
+        .json({ message: `Request is ${vr.status}, not pending` });
     }
 
     await enqueueReject({
@@ -273,7 +286,6 @@ exports.rejectRequest = async (req, res) => {
       actorRole: req.user?.role || null,
     });
 
-    // 🔔 Emit Activity: verification.rejection_queued (recipient: the student)
     emitVerificationAudit({
       actorId: req.user?._id || null,
       actorRole: req.user?.role || null,
@@ -281,38 +293,51 @@ exports.rejectRequest = async (req, res) => {
       recipients: [String(vr.user)],
       targetId: vr._id,
       title: "Verification update",
-      body: "Your verification is queued for rejection review. You'll receive a final decision soon.",
-      extra: { status: "pending_rejection", reason: reason ? String(reason).slice(0, 240) : undefined },
+      body: "Your verification is being reviewed for rejection.",
+      extra: { status: "pending_rejection", reason },
     });
 
-    return res.status(202).json({ queued: true, action: "reject", requestId: id });
+    return res
+      .status(202)
+      .json({ queued: true, action: "reject", requestId: id });
   } catch (err) {
-    console.error("rejectRequest enqueue error:", err?.message, err?.stack);
-    return res.status(500).json({ message: err.message || "Failed to queue reject" });
+    console.error("rejectRequest error:", err?.message, err?.stack);
+    return res
+      .status(500)
+      .json({ message: err.message || "Failed to queue reject" });
   }
 };
 
-// ===== Student: list own requests =====
-// @route GET /api/verification-request/mine
-// @access Private (student)
+/* ============================================================
+   STUDENT: GET OWN REQUESTS
+   ============================================================ */
 exports.getMyVerificationRequests = async (req, res) => {
   try {
     const pops = buildPopulateList({ withImages: true });
 
-    let q = VerificationRequest.find({ user: req.user._id }).sort({ createdAt: -1 });
+    let q = VerificationRequest.find({
+      user: req.user._id,
+    }).sort({ createdAt: -1 });
+
     pops.forEach((p) => (q = q.populate(p)));
 
     const requests = await q.lean();
     res.json(requests);
   } catch (err) {
-    console.error("getMyVerificationRequests error:", err?.message, err?.stack);
-    res.status(500).json({ message: "Failed to fetch your verification requests" });
+    console.error(
+      "getMyVerificationRequests error:",
+      err?.message,
+      err?.stack
+    );
+    res
+      .status(500)
+      .json({ message: "Failed to fetch your verification requests" });
   }
 };
 
-// ===== Admin: list requests (filters & pagination) =====
-// @route GET /api/verification-request
-// @access Private (admin)
+/* ============================================================
+   ADMIN: LIST REQUESTS
+   ============================================================ */
 exports.getVerificationRequests = async (req, res) => {
   try {
     const {
@@ -334,19 +359,26 @@ exports.getVerificationRequests = async (req, res) => {
     if (q) {
       const safe = escapeRegex(q);
       filter.$or = [
-        { did: { $regex: safe, $options: "i" } },
         { "personal.fullName": { $regex: safe, $options: "i" } },
-      ];
+      ]; // DID removed
     }
 
     const fromDate = from ? safeDate(from) : null;
     const toDate = to ? safeDate(to) : null;
-    if (from && !fromDate) return res.status(400).json({ message: "Invalid 'from' date" });
-    if (to && !toDate) return res.status(400).json({ message: "Invalid 'to' date" });
-    if (fromDate) filter.createdAt = { ...(filter.createdAt || {}), $gte: fromDate };
-    if (toDate) filter.createdAt = { ...(filter.createdAt || {}), $lte: toDate };
 
-    const pops = buildPopulateList({ withImages: toBool(includeImages) });
+    if (from && !fromDate)
+      return res.status(400).json({ message: "Invalid 'from' date" });
+    if (to && !toDate)
+      return res.status(400).json({ message: "Invalid 'to' date" });
+
+    if (fromDate)
+      filter.createdAt = { ...(filter.createdAt || {}), $gte: fromDate };
+    if (toDate)
+      filter.createdAt = { ...(filter.createdAt || {}), $lte: toDate };
+
+    const pops = buildPopulateList({
+      withImages: toBool(includeImages),
+    });
 
     let qDoc = VerificationRequest.find(filter)
       .sort({ createdAt: -1 })
@@ -355,21 +387,29 @@ exports.getVerificationRequests = async (req, res) => {
 
     pops.forEach((p) => (qDoc = qDoc.populate(p)));
 
-    const [items, total] = await Promise.all([qDoc.lean(), VerificationRequest.countDocuments(filter)]);
+    const [items, total] = await Promise.all([
+      qDoc.lean(),
+      VerificationRequest.countDocuments(filter),
+    ]);
+
     res.json({ items, total, page: pg, limit: lim });
   } catch (err) {
     console.error("getVerificationRequests error:", err?.message, err?.stack);
-    res.status(500).json({ message: "Failed to fetch verification requests" });
+    res
+      .status(500)
+      .json({ message: "Failed to fetch verification requests" });
   }
 };
 
-// ===== Admin: get single request =====
-// @route GET /api/verification-request/:id
-// @access Private (admin)
+/* ============================================================
+   ADMIN: GET SINGLE REQUEST
+   ============================================================ */
 exports.getVerificationRequestById = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid id" });
+
+    if (!isValidObjectId(id))
+      return res.status(400).json({ message: "Invalid id" });
 
     const pops = buildPopulateList({ withImages: true });
 
@@ -378,10 +418,16 @@ exports.getVerificationRequestById = async (req, res) => {
 
     const request = await q.lean();
 
-    if (!request) return res.status(404).json({ message: "Request not found" });
+    if (!request)
+      return res.status(404).json({ message: "Request not found" });
+
     res.json(request);
   } catch (err) {
-    console.error("getVerificationRequestById error:", err?.message, err?.stack);
+    console.error(
+      "getVerificationRequestById error:",
+      err?.message,
+      err?.stack
+    );
     res.status(500).json({ message: "Failed to fetch request" });
   }
 };

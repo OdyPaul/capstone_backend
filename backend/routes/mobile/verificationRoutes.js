@@ -22,7 +22,6 @@ const createSchema = z.object({
   }).strip(),
   selfieImageId: objectId(),
   idImageId: objectId(),
-  did: z.string().trim().min(6).max(200),
 }).strip();
 
 const listSchema = z.object({

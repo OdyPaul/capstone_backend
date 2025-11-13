@@ -48,14 +48,6 @@ const verificationRequestSchema = new mongoose.Schema(
       required: true,
     },
 
-    // DID must be unique across requests
-    did: {
-      type: String,
-      required: true,
-      unique: true,
-      index: true,
-    },
-
     // Review lifecycle
     status: {
       type: String,
@@ -63,10 +55,15 @@ const verificationRequestSchema = new mongoose.Schema(
       default: "pending",
       index: true,
     },
+
     verifiedAt: { type: Date, default: null },
 
     // For either verified or rejected
-    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
     reviewedAt: { type: Date, default: null },
 
     // If rejected

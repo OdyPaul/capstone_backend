@@ -1,9 +1,7 @@
-// models/common/userModel.js
 const mongoose = require('mongoose');
 const { getAuthConn, getVcConn } = require('../../config/db');
 const readonlyPlugin = require('../_plugins/readonly');
 
-// ---------------- Base (shared) fields ----------------
 const baseSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },
   email:    { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -11,12 +9,11 @@ const baseSchema = new mongoose.Schema({
 
   role:     { type: String, enum: ['student','admin','superadmin','developer'], default: 'student' },
 
-  did:      { type: String, unique: true, sparse: true },
   verified: { type: String, enum: ['unverified','verified'], default: 'unverified' },
 
-   studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student_Profiles', unique: true, sparse: true },
-  // 👇 moved here so both web & mobile can persist it
+  studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student_Profiles', unique: true, sparse: true },
   profilePicture: { type: String, default: null },
+
 }, {
   timestamps: true,
   discriminatorKey: 'kind',
@@ -27,7 +24,6 @@ const baseSchema = new mongoose.Schema({
   }
 });
 
-// Guard for kind ↔ role consistency
 baseSchema.pre('validate', function(next) {
   if (this.kind === 'mobile' && this.role !== 'student') {
     return next(new Error('Mobile users must have role=student'));
@@ -38,12 +34,9 @@ baseSchema.pre('validate', function(next) {
   next();
 });
 
-// Canonical model
 const AuthUser = getAuthConn().model('User', baseSchema);
 
-// Discriminators
 const MobileUser = AuthUser.discriminator('mobile', new mongoose.Schema({}, { _id: false }));
-
 const WebUser = AuthUser.discriminator(
   'web',
   new mongoose.Schema({
@@ -52,11 +45,9 @@ const WebUser = AuthUser.discriminator(
     address:   { type: String, trim: true },
     gender:    { type: String, enum: ['male','female','other'], default: 'other' },
     contactNo: { type: String, trim: true },
-    // ❌ profilePicture removed here (now on base)
   }, { _id: false })
 );
 
-// Read-only shadow on vcConn
 const shadowSchemaVC = baseSchema.clone();
 shadowSchemaVC.plugin(readonlyPlugin, { modelName: 'User (shadow on vcConn)' });
 const vcConn = getVcConn();
