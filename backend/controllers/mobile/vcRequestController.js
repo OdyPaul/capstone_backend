@@ -149,7 +149,11 @@ const createVCRequest = asyncHandler(async (req, res) => {
     anchorNow: anchor,
   });
 
-  // 2) Best-effort: auto-create a VC draft + payment
+  // ✅ 2) Compute expiration: 3 months from now
+  const expirationDate = new Date();
+  expirationDate.setMonth(expirationDate.getMonth() + 3);
+
+  // 3) Best-effort: auto-create a VC draft + payment
   let draft = null;
   try {
     const tpl = await findDefaultTemplateForType(type);
@@ -159,7 +163,8 @@ const createVCRequest = asyncHandler(async (req, res) => {
         templateId: tpl._id,
         type,
         purpose,
-        expiration: null,
+        // ✅ pass explicit 3-month expiration into draft creator
+        expiration: expirationDate,
         overrides: {},
         clientTx: null,
         anchorNow: anchor,
@@ -189,7 +194,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
     });
   }
 
-  // 3) Link draft back to request (if created)
+  // 4) Link draft back to request (if created)
   if (draft && draft._id) {
     doc.draft = draft._id;
     await doc.save();
@@ -210,6 +215,8 @@ const createVCRequest = asyncHandler(async (req, res) => {
       status: doc.status || 'pending',
       anchorNow: doc.anchorNow,
       draftId: doc.draft || null,
+      // optional: record expiration we used for the draft
+      draftExpiration: expirationDate,
     },
     dedupeKey: `vcreq.created:${doc._id}`,
   });
@@ -288,8 +295,8 @@ const getAllVCRequests = asyncHandler(async (_req, res) => {
         type: 1,
         purpose: 1,
         status: 1,
-        anchorNow: 1, // ✅ NEW
-        draft: 1,     // ✅ NEW
+        anchorNow: 1,
+        draft: 1,
         createdAt: 1,
         updatedAt: 1,
         student: 1,
@@ -352,8 +359,8 @@ const getVCRequestById = asyncHandler(async (req, res) => {
         type: 1,
         purpose: 1,
         status: 1,
-        anchorNow: 1, // ✅ NEW
-        draft: 1,     // ✅ NEW
+        anchorNow: 1,
+        draft: 1,
         createdAt: 1,
         updatedAt: 1,
         student: 1,
