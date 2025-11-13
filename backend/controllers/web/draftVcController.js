@@ -1,17 +1,23 @@
+// controllers/web/draftVcController.js
 const mongoose = require('mongoose');
 const asyncHandler = require('express-async-handler');
+
 const VcDraft = require('../../models/web/vcDraft');
 const VcTemplate = require('../../models/web/vcTemplate');
 const Student = require('../../models/students/studentModel');
 const Payment = require('../../models/web/paymentModel');
-const { buildDataFromTemplate, validateAgainstTemplate } = require('../../utils/vcTemplate');
+const {
+  buildDataFromTemplate,
+  validateAgainstTemplate,
+} = require('../../utils/vcTemplate');
 const { getDefaults } = require('../../utils/templateDefaults');
 
-// ---------- helpers ----------
+/* ------------------------------ helpers ----------------------------------- */
+
 function parseExpiration(exp) {
   if (!exp || exp === 'N/A') return null;
   const d = new Date(exp);
-  if (isNaN(d)) throw new Error('Invalid expiration format');
+  if (Number.isNaN(d.getTime())) throw new Error('Invalid expiration format');
   return d;
 }
 
@@ -26,17 +32,23 @@ async function createDraftWithUniqueTx(doc, retries = 5) {
     } catch (e) {
       const dup =
         e?.code === 11000 &&
-        (e?.keyPattern?.client_tx || String(e?.message || '').includes('client_tx'));
+        (e?.keyPattern?.client_tx ||
+          String(e?.message || '').includes('client_tx'));
       if (!dup) throw e;
       doc.client_tx = genClientTx7(); // regenerate and retry
     }
   }
-  const err = new Error('Could not generate a unique client_tx after several attempts');
+  const err = new Error(
+    'Could not generate a unique client_tx after several attempts'
+  );
   err.status = 500;
   throw err;
 }
 
-// Infer kind ('tor' | 'diploma') from incoming draftType or template.vc.type
+/**
+ * Infer high-level VC kind from type/template, used for default attributes
+ * 'tor' | 'diploma'
+ */
 function inferKind(draftType, templateVc) {
   const t = String(draftType || '').toLowerCase();
   if (t.includes('tor')) return 'tor';
@@ -51,8 +63,45 @@ function inferKind(draftType, templateVc) {
   return 'diploma';
 }
 
-// ---------- core ----------
-// ✅ NOTE: now accepts anchorNow (boolean)
+/**
+ * 🔍 Centralized loader for student + academic data used by templates
+ * Adjust .populate(...) to match your actual schema (subjects/grades/records).
+ */
+async function loadStudentForDraft(studentId) {
+  if (!mongoose.isValidObjectId(studentId)) {
+    const err = new Error('Invalid studentId');
+    err.status = 400;
+    throw err;
+  }
+
+  const student = await Student.findById(studentId)
+    // ⬇️ Adjust these populates to match your schema
+    // (They are safe if paths don't exist – Mongoose will just ignore them.)
+    .populate({
+      path: 'subjects', // e.g. if you have Student.subjects[]
+      options: { sort: { year: 1, semester: 1 } },
+    })
+    .populate('records') // e.g. enrollment/grade records
+    .populate('program') // if program is a ref
+    .lean();
+
+  if (!student) {
+    const e = new Error('Student not found');
+    e.status = 404;
+    throw e;
+  }
+
+  return student;
+}
+
+/* ------------------------------- core -------------------------------------- */
+/**
+ * Main helper used by:
+ *  - Web admin create draft API
+ *  - Mobile VC request auto-draft (via exports.createDraftFromRequest)
+ *
+ * Accepts anchorNow to control Payment.anchorNow.
+ */
 async function createOneDraft({
   studentId,
   templateId,
@@ -68,7 +117,10 @@ async function createOneDraft({
     err.status = 400;
     throw err;
   }
-  if (!mongoose.isValidObjectId(studentId) || !mongoose.isValidObjectId(templateId)) {
+  if (
+    !mongoose.isValidObjectId(studentId) ||
+    !mongoose.isValidObjectId(templateId)
+  ) {
     const err = new Error('Invalid ObjectId');
     err.status = 400;
     throw err;
@@ -81,14 +133,11 @@ async function createOneDraft({
     throw e;
   }
 
-  const student = await Student.findById(studentId).lean();
-  if (!student) {
-    const e = new Error('Student not found');
-    e.status = 404;
-    throw e;
-  }
+  // 🔑 This is where we ensure subjects / academic data are available
+  const student = await loadStudentForDraft(studentId);
 
-  const hasAttrs = Array.isArray(template.attributes) && template.attributes.length > 0;
+  const hasAttrs =
+    Array.isArray(template.attributes) && template.attributes.length > 0;
   const kind = inferKind(type, template.vc);
   const attributes = hasAttrs ? template.attributes : getDefaults(kind);
 
@@ -97,7 +146,12 @@ async function createOneDraft({
     attributes,
   };
 
-  const data = buildDataFromTemplate(effectiveTemplate, student, overrides || {});
+  // overrides can carry extra hints (e.g. TOR filters) if you pass them
+  const data = buildDataFromTemplate(
+    effectiveTemplate,
+    student,
+    overrides || {}
+  );
   const { valid, errors } = validateAgainstTemplate(effectiveTemplate, data);
   if (!valid) {
     const e = new Error('Validation failed: ' + errors.join('; '));
@@ -114,7 +168,7 @@ async function createOneDraft({
   });
   if (existing) return { status: 'duplicate', draft: existing };
 
-  // Create the draft
+  // Create the draft itself
   let draft = await createDraftWithUniqueTx({
     template: template._id,
     student: student._id,
@@ -127,14 +181,15 @@ async function createOneDraft({
   });
 
   // 💸 Ensure exactly one PENDING payment per draft (idempotent)
-  const amount = Number.isFinite(Number(template.price)) ? Number(template.price) : 250;
+  const amount = Number.isFinite(Number(template.price))
+    ? Number(template.price)
+    : 250;
   const pay = await Payment.findOneAndUpdate(
     { draft: draft._id, status: 'pending' },
     {
       $setOnInsert: {
         amount,
         currency: 'PHP',
-        // ✅ Respect requested anchorNow; default false
         anchorNow: !!anchorNow,
         notes: `Auto-created for draft ${draft._id} (client_tx ${draft.client_tx})`,
       },
@@ -161,23 +216,29 @@ async function createOneDraft({
   return { status: 'created', draft };
 }
 
-// ---------- routes handlers ----------
+/* ---------------------------- HTTP handlers -------------------------------- */
+
 exports.createDraft = asyncHandler(async (req, res) => {
   const body = req.body;
 
+  // Batch mode
   if (Array.isArray(body)) {
     const results = [];
     for (const item of body) {
       try {
-        // item may contain anchorNow already
         const r = await createOneDraft(item);
         results.push(r);
       } catch (e) {
         results.push({ status: 'error', error: e.message, input: item });
       }
     }
-    const created = results.filter((r) => r.status === 'created').map((r) => r.draft);
-    const duplicates = results.filter((r) => r.status === 'duplicate').map((r) => r.draft);
+
+    const created = results
+      .filter((r) => r.status === 'created')
+      .map((r) => r.draft);
+    const duplicates = results
+      .filter((r) => r.status === 'duplicate')
+      .map((r) => r.draft);
     const errors = results.filter((r) => r.status === 'error');
 
     return res.status(created.length ? 201 : 200).json({
@@ -190,6 +251,7 @@ exports.createDraft = asyncHandler(async (req, res) => {
     });
   }
 
+  // Single draft
   const {
     studentId,
     templateId,
@@ -200,6 +262,7 @@ exports.createDraft = asyncHandler(async (req, res) => {
     clientTx,
     anchorNow,
   } = body;
+
   const result = await createOneDraft({
     studentId,
     templateId,
@@ -210,9 +273,13 @@ exports.createDraft = asyncHandler(async (req, res) => {
     clientTx,
     anchorNow,
   });
+
   if (result.status === 'duplicate') {
-    return res.status(409).json({ message: 'Draft already exists', draft: result.draft });
+    return res
+      .status(409)
+      .json({ message: 'Draft already exists', draft: result.draft });
   }
+
   res.status(201).json(result.draft);
 });
 
@@ -224,12 +291,17 @@ exports.getDrafts = asyncHandler(async (req, res) => {
   if (type && type !== 'All') filter.type = type;
   if (template && mongoose.isValidObjectId(template)) filter.template = template;
 
-  const hasStatusParam = Object.prototype.hasOwnProperty.call(req.query, 'status');
+  const hasStatusParam = Object.prototype.hasOwnProperty.call(
+    req.query,
+    'status'
+  );
   if (hasStatusParam && status !== 'All') {
     filter.status = status; // 'draft' | 'signed' | 'anchored'
   }
 
-  const txValue = (clientTx || tx) ? String(clientTx || tx).trim() : '';
+  const txValue =
+    clientTx || tx ? String(clientTx || tx).trim() : '';
+
   if (txValue) {
     filter.$or = [{ client_tx: txValue }, { payment_tx_no: txValue }];
   }
@@ -321,13 +393,16 @@ exports.deleteDraft = asyncHandler(async (req, res) => {
       }).session(session);
       pendingDeleted = delRes.deletedCount || 0;
 
-      const dRes = await VcDraft.deleteOne({ _id: draftId, status: 'draft' }).session(
-        session
-      );
+      const dRes = await VcDraft.deleteOne({
+        _id: draftId,
+        status: 'draft',
+      }).session(session);
 
       if (dRes.deletedCount !== 1) {
         res.status(409);
-        throw new Error('Draft was not deleted (status changed or already removed).');
+        throw new Error(
+          'Draft was not deleted (status changed or already removed).'
+        );
       }
     });
 
@@ -342,5 +417,8 @@ exports.deleteDraft = asyncHandler(async (req, res) => {
   }
 });
 
-// ✅ Export internal helper so mobile VC requests can reuse the same logic
+/**
+ * Internal helper so mobile VC requests can reuse the same logic.
+ * Use as: const { createDraftFromRequest } = require('../web/draftVcController');
+ */
 exports.createDraftFromRequest = createOneDraft;

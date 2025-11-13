@@ -1,9 +1,8 @@
-// ✅ COPY-READY
+// models/mobile/vcRequestModel.js
 const mongoose = require('mongoose');
-const { getVcConn } = require('../../config/db'); // VC DB connection
-const vcConn = getVcConn(); // a Mongoose Connection
+const { getVcConn } = require('../../config/db'); // adjust if needed
 
-// Store enum in lowercase; we'll lowercase incoming values via a setter
+// Store enum in lowercase; controller lowercases purpose before validation
 const PURPOSES = [
   'employment',
   'further studies',
@@ -16,18 +15,49 @@ const PURPOSES = [
 
 const vcRequestSchema = new mongoose.Schema(
   {
-    student:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student_Profiles', required: true, index: true },
+    // owning user (mobile account)
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
 
-    // ✅ denormalized identifiers for reliable rendering (even without $lookup)
-    studentNumber:   { type: String, index: true, default: null },
-    studentFullName: { type: String, default: null },
-    studentProgram:  { type: String, default: null },
-    studentPhotoUrl: { type: String, default: null },
+    // linked student profile
+    studentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Student_Profiles', // keep as your actual Student model collection name
+      required: true,
+      index: true,
+    },
 
-    type: { type: String, enum: ['TOR', 'DIPLOMA'], required: true },
+    // denormalized fields for easy rendering (no $lookup needed)
+    studentNumber: {
+      type: String,
+      index: true,
+      default: null,
+    },
+    studentFullName: {
+      type: String,
+      default: null,
+    },
+    studentProgram: {
+      type: String,
+      default: null,
+    },
+    studentPhotoUrl: {
+      type: String,
+      default: null,
+    },
 
-    // normalize to lowercase so it matches enum
+    // TOR / DIPLOMA
+    type: {
+      type: String,
+      enum: ['TOR', 'DIPLOMA'],
+      required: true,
+    },
+
+    // purpose is normalized to lowercase so it matches PURPOSES enum
     purpose: {
       type: String,
       enum: PURPOSES,
@@ -35,31 +65,57 @@ const vcRequestSchema = new mongoose.Schema(
       set: (v) => String(v || '').trim().toLowerCase(),
     },
 
-    // ✅ NEW: whether the requester wants the VC anchored immediately
+    // whether student asked to anchor this VC after payment
     anchorNow: {
       type: Boolean,
       default: false,
     },
 
-    status:     { type: String, enum: ['pending', 'approved', 'rejected', 'issued'], default: 'pending', index: true },
-    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'issued'],
+      default: 'pending',
+      index: true,
+    },
 
-    // ✅ NEW: optional link to the VC draft auto-created for this request
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+
+    // optional link to auto-created VC draft
     draft: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'VcDraft',
       default: null,
     },
+
+    // optional mirror of payment tx no for this request
+    paymentTxNo: {
+      type: String,
+      default: null,
+    },
   },
-  { timestamps: true, bufferCommands: false }
+  {
+    timestamps: true,
+    bufferCommands: false,
+  }
 );
 
-// Avoid OverwriteModelError on hot-reloads
+// ---- connection + model registration ----
+function getConn() {
+  const conn = typeof getVcConn === 'function' ? getVcConn() : null;
+  return conn || mongoose; // fallback to default connection
+}
+
 let VCRequest;
+const conn = getConn();
+
 try {
-  VCRequest = vcConn.model('VCRequest');
+  VCRequest = conn.model('VCRequest');
 } catch {
-  VCRequest = vcConn.model('VCRequest', vcRequestSchema);
+  VCRequest = conn.model('VCRequest', vcRequestSchema);
 }
 
 module.exports = VCRequest;

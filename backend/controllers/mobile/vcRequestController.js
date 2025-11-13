@@ -1,5 +1,7 @@
+// controllers/mobile/vcRequestController.js
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
+
 const VCRequest = require('../../models/mobile/vcRequestModel');
 const { PURPOSES } = require('../../models/mobile/vcRequestModel');
 const User = require('../../models/common/userModel');
@@ -10,19 +12,22 @@ const { createDraftFromRequest } = require('../web/draftVcController');
 /* 🔔 Minimal audit (auth DB) */
 const { getAuthConn } = require('../../config/db');
 const AuditLogSchema = require('../../models/common/auditLog.schema');
+
 let AuditLogAuth = null;
 function getAuditLogAuth() {
   try {
     if (!AuditLogAuth) {
       const conn = getAuthConn();
       if (!conn) return null;
-      AuditLogAuth = conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
+      AuditLogAuth =
+        conn.models.AuditLog || conn.model('AuditLog', AuditLogSchema);
     }
     return AuditLogAuth;
   } catch {
     return null;
   }
 }
+
 async function emitVcreqAudit({
   actorId,
   actorRole,
@@ -85,7 +90,9 @@ async function findDefaultTemplateForType(type) {
   const rx = kind === 'tor' ? /tor/i : /diploma/i;
 
   // Prefer templates whose vc.type contains the kind
-  let tpl = await VcTemplate.findOne({ 'vc.type': rx }).sort({ updatedAt: -1 }).lean();
+  let tpl = await VcTemplate.findOne({ 'vc.type': rx })
+    .sort({ updatedAt: -1 })
+    .lean();
   if (!tpl) {
     // Fallback: match by name/slug if needed
     tpl = await VcTemplate.findOne({ $or: [{ name: rx }, { slug: rx }] })
@@ -95,6 +102,7 @@ async function findDefaultTemplateForType(type) {
   return tpl || null;
 }
 
+/* -------------------- create VC request (mobile) --------------------------- */
 const createVCRequest = asyncHandler(async (req, res) => {
   let { type, purpose, anchorNow } = req.body || {};
   type = String(type || '').trim().toUpperCase();
@@ -114,7 +122,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
     throw new Error('Invalid purpose value');
   }
 
-  const user = await User.findById(req.user._id).select('verified studentId');
+  const user = await User.findById(req.user._id).select('verified studentId role');
   if (!user) {
     res.status(401);
     throw new Error('User not found');
@@ -149,12 +157,14 @@ const createVCRequest = asyncHandler(async (req, res) => {
     anchorNow: anchor,
   });
 
-  // ✅ 2) Compute expiration: 3 months from now
+  // 2) Compute expiration: 3 months from now
   const expirationDate = new Date();
   expirationDate.setMonth(expirationDate.getMonth() + 3);
 
   // 3) Best-effort: auto-create a VC draft + payment
   let draft = null;
+  let draftPaymentTxNo = null;
+
   try {
     const tpl = await findDefaultTemplateForType(type);
     if (tpl && typeof createDraftFromRequest === 'function') {
@@ -163,9 +173,8 @@ const createVCRequest = asyncHandler(async (req, res) => {
         templateId: tpl._id,
         type,
         purpose,
-        // ✅ pass explicit 3-month expiration into draft creator
         expiration: expirationDate,
-        overrides: {},
+        overrides: {}, // optional: pass TOR filters here if you need them
         clientTx: null,
         anchorNow: anchor,
       });
@@ -174,16 +183,20 @@ const createVCRequest = asyncHandler(async (req, res) => {
         if (result.draft) {
           draft = result.draft;
         } else if (result.status === 'created' && result._id) {
-          // in case implementation changes
+          // In case implementation changes
           draft = result;
         }
+      }
+
+      if (draft && draft.payment_tx_no) {
+        draftPaymentTxNo = String(draft.payment_tx_no);
       }
     }
   } catch (e) {
     // do not block the request if draft creation fails; just log via audit
     await emitVcreqAudit({
       actorId: req.user._id,
-      actorRole: req.user.role || null,
+      actorRole: user.role || null,
       event: 'vc_request.draft_failed',
       recipientId: req.user._id,
       targetId: doc._id,
@@ -194,16 +207,21 @@ const createVCRequest = asyncHandler(async (req, res) => {
     });
   }
 
-  // 4) Link draft back to request (if created)
+  // 4) Link draft + paymentTxNo back to request (if created)
   if (draft && draft._id) {
     doc.draft = draft._id;
+  }
+  if (draftPaymentTxNo) {
+    doc.paymentTxNo = draftPaymentTxNo;
+  }
+  if (doc.isModified()) {
     await doc.save();
   }
 
-  // Audit main creation event
+  // 5) Audit main creation event
   await emitVcreqAudit({
     actorId: req.user._id,
-    actorRole: req.user.role || null,
+    actorRole: user.role || null,
     event: 'vc_request.created',
     recipientId: req.user._id,
     targetId: doc._id,
@@ -215,12 +233,13 @@ const createVCRequest = asyncHandler(async (req, res) => {
       status: doc.status || 'pending',
       anchorNow: doc.anchorNow,
       draftId: doc.draft || null,
-      // optional: record expiration we used for the draft
       draftExpiration: expirationDate,
+      draftPaymentTxNo: draftPaymentTxNo || null,
     },
     dedupeKey: `vcreq.created:${doc._id}`,
   });
 
+  // 6) Response to mobile app
   res.status(201).json({
     _id: doc._id,
     student: doc.student,
@@ -236,13 +255,16 @@ const createVCRequest = asyncHandler(async (req, res) => {
     status: doc.status,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
+    paymentTxNo: draftPaymentTxNo || doc.paymentTxNo || null,
   });
 });
+
+/* --------------------- other handlers (unchanged) -------------------------- */
 
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const list = await VCRequest.find({ student: req.user._id })
     .select(
-      '_id student studentId studentNumber studentFullName studentProgram studentPhotoUrl type purpose anchorNow draft status createdAt updatedAt'
+      '_id student studentId studentNumber studentFullName studentProgram studentPhotoUrl type purpose anchorNow draft status paymentTxNo createdAt updatedAt'
     )
     .sort({ createdAt: -1 })
     .lean();
@@ -305,6 +327,7 @@ const getAllVCRequests = asyncHandler(async (_req, res) => {
         studentFullName: 1,
         studentProgram: 1,
         studentPhotoUrl: 1,
+        paymentTxNo: 1,
         'studentProfile._id': 1,
         'studentProfile.fullName': 1,
         'studentProfile.program': 1,
@@ -369,6 +392,7 @@ const getVCRequestById = asyncHandler(async (req, res) => {
         studentFullName: 1,
         studentProgram: 1,
         studentPhotoUrl: 1,
+        paymentTxNo: 1,
         'studentProfile._id': 1,
         'studentProfile.fullName': 1,
         'studentProfile.program': 1,
@@ -410,6 +434,7 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
     rejected: 'vc_request.rejected',
     issued: 'vc_request.issued',
   };
+
   await emitVcreqAudit({
     actorId: req.user._id,
     actorRole: req.user.role || null,
