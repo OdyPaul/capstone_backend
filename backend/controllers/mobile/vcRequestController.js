@@ -77,13 +77,16 @@ async function emitVcreqAudit({
       },
     });
   } catch {
-    /* swallow */
+    // swallow
   }
 }
 
 const ALLOWED_TYPES = ['TOR', 'DIPLOMA'];
 
-// 🔎 Pick a default template per type (latest matching template)
+/**
+ * 🔎 Pick a default template per type (latest matching template).
+ * This is used when the mobile app does not specify a particular template.
+ */
 async function findDefaultTemplateForType(type) {
   const t = String(type || '').toUpperCase();
   const kind = t === 'TOR' ? 'tor' : 'diploma';
@@ -93,18 +96,25 @@ async function findDefaultTemplateForType(type) {
   let tpl = await VcTemplate.findOne({ 'vc.type': rx })
     .sort({ updatedAt: -1 })
     .lean();
+
   if (!tpl) {
     // Fallback: match by name/slug if needed
     tpl = await VcTemplate.findOne({ $or: [{ name: rx }, { slug: rx }] })
       .sort({ updatedAt: -1 })
       .lean();
   }
+
   return tpl || null;
 }
 
-/* -------------------- create VC request (mobile) --------------------------- */
+/* -------------------------------------------------------------------------- */
+/*                         create VC request (mobile)                         */
+/* -------------------------------------------------------------------------- */
+
 const createVCRequest = asyncHandler(async (req, res) => {
   let { type, purpose, anchorNow } = req.body || {};
+
+  // Normalize inputs
   type = String(type || '').trim().toUpperCase();
   purpose = String(purpose || '').trim().toLowerCase();
   const anchor = Boolean(anchorNow);
@@ -122,7 +132,9 @@ const createVCRequest = asyncHandler(async (req, res) => {
     throw new Error('Invalid purpose value');
   }
 
-  const user = await User.findById(req.user._id).select('verified studentId role');
+  const user = await User.findById(req.user._id).select(
+    'verified studentId role'
+  );
   if (!user) {
     res.status(401);
     throw new Error('User not found');
@@ -144,7 +156,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
     throw new Error('Linked student profile not found');
   }
 
-  // 1) Create the VC request row
+  // 1) Create the VC request row in mobile collection
   let doc = await VCRequest.create({
     student: req.user._id,
     studentId: stu._id,
@@ -152,29 +164,37 @@ const createVCRequest = asyncHandler(async (req, res) => {
     studentFullName: stu.fullName || null,
     studentProgram: stu.program || null,
     studentPhotoUrl: stu.photoUrl || null,
-    type,
-    purpose,
+    type,        // stays 'TOR' | 'DIPLOMA' in vcRequest collection
+    purpose,     // already lowercase & validated
     anchorNow: anchor,
   });
 
-  // 2) Compute expiration: 3 months from now
+  // 2) Compute default expiration: 3 months from now
   const expirationDate = new Date();
   expirationDate.setMonth(expirationDate.getMonth() + 3);
 
-  // 3) Best-effort: auto-create a VC draft + payment
+  // 3) Best-effort: auto-create a VC draft + payment in the web pipeline
   let draft = null;
   let draftPaymentTxNo = null;
 
   try {
     const tpl = await findDefaultTemplateForType(type);
     if (tpl && typeof createDraftFromRequest === 'function') {
+      // Normalize type for the draft (web side expects 'tor' | 'diploma')
+      const draftType =
+        type === 'TOR'
+          ? 'tor'
+          : type === 'DIPLOMA'
+          ? 'diploma'
+          : String(type || '').toLowerCase();
+
       const result = await createDraftFromRequest({
         studentId: stu._id,
         templateId: tpl._id,
-        type,
+        type: draftType,        // ✅ normalized for the draft
         purpose,
         expiration: expirationDate,
-        overrides: {}, // optional: pass TOR filters here if you need them
+        overrides: {},          // optional: pass TOR filters here if needed
         clientTx: null,
         anchorNow: anchor,
       });
@@ -183,7 +203,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
         if (result.draft) {
           draft = result.draft;
         } else if (result.status === 'created' && result._id) {
-          // In case implementation changes
+          // In case implementation returns the draft directly
           draft = result;
         }
       }
@@ -193,7 +213,7 @@ const createVCRequest = asyncHandler(async (req, res) => {
       }
     }
   } catch (e) {
-    // do not block the request if draft creation fails; just log via audit
+    // Do NOT block the VC request if draft creation fails; log it via audit
     await emitVcreqAudit({
       actorId: req.user._id,
       actorRole: user.role || null,
@@ -259,7 +279,9 @@ const createVCRequest = asyncHandler(async (req, res) => {
   });
 });
 
-/* --------------------- other handlers (unchanged) -------------------------- */
+/* -------------------------------------------------------------------------- */
+/*                             other handlers                                 */
+/* -------------------------------------------------------------------------- */
 
 const getMyVCRequests = asyncHandler(async (req, res) => {
   const list = await VCRequest.find({ student: req.user._id })
@@ -420,11 +442,13 @@ const reviewVCRequest = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error(`Invalid status. Allowed: ${valid.join(', ')}`);
   }
+
   const doc = await VCRequest.findById(req.params.id);
   if (!doc) {
     res.status(404);
     throw new Error('VC request not found');
   }
+
   doc.status = status;
   doc.reviewedBy = req.user._id;
   await doc.save();

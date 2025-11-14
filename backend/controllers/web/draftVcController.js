@@ -12,17 +12,29 @@ const {
 } = require('../../utils/vcTemplate');
 const { getDefaults } = require('../../utils/templateDefaults');
 
-/* ------------------------------ helpers ----------------------------------- */
+/* -------------------------------------------------------------------------- */
+/*                                   helpers                                  */
+/* -------------------------------------------------------------------------- */
 
 function parseExpiration(exp) {
   if (!exp || exp === 'N/A') return null;
+
+  // Already a Date instance
+  if (exp instanceof Date && !Number.isNaN(exp.getTime())) {
+    return exp;
+  }
+
+  // String | number | anything else: let Date parse it
   const d = new Date(exp);
-  if (Number.isNaN(d.getTime())) throw new Error('Invalid expiration format');
+  if (Number.isNaN(d.getTime())) {
+    throw new Error('Invalid expiration format');
+  }
   return d;
 }
 
 function genClientTx7() {
-  return String(Math.floor(1000000 + Math.random() * 9000000)); // 7 digits
+  // 7-digit random number
+  return String(Math.floor(1000000 + Math.random() * 9000000));
 }
 
 async function createDraftWithUniqueTx(doc, retries = 5) {
@@ -30,12 +42,13 @@ async function createDraftWithUniqueTx(doc, retries = 5) {
     try {
       return await VcDraft.create(doc);
     } catch (e) {
-      const dup =
+      const isDup =
         e?.code === 11000 &&
         (e?.keyPattern?.client_tx ||
           String(e?.message || '').includes('client_tx'));
-      if (!dup) throw e;
-      doc.client_tx = genClientTx7(); // regenerate and retry
+      if (!isDup) throw e;
+      // regenerate tx and retry
+      doc.client_tx = genClientTx7();
     }
   }
   const err = new Error(
@@ -46,8 +59,8 @@ async function createDraftWithUniqueTx(doc, retries = 5) {
 }
 
 /**
- * Infer high-level VC kind from type/template, used for default attributes
- * 'tor' | 'diploma'
+ * Infer high-level VC kind from type/template, used for default attributes.
+ * Returns: 'tor' | 'diploma'
  */
 function inferKind(draftType, templateVc) {
   const t = String(draftType || '').toLowerCase();
@@ -60,12 +73,15 @@ function inferKind(draftType, templateVc) {
   if (arr.some((s) => s.includes('tor'))) return 'tor';
   if (arr.some((s) => s.includes('diploma'))) return 'diploma';
 
+  // default kind if nothing else matches
   return 'diploma';
 }
 
 /**
- * 🔍 Centralized loader for student + academic data used by templates
- * Adjust .populate(...) to match your actual schema (subjects/grades/records).
+ * 🔍 Centralized loader for student + academic data used by templates.
+ * IMPORTANT: adjust .populate(...) to match your actual schema.
+ * Whatever `buildDataFromTemplate` expects (e.g. student.subjects, student.records)
+ * must be made available here.
  */
 async function loadStudentForDraft(studentId) {
   if (!mongoose.isValidObjectId(studentId)) {
@@ -75,14 +91,13 @@ async function loadStudentForDraft(studentId) {
   }
 
   const student = await Student.findById(studentId)
-    // ⬇️ Adjust these populates to match your schema
-    // (They are safe if paths don't exist – Mongoose will just ignore them.)
+    // ⬇️ Adjust these to match your real schema
     .populate({
-      path: 'subjects', // e.g. if you have Student.subjects[]
+      path: 'subjects',             // e.g. Student.subjects[]
       options: { sort: { year: 1, semester: 1 } },
     })
-    .populate('records') // e.g. enrollment/grade records
-    .populate('program') // if program is a ref
+    .populate('records')            // e.g. enrollment / grade records
+    .populate('program')            // if program is a ref
     .lean();
 
   if (!student) {
@@ -94,13 +109,18 @@ async function loadStudentForDraft(studentId) {
   return student;
 }
 
-/* ------------------------------- core -------------------------------------- */
+/* -------------------------------------------------------------------------- */
+/*                                    core                                    */
+/* -------------------------------------------------------------------------- */
+
 /**
  * Main helper used by:
  *  - Web admin create draft API
  *  - Mobile VC request auto-draft (via exports.createDraftFromRequest)
  *
- * Accepts anchorNow to control Payment.anchorNow.
+ * For consistency:
+ *   - type is normalized to lowercase 'tor' | 'diploma' when stored.
+ *   - purpose is stored as-is (already validated by routes / mobile controllers).
  */
 async function createOneDraft({
   studentId,
@@ -117,6 +137,7 @@ async function createOneDraft({
     err.status = 400;
     throw err;
   }
+
   if (
     !mongoose.isValidObjectId(studentId) ||
     !mongoose.isValidObjectId(templateId)
@@ -133,12 +154,13 @@ async function createOneDraft({
     throw e;
   }
 
-  // 🔑 This is where we ensure subjects / academic data are available
+  // Normalize draft type to lowercase for storage & default selection
+  const normalizedType = String(type || '').trim().toLowerCase();
   const student = await loadStudentForDraft(studentId);
 
   const hasAttrs =
     Array.isArray(template.attributes) && template.attributes.length > 0;
-  const kind = inferKind(type, template.vc);
+  const kind = inferKind(normalizedType, template.vc);
   const attributes = hasAttrs ? template.attributes : getDefaults(kind);
 
   const effectiveTemplate = {
@@ -146,13 +168,14 @@ async function createOneDraft({
     attributes,
   };
 
-  // overrides can carry extra hints (e.g. TOR filters) if you pass them
+  // overrides can carry extra hints (e.g. TOR filters) if you need them
   const data = buildDataFromTemplate(
     effectiveTemplate,
     student,
     overrides || {}
   );
   const { valid, errors } = validateAgainstTemplate(effectiveTemplate, data);
+
   if (!valid) {
     const e = new Error('Validation failed: ' + errors.join('; '));
     e.status = 400;
@@ -166,13 +189,16 @@ async function createOneDraft({
     purpose,
     status: 'draft',
   });
-  if (existing) return { status: 'duplicate', draft: existing };
 
-  // Create the draft itself
+  if (existing) {
+    return { status: 'duplicate', draft: existing };
+  }
+
+  // Create the draft
   let draft = await createDraftWithUniqueTx({
     template: template._id,
     student: student._id,
-    type,
+    type: normalizedType, // store normalized
     purpose,
     data,
     status: 'draft',
@@ -184,6 +210,7 @@ async function createOneDraft({
   const amount = Number.isFinite(Number(template.price))
     ? Number(template.price)
     : 250;
+
   const pay = await Payment.findOneAndUpdate(
     { draft: draft._id, status: 'pending' },
     {
@@ -216,14 +243,17 @@ async function createOneDraft({
   return { status: 'created', draft };
 }
 
-/* ---------------------------- HTTP handlers -------------------------------- */
+/* -------------------------------------------------------------------------- */
+/*                               HTTP handlers                                */
+/* -------------------------------------------------------------------------- */
 
 exports.createDraft = asyncHandler(async (req, res) => {
   const body = req.body;
 
-  // Batch mode
+  // --- Batch mode -----------------------------------------------------------
   if (Array.isArray(body)) {
     const results = [];
+
     for (const item of body) {
       try {
         const r = await createOneDraft(item);
@@ -251,7 +281,7 @@ exports.createDraft = asyncHandler(async (req, res) => {
     });
   }
 
-  // Single draft
+  // --- Single draft mode ----------------------------------------------------
   const {
     studentId,
     templateId,
@@ -295,12 +325,11 @@ exports.getDrafts = asyncHandler(async (req, res) => {
     req.query,
     'status'
   );
-  if (hasStatusParam && status !== 'All') {
+  if (hasStatusParam && status && status !== 'All') {
     filter.status = status; // 'draft' | 'signed' | 'anchored'
   }
 
-  const txValue =
-    clientTx || tx ? String(clientTx || tx).trim() : '';
+  const txValue = clientTx || tx ? String(clientTx || tx).trim() : '';
 
   if (txValue) {
     filter.$or = [{ client_tx: txValue }, { payment_tx_no: txValue }];
@@ -336,7 +365,9 @@ exports.getDrafts = asyncHandler(async (req, res) => {
     .populate({ path: 'template', select: 'name slug version price' })
     .sort({ createdAt: -1 });
 
-  if (program && program !== 'All') drafts = drafts.filter((d) => d.student);
+  if (program && program !== 'All') {
+    drafts = drafts.filter((d) => d.student);
+  }
 
   if (q) {
     const needle = q.toLowerCase();
@@ -419,6 +450,6 @@ exports.deleteDraft = asyncHandler(async (req, res) => {
 
 /**
  * Internal helper so mobile VC requests can reuse the same logic.
- * Use as: const { createDraftFromRequest } = require('../web/draftVcController');
+ * Usage: const { createDraftFromRequest } = require('../web/draftVcController');
  */
 exports.createDraftFromRequest = createOneDraft;

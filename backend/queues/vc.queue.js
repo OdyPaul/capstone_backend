@@ -4,7 +4,7 @@ const { redis, pub } = require('../lib/redis');             // ⬅️ merge impo
 const SignedVC = require('../models/web/signedVcModel');
 const { commitBatch } = require('../services/anchorBatchService');
 
-// Prefer shared redis; fallback to REDIS_URL if present
+
 const connection = redis || (process.env.REDIS_URL ? { url: process.env.REDIS_URL } : null);
 
 const queueName = 'vc-requests';
@@ -13,7 +13,6 @@ const vcQueue = connection ? new Queue(queueName, { connection }) : null;
 async function enqueueAnchorNow(credId) {
   if (!vcQueue) return;
 
-  // Dedupe per-VC "now" jobs
   const jobId = `anchor-now:${credId}`;
   try {
     await vcQueue.add(
@@ -28,7 +27,7 @@ async function enqueueAnchorNow(credId) {
       }
     );
 
-    // Notify UI that a VC was queued
+  
     if (pub) {
       pub.publish('events', JSON.stringify({
         type: 'vc:queued',
