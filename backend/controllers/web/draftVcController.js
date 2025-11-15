@@ -18,13 +18,10 @@ const { getDefaults } = require('../../utils/templateDefaults');
 
 function parseExpiration(exp) {
   if (!exp || exp === 'N/A') return null;
-
   // Already a Date instance
   if (exp instanceof Date && !Number.isNaN(exp.getTime())) {
     return exp;
   }
-
-  // String | number | anything else: let Date parse it
   const d = new Date(exp);
   if (Number.isNaN(d.getTime())) {
     throw new Error('Invalid expiration format');
@@ -33,7 +30,6 @@ function parseExpiration(exp) {
 }
 
 function genClientTx7() {
-  // 7-digit random number
   return String(Math.floor(1000000 + Math.random() * 9000000));
 }
 
