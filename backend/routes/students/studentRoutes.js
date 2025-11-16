@@ -7,7 +7,8 @@ const {
   getStudentTor,
   searchStudent,
   findStudent,
-  searchPrograms, 
+  searchPrograms,
+  updateStudent,
 } = require("../../controllers/web/studentController");
 
 const { createStudent } = require("../../controllers/web/createStudentController");
@@ -20,42 +21,60 @@ const { z, validate } = require("../../middleware/validate");
 const queryCommon = {
   q: z.string().trim().max(64).optional(),
   college: z.string().trim().max(64).optional(),
-  programs: z.union([
-    z.string().trim().max(64),
-    z.array(z.string().trim().max(64)).max(20)
-  ]).optional(),
+  programs: z
+    .union([
+      z.string().trim().max(64),
+      z.array(z.string().trim().max(64)).max(20),
+    ])
+    .optional(),
 };
 
 const passingSchema = {
-  query: z.object({
-    ...queryCommon,
-    year: z.union([z.literal("All"), z.coerce.number().int().min(1900).max(2100)]).optional(),
-  }).strip(),
+  query: z
+    .object({
+      ...queryCommon,
+      year: z
+        .union([
+          z.literal("All"),
+          z.coerce.number().int().min(1900).max(2100),
+        ])
+        .optional(),
+    })
+    .strip(),
 };
 
 const searchSchema = {
   query: z.object({ ...queryCommon }).strip(),
 };
 
-
 // 🔎 Programs search schema
 const programSearchSchema = {
-  query: z.object({
-    q: z.string().trim().max(128).optional(),
-    limit: z.coerce.number().int().min(1).max(50).optional(),
-  }).strip(),
+  query: z
+    .object({
+      q: z.string().trim().max(128).optional(),
+      limit: z.coerce.number().int().min(1).max(50).optional(),
+    })
+    .strip(),
 };
-// ---------- Create student schema (admin/superadmin) ----------
+
+// ---------- Create student schema (unchanged) ----------
 const createSchema = {
-  body: z.object({
-    fullName: z.string().trim().min(2).max(200),
-    studentNumber: z.string().trim().max(50).optional(),
-    program: z.string().trim().max(200).optional(),
-    curriculumId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
-    dateGraduated: z.any().optional(),
-    photoDataUrl: z.string().startsWith("data:image/").optional().nullable(),
-  }).strip(),
+  body: z
+    .object({
+      fullName: z.string().trim().min(2).max(200),
+      studentNumber: z.string().trim().max(50).optional(),
+      program: z.string().trim().max(200).optional(),
+      curriculumId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+      dateGraduated: z.any().optional(),
+      photoDataUrl: z
+        .string()
+        .startsWith("data:image/")
+        .optional()
+        .nullable(),
+    })
+    .strip(),
 };
+
 // ---------- Update student schema ----------
 const updateSchema = {
   params: z.object({
@@ -66,7 +85,6 @@ const updateSchema = {
       fullName: z.string().trim().max(200).optional(),
       extensionName: z.string().trim().max(100).optional(),
 
-      // ⬇️ make 'Male'/'FEMALE' etc. acceptable by lowercasing first
       gender: z
         .preprocess(
           (v) => (typeof v === "string" ? v.toLowerCase().trim() : v),
@@ -83,9 +101,13 @@ const updateSchema = {
       dateAdmission: z.any().optional(),
       dateGraduated: z.any().optional(),
       honor: z.string().trim().max(200).optional(),
-      photoDataUrl: z.string().startsWith("data:image/").optional().nullable(),
+      photoDataUrl: z
+        .string()
+        .startsWith("data:image/")
+        .optional()
+        .nullable(),
       curriculumId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
-      regenSubjects: z.coerce.boolean().optional(),
+      regenSubjects: z.coerce.boolean().optional(), // ignored in controller
     })
     .strip(),
 };
@@ -125,7 +147,7 @@ student.get("/:id", protect, findStudent);
 // Mount /student/* endpoints
 router.use("/student", student);
 
-// ---------- Programs search (used by Create Student page) ----------
+// ---------- Programs search (Curriculum) ----------
 router.get(
   "/programs",
   protect,
@@ -139,7 +161,6 @@ router.get(
   searchPrograms
 );
 
-
 // ---------- POST /students (create) ----------
 router.post(
   "/students",
@@ -148,8 +169,8 @@ router.post(
   validate(createSchema),
   createStudent
 );
-// ---------- PATCH /students/:id (update) ----------
-const { updateStudent } = require("../../controllers/web/studentController");
+
+// ---------- PATCH /students/:id (update Student_Data) ----------
 router.patch(
   "/students/:id",
   protect,

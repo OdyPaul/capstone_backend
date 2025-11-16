@@ -1,11 +1,11 @@
 // backend/controllers/web/studentController.js
-const Student = require("../../models/students/studentModel");
+const StudentData = require("../../models/testing/studentDataModel"); // ← adjust path if needed
+const Grade = require("../../models/testing/gradeModel");
+const Curriculum = require("../../models/students/Curriculum");
 const asyncHandler = require("express-async-handler");
 const escapeRegExp = require("../../utils/escapeRegExp");
-const Curriculum = require("../../models/students/Curriculum");
 const { isValidObjectId } = require("mongoose");
 const cloudinary = require("../../utils/cloudinary");
-const { generateRandomGradesForCurriculum } = require("../../lib/createStudent");
 
 function minusYears(dateLike, years) {
   const d = new Date(dateLike);
@@ -14,116 +14,257 @@ function minusYears(dateLike, years) {
   return d;
 }
 
-async function uploadDataUriToCloudinary(dataUri, folder = "students_profiles") {
+async function uploadDataUriToCloudinary(dataUri, folder = "students_data") {
   if (!/^data:image\//i.test(String(dataUri || ""))) return null;
   const res = await cloudinary.uploader.upload(dataUri, { folder });
   return res?.secure_url || null;
 }
-// @desc    Get Passing Students
-// @route   GET /api/student/passing
-// @access  Private (University Personnel)
+
+// ---------- Normalizers / helpers ----------
+
+function toFullName(s) {
+  if (!s) return "";
+  if (s.fullName) return String(s.fullName).trim();
+
+  const parts = [];
+  if (s.lastName) parts.push(String(s.lastName).toUpperCase() + ",");
+  if (s.firstName) parts.push(String(s.firstName));
+  if (s.middleName) parts.push(String(s.middleName));
+  if (s.extName) parts.push(String(s.extName));
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeStudentForList(s) {
+  if (!s) return null;
+  return {
+    _id: s._id,
+    studentNumber: s.studentNumber,
+    fullName: toFullName(s),
+    program: s.program || "",
+    major: s.major || "",
+    dateAdmission: s.dateAdmission || s.dateAdmitted || null,
+    dateGraduated: s.dateGraduated || null,
+    gwa: s.gwa ?? s.collegeGwa ?? null,
+    honor: s.honor ?? s.collegeAwardHonor ?? "",
+    photoUrl: s.photoUrl || null,
+    curriculum: s.curriculum || null,
+  };
+}
+
+function normalizeStudentForDetail(s) {
+  if (!s) return null;
+  const base = normalizeStudentForList(s) || {};
+  return {
+    ...base,
+    lastName: s.lastName,
+    firstName: s.firstName,
+    middleName: s.middleName,
+    extName: s.extName,
+    gender: s.gender,
+    address: s.address || s.permanentAddress || "",
+    placeOfBirth: s.placeOfBirth || "",
+    highSchool: s.highSchool || s.shsSchool || s.jhsSchool || "",
+    entranceCredentials: s.entranceCredentials || "",
+    collegeGwa: s.collegeGwa ?? null,
+    collegeAwardHonor: s.collegeAwardHonor || "",
+    jhsSchool: s.jhsSchool || "",
+    shsSchool: s.shsSchool || "",
+  };
+}
+
+// ---------- GET /student/passing ----------
+// Uses Student_Data, not Student_Profiles.
 const getStudentPassing = asyncHandler(async (req, res) => {
-  try {
-    const { college, programs, year, q } = req.query;
+  const { college, programs, year, q } = req.query;
 
-    // base filter: passing students only
-    const filter = { gwa: { $lte: 3.0 } };
+  const and = [];
 
-    // College (exact, case-insensitive)
-    if (college && college !== "All") {
-      filter.college = { $regex: `^${escapeRegExp(college)}$`, $options: "i" };
+  // Base: passing — support both `gwa` and `collegeGwa`
+  and.push({
+    $or: [{ gwa: { $lte: 3.0 } }, { collegeGwa: { $lte: 3.0 } }],
+  });
+
+  if (college && college !== "All") {
+    and.push({
+      college: { $regex: `^${escapeRegExp(college)}$`, $options: "i" },
+    });
+  }
+
+  if (programs && programs !== "All") {
+    if (Array.isArray(programs)) {
+      and.push({
+        program: { $in: programs.map((p) => String(p).toUpperCase()) },
+      });
+    } else {
+      and.push({
+        program: String(programs).toUpperCase(),
+      });
     }
+  }
 
-    // Programs: string or array
-    if (programs && programs !== "All") {
-      if (Array.isArray(programs)) {
-        filter.program = { $in: programs.map((p) => String(p).toUpperCase()) };
-      } else {
-        filter.program = String(programs).toUpperCase();
-      }
+  if (year && year !== "All") {
+    const y = parseInt(year, 10);
+    if (!Number.isNaN(y)) {
+      and.push({
+        dateGraduated: {
+          $gte: new Date(`${y}-01-01`),
+          $lte: new Date(`${y}-12-31`),
+        },
+      });
     }
+  }
 
-    // Graduated year
-    if (year && year !== "All") {
-      const y = parseInt(year, 10);
-      filter.dateGraduated = {
-        $gte: new Date(`${y}-01-01`),
-        $lte: new Date(`${y}-12-31`),
-      };
-    }
-
-    // Free-text q across name / studentNumber / program
-    if (q) {
-      const safe = escapeRegExp(q);
-      filter.$or = [
+  if (q) {
+    const safe = escapeRegExp(q);
+    and.push({
+      $or: [
         { fullName: { $regex: safe, $options: "i" } },
+        { lastName: { $regex: safe, $options: "i" } },
+        { firstName: { $regex: safe, $options: "i" } },
+        { middleName: { $regex: safe, $options: "i" } },
         { studentNumber: { $regex: safe, $options: "i" } },
         { program: { $regex: safe, $options: "i" } },
-      ];
-    }
-
-    // console.log("📌 Final filter:", filter);
-    const students = await Student.find(filter);
-    res.json(students);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+      ],
+    });
   }
+
+  const filter = and.length ? { $and: and } : {};
+  const students = await StudentData.find(filter).lean();
+  const payload = students.map(normalizeStudentForList);
+  res.json(payload);
 });
 
-// @desc    Get Student TOR
-// @route   GET /api/student/:id/tor
-// @access  Private (University Personnel)
+// ---------- GET /student/:id/tor ----------
+// TOR now comes from Grade collection, not embedded subjects.
 const getStudentTor = asyncHandler(async (req, res) => {
-  try {
-    const student = await Student.findById(req.params.id);
-    if (!student) return res.status(404).json({ error: "Student not found" });
-    res.json(student.subjects || []);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch TOR" });
+  const { id } = req.params;
+  if (!isValidObjectId(id)) {
+    return res.status(400).json({ error: "Invalid student id" });
   }
+
+  const student = await StudentData.findById(id).lean();
+  if (!student) return res.status(404).json({ error: "Student not found" });
+
+  const grades = await Grade.find({ student: student._id }).lean();
+
+  const YEAR_ORDER = [
+    "1st Year",
+    "First Year",
+    "1st-year",
+    "2nd Year",
+    "Second Year",
+    "3rd Year",
+    "Third Year",
+    "4th Year",
+    "Fourth Year",
+    "5th Year",
+  ];
+  const SEM_ORDER = [
+    "1st Semester",
+    "First Semester",
+    "1st Sem",
+    "2nd Semester",
+    "Second Semester",
+    "2nd Sem",
+    "Mid Year Term",
+    "Mid-year",
+    "Mid Year",
+    "Summer",
+  ];
+
+  const norm = (v) => String(v || "").trim().toLowerCase();
+  const orderIndex = (v, list) => {
+    const idx = list.findIndex((x) => norm(x) === norm(v));
+    return idx === -1 ? 999 : idx;
+  };
+
+  grades.sort((a, b) => {
+    const ya = orderIndex(a.yearLevel, YEAR_ORDER);
+    const yb = orderIndex(b.yearLevel, YEAR_ORDER);
+    if (ya !== yb) return ya - yb;
+
+    const sa = orderIndex(a.semester, SEM_ORDER);
+    const sb = orderIndex(b.semester, SEM_ORDER);
+    if (sa !== sb) return sa - sb;
+
+    return String(a.subjectCode || "").localeCompare(
+      String(b.subjectCode || "")
+    );
+  });
+
+  const payload = grades.map((g) => ({
+    subjectCode: g.subjectCode,
+    subjectDescription: g.subjectTitle,
+    finalGrade: g.finalGrade,
+    units: g.units,
+    remarks: g.remarks,
+    yearLevel: g.yearLevel,
+    semester: g.semester,
+    schoolYear: g.schoolYear,
+    termName: g.termName,
+  }));
+
+  res.json(payload);
 });
 
-// @desc    Search Students
-// @route   GET /api/student/search
-// @access  Private (University Personnel)
+// ---------- GET /student/search ----------
 const searchStudent = asyncHandler(async (req, res) => {
-  try {
-    const { q } = req.query;
-    const filter = {};
+  const { q, college, programs } = req.query;
+  const and = [];
 
-    if (q) {
-      const safe = escapeRegExp(q);
-      filter.$or = [
+  if (college && college !== "All") {
+    and.push({
+      college: { $regex: `^${escapeRegExp(college)}$`, $options: "i" },
+    });
+  }
+
+  if (programs && programs !== "All") {
+    if (Array.isArray(programs)) {
+      and.push({
+        program: { $in: programs.map((p) => String(p).toUpperCase()) },
+      });
+    } else {
+      and.push({
+        program: String(programs).toUpperCase(),
+      });
+    }
+  }
+
+  if (q) {
+    const safe = escapeRegExp(q);
+    and.push({
+      $or: [
         { fullName: { $regex: safe, $options: "i" } },
+        { lastName: { $regex: safe, $options: "i" } },
+        { firstName: { $regex: safe, $options: "i" } },
+        { middleName: { $regex: safe, $options: "i" } },
         { studentNumber: { $regex: safe, $options: "i" } },
         { program: { $regex: safe, $options: "i" } },
-      ];
-    }
-
-    const students = await Student.find(filter);
-    res.json(students);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+      ],
+    });
   }
+
+  const filter = and.length ? { $and: and } : {};
+  const students = await StudentData.find(filter).lean();
+  const payload = students.map(normalizeStudentForList);
+  res.json(payload);
 });
 
-// @desc    Find Single Student
-// @route   GET /api/student/:id
-// @access  Private (University Personnel)
+// ---------- GET /student/:id ----------
 const findStudent = asyncHandler(async (req, res) => {
-  try {
-    const student = await Student.findById(req.params.id);
-    if (!student) return res.status(404).json({ error: "Student not found" });
-    res.json(student);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch student" });
+  const { id } = req.params;
+  if (!isValidObjectId(id)) {
+    return res.status(400).json({ error: "Invalid student id" });
   }
+
+  const student = await StudentData.findById(id).lean();
+  if (!student) return res.status(404).json({ error: "Student not found" });
+
+  const payload = normalizeStudentForDetail(student);
+  res.json(payload);
 });
-/**
- * @desc   Search Programs (from Curriculum collection)
- * @route  GET /api/web/programs?q=&limit=
- * @access Private (University Personnel)
- */
+
+// ---------- GET /programs ----------
 const searchPrograms = asyncHandler(async (req, res) => {
   const { q = "", limit = 10 } = req.query;
 
@@ -146,19 +287,17 @@ const searchPrograms = asyncHandler(async (req, res) => {
     .limit(lim)
     .lean();
 
-  // Frontend expects an array
   res.json(docs);
 });
 
-
-// @desc    Update Student (partial)
-// @route   PATCH /api/web/students/:id
-// @access  Private (admin/superadmin)
+// ---------- PATCH /students/:id ----------
+// Updates basic Student_Data info (no grade regeneration here).
 const updateStudent = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  if (!isValidObjectId(id)) return res.status(400).json({ message: "Invalid student id" });
+  if (!isValidObjectId(id)) {
+    return res.status(400).json({ message: "Invalid student id" });
+  }
 
-  // whitelist editable fields
   const {
     fullName,
     extensionName,
@@ -172,48 +311,54 @@ const updateStudent = asyncHandler(async (req, res) => {
     dateAdmission,
     dateGraduated,
     honor,
-    photoDataUrl,     // optional Data URI -> Cloudinary
-    curriculumId,     // optional: switch curriculum
-    regenSubjects,    // optional: if true and curriculum provided -> regenerate subjects/gwa
+    photoDataUrl,
+    curriculumId,
   } = req.body || {};
 
   const $set = {};
 
   if (typeof fullName === "string") $set.fullName = fullName.trim();
-  if (typeof extensionName === "string") $set.extensionName = extensionName.trim();
+  if (typeof extensionName === "string") $set.extName = extensionName.trim();
   if (typeof gender === "string") $set.gender = gender.toLowerCase();
-  if (typeof address === "string") $set.address = address.trim();
+  if (typeof address === "string") $set.permanentAddress = address.trim();
   if (typeof placeOfBirth === "string") $set.placeOfBirth = placeOfBirth.trim();
-  if (typeof highSchool === "string") $set.highSchool = highSchool.trim();
-  if (typeof entranceCredentials === "string") $set.entranceCredentials = entranceCredentials.trim();
+  if (typeof highSchool === "string") {
+    $set.highSchool = highSchool.trim();
+    $set.shsSchool = highSchool.trim();
+  }
+  if (typeof entranceCredentials === "string")
+    $set.entranceCredentials = entranceCredentials.trim();
   if (typeof program === "string") $set.program = program.trim();
   if (typeof major === "string") $set.major = major.trim();
-  if (typeof honor === "string") $set.honor = honor.trim();
+  if (typeof honor === "string") {
+    $set.honor = honor.trim();
+    $set.collegeAwardHonor = honor.trim();
+  }
 
   // dates
   if (dateGraduated !== undefined && dateGraduated !== null) {
     const g = new Date(dateGraduated);
     if (!isNaN(g)) {
       $set.dateGraduated = g;
-      // If admission not explicitly provided, infer = grad - 4y (your rule)
       if (dateAdmission === undefined) {
         const inferred = minusYears(g, 4);
-        if (inferred) $set.dateAdmission = inferred;
+        if (inferred) $set.dateAdmitted = inferred;
       }
     }
   }
+
   if (dateAdmission !== undefined && dateAdmission !== null) {
     const a = new Date(dateAdmission);
-    if (!isNaN(a)) $set.dateAdmission = a;
+    if (!isNaN(a)) $set.dateAdmitted = a;
   }
 
   // photo
   if (typeof photoDataUrl === "string" && /^data:image\//i.test(photoDataUrl)) {
-    const url = await uploadDataUriToCloudinary(photoDataUrl);
+    const url = await uploadDataUriToCloudinary(photoDataUrl, "students_data");
     if (url) $set.photoUrl = url;
   }
 
-  // curriculum switch (optional)
+  // curriculum switch (no grade regeneration – grades live in Grade collection)
   if (curriculumId !== undefined && curriculumId !== null) {
     if (!isValidObjectId(curriculumId)) {
       return res.status(400).json({ message: "Invalid curriculumId" });
@@ -221,26 +366,23 @@ const updateStudent = asyncHandler(async (req, res) => {
     const cur = await Curriculum.findById(curriculumId).lean();
     if (!cur) return res.status(404).json({ message: "Curriculum not found" });
     $set.curriculum = cur._id;
-    // Fill program from curriculum if not explicitly provided in the payload
     if ($set.program === undefined) {
       $set.program = cur.program || cur.name || cur.title || undefined;
     }
-    // regenerate subjects/gwa if asked
-    if (regenSubjects) {
-      const { subjects, gwa } = generateRandomGradesForCurriculum(cur);
-      $set.subjects = subjects;
-      $set.gwa = gwa;
-    }
   }
 
-  const updated = await Student.findByIdAndUpdate(
+  const updated = await StudentData.findByIdAndUpdate(
     id,
     { $set },
     { new: true, runValidators: true }
-  );
+  ).lean();
+
   if (!updated) return res.status(404).json({ message: "Student not found" });
-  res.json(updated);
+
+  const payload = normalizeStudentForDetail(updated);
+  res.json(payload);
 });
+
 module.exports = {
   getStudentPassing,
   getStudentTor,
