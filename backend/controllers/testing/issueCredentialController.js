@@ -36,7 +36,9 @@ function inferKind(typeParam, templateVc) {
   if (t.includes('tor')) return 'tor';
   if (t.includes('diploma')) return 'diploma';
 
-  const arr = Array.isArray(templateVc?.type) ? templateVc.type.map(s => String(s).toLowerCase()) : [];
+  const arr = Array.isArray(templateVc?.type)
+    ? templateVc.type.map(s => String(s).toLowerCase())
+    : [];
   if (arr.some(s => s.includes('tor'))) return 'tor';
   if (arr.some(s => s.includes('diploma'))) return 'diploma';
   return 'diploma';
@@ -49,12 +51,14 @@ function toFullName(s) {
   const ext = (s.extName || '').trim();
   const middle = mid ? ` ${mid[0].toUpperCase()}.` : '';
   const extStr = ext ? ` ${ext}` : '';
-  return `${(s.lastName || '').trim().toUpperCase()}, ${(s.firstName || '').trim().toUpperCase()}${middle}${extStr}`;
+  return `${(s.lastName || '').trim().toUpperCase()}, ${(s.firstName || '')
+    .trim()
+    .toUpperCase()}${middle}${extStr}`;
 }
 
 // sort helpers for TOR (strings in DB like "1St Year" / "Mid Year Term")
-const YEAR_ORDER = ['1ST YEAR','2ND YEAR','3RD YEAR','4TH YEAR','5TH YEAR','6TH YEAR'];
-const SEM_ORDER  = ['1ST SEMESTER','2ND SEMESTER','MID YEAR TERM','MID-YEAR','SUMMER','MID YEAR'];
+const YEAR_ORDER = ['1ST YEAR', '2ND YEAR', '3RD YEAR', '4TH YEAR', '5TH YEAR', '6TH YEAR'];
+const SEM_ORDER  = ['1ST SEMESTER', '2ND SEMESTER', 'MID YEAR TERM', 'MID-YEAR', 'SUMMER', 'MID YEAR'];
 
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
 const idx = (v, arr) => {
@@ -93,7 +97,9 @@ async function loadStudentAndContext({ studentId, studentNumber, needGrades }) {
     }
     studentDoc = await StudentData.findById(studentId).lean();
   } else if (studentNumber) {
-    studentDoc = await StudentData.findOne({ studentNumber: String(studentNumber).trim() }).lean();
+    studentDoc = await StudentData.findOne({
+      studentNumber: String(studentNumber).trim(),
+    }).lean();
   }
 
   if (!studentDoc) {
@@ -108,7 +114,9 @@ async function loadStudentAndContext({ studentId, studentNumber, needGrades }) {
   if (student.curriculum && Curriculum) {
     try {
       curriculumDoc = await Curriculum.findById(student.curriculum).lean();
-    } catch (_) { /* ignore */ }
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   // Grades only if TOR
@@ -116,7 +124,7 @@ async function loadStudentAndContext({ studentId, studentNumber, needGrades }) {
   if (needGrades) {
     grades = await Grade.find({
       student: student._id,
-      ...(student.curriculum ? { curriculum: student.curriculum } : {})
+      ...(student.curriculum ? { curriculum: student.curriculum } : {}),
     }).lean();
   }
 
@@ -124,14 +132,22 @@ async function loadStudentAndContext({ studentId, studentNumber, needGrades }) {
 }
 
 // Build the data block (credentialSubject) from template + student (+grades)
-function buildSubjectData({ template, student, curriculumDoc, kind, overrides = {}, grades = [] }) {
+function buildSubjectData({
+  template,
+  student,
+  curriculumDoc,
+  kind,
+  overrides = {},
+  grades = [],
+}) {
   const effectiveOverrides = { ...(overrides || {}) };
 
   if (kind === 'tor') {
     // Populate subjects + gwa (if present on Student_Data)
-    effectiveOverrides.subjects = Array.isArray(effectiveOverrides.subjects) && effectiveOverrides.subjects.length
-      ? effectiveOverrides.subjects
-      : torSubjectsFromGrades(grades);
+    effectiveOverrides.subjects =
+      Array.isArray(effectiveOverrides.subjects) && effectiveOverrides.subjects.length
+        ? effectiveOverrides.subjects
+        : torSubjectsFromGrades(grades);
 
     if (student.collegeGwa != null && effectiveOverrides.gwa == null) {
       effectiveOverrides.gwa = student.collegeGwa;
@@ -169,10 +185,134 @@ function makeVcPayload({ kind, issuerDid, purpose, expiration, subjectData }) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Seed StudentData + Grade collections from spreadsheet-style payload
+// ---------------------------------------------------------------------------
+async function seedStudentsAndGradesFromPayload({ studentDataRows = [], gradeRows = [] }) {
+  if (!Array.isArray(studentDataRows)) studentDataRows = [];
+  if (!Array.isArray(gradeRows)) gradeRows = [];
+
+  const byStudentNo = new Map();
+
+  // ---- upsert students ---------------------------------------------------
+  for (const row of studentDataRows) {
+    const studentNumber = String(
+      row.studentNumber ||
+      row.StudentNo ||
+      row.STUDENT_NO ||
+      row['Student No'] ||
+      ''
+    ).trim();
+
+    if (!studentNumber) continue;
+
+    let student = await StudentData.findOne({ studentNumber });
+
+    const baseDoc = {
+      studentNumber,
+      lastName: row.lastName || row.LastName || '',
+      firstName: row.firstName || row.FirstName || '',
+      middleName: row.middleName || row.MiddleName || '',
+      extName: row.extName || row.ExtName || '',
+      gender: row.gender || row.Gender || '',
+      permanentAddress:
+        row.permanentAddress || row.Perm_Address || row.Address || '',
+      major: row.major || row.Major || '',
+      collegeGwa:
+        row.collegeGwa !== undefined && row.collegeGwa !== null
+          ? row.collegeGwa
+          : row.College_Gwa !== undefined && row.College_Gwa !== ''
+          ? Number(row.College_Gwa)
+          : null,
+      dateAdmitted: row.dateAdmitted || row.DateAdmitted || null,
+      dateGraduated: row.dateGraduated || row.DateGraduated || null,
+      placeOfBirth: row.placeOfBirth || row.PlaceOfBirth || '',
+      collegeAwardHonor: row.collegeAwardHonor || row.College_AwardHonor || '',
+      entranceCredentials:
+        row.entranceCredentials || row.EntranceData_AdmissionCredential || '',
+      jhsSchool: row.jhsSchool || row.JHS_School || '',
+      shsSchool: row.shsSchool || row.SHS_School || '',
+      program: row.program || row.Program || '',
+      photoUrl: row.photoUrl || row.PhotoUrl || '',
+    };
+
+    if (!student) {
+      student = await StudentData.create(baseDoc);
+    } else {
+      Object.assign(student, baseDoc);
+      await student.save();
+    }
+
+    byStudentNo.set(studentNumber, student);
+  }
+
+  // ---- upsert grades -----------------------------------------------------
+  for (const row of gradeRows) {
+    const studentNumber = String(
+      row.studentNumber ||
+      row.StudentNo ||
+      row.STUDENT_NO ||
+      row['Student No'] ||
+      ''
+    ).trim();
+
+    if (!studentNumber) continue;
+
+    let student = byStudentNo.get(studentNumber);
+    if (!student) {
+      student = await StudentData.findOne({ studentNumber });
+      if (!student) continue; // still nothing, skip grade
+      byStudentNo.set(studentNumber, student);
+    }
+
+    const gradeDoc = {
+      student:      student._id,
+      yearLevel:    row.yearLevel || row.YearLevel || '',
+      semester:     row.semester || row.Semester || '',
+      subjectCode:  row.subjectCode || row.SubjectCode || '',
+      subjectTitle: row.subjectTitle || row.SubjectTitle || '',
+      units:
+        row.units !== undefined && row.units !== null
+          ? row.units
+          : row.Units !== undefined && row.Units !== ''
+          ? Number(row.Units)
+          : null,
+      schoolYear:   row.schoolYear || row.SchoolYear || '',
+      termName:     row.termName || row.TermName || '',
+      finalGrade:
+        row.finalGrade !== undefined && row.finalGrade !== null
+          ? row.finalGrade
+          : row.FinalGrade !== undefined && row.FinalGrade !== ''
+          ? Number(row.FinalGrade)
+          : null,
+      remarks:      row.remarks || row.Remarks || '',
+    };
+
+    // Avoid duplicates: upsert by (student + subjectCode + schoolYear + termName)
+    await Grade.updateOne(
+      {
+        student: gradeDoc.student,
+        subjectCode: gradeDoc.subjectCode,
+        schoolYear: gradeDoc.schoolYear,
+        termName: gradeDoc.termName,
+      },
+      { $set: gradeDoc },
+      { upsert: true }
+    );
+  }
+}
+
 // ---------- core: create one issue ----------
 async function createOneIssue({
-  studentId, studentNumber, templateId, type, purpose,
-  expiration, overrides, amount, anchorNow,
+  studentId,
+  studentNumber,
+  templateId,
+  type,
+  purpose,
+  expiration,
+  overrides,
+  amount,
+  anchorNow,
 }) {
   if (!templateId || !purpose) {
     const e = new Error('Missing templateId or purpose'); e.status = 400; throw e;
@@ -182,24 +322,38 @@ async function createOneIssue({
   }
 
   const template = await VcTemplate.findById(templateId);
-  if (!template) { const e = new Error('Template not found'); e.status = 404; throw e; }
+  if (!template) {
+    const e = new Error('Template not found'); e.status = 404; throw e;
+  }
 
   const kind = inferKind(type, template.vc); // 'tor' | 'diploma'
   const { student, curriculumDoc, grades } = await loadStudentAndContext({
-    studentId, studentNumber, needGrades: kind === 'tor'
+    studentId,
+    studentNumber,
+    needGrades: kind === 'tor',
   });
 
   // Prevent duplicate open issue per (student, template, purpose)
   const dup = await VcIssue.findOne({
-    student: student._id, template: template._id, purpose, status: 'issued'
+    student: student._id,
+    template: template._id,
+    purpose,
+    status: 'issued',
   }).lean();
   if (dup) return { status: 'duplicate', issue: dup };
 
   const data = buildSubjectData({
-    template, student, curriculumDoc, kind, overrides, grades,
+    template,
+    student,
+    curriculumDoc,
+    kind,
+    overrides,
+    grades,
   });
 
-  const price = Number.isFinite(Number(template.price)) ? Number(template.price) : 250;
+  const price = Number.isFinite(Number(template.price))
+    ? Number(template.price)
+    : 250;
 
   let issue = await VcIssue.create({
     template: template._id,
@@ -216,7 +370,12 @@ async function createOneIssue({
 
   // Populate minimal fields for response
   issue = await issue
-    .populate({ path: 'student',  model: StudentData, select: 'studentNumber program dateGraduated firstName lastName middleName extName' })
+    .populate({
+      path: 'student',
+      model: StudentData,
+      select:
+        'studentNumber program dateGraduated firstName lastName middleName extName',
+    })
     .populate({ path: 'template', select: 'name slug version price' });
 
   return { status: 'created', issue };
@@ -224,11 +383,89 @@ async function createOneIssue({
 
 // ---------- HTTP handlers ----------
 
-// 1) Create issue (single or batch)
+// 1) Create issue (supports seeding + batch + legacy single)
 exports.createIssue = asyncHandler(async (req, res) => {
   const body = req.body;
 
-  // Batch mode
+  // -----------------------------------------------------------------------
+  // NEW MODE:
+  // body = {
+  //   templateId, type, purpose, expiration, anchorNow/anchor,
+  //   recipients: [{ studentNumber, fullName, program, dateGraduated }],
+  //   studentDataRows: [...],
+  //   gradeRows: [...],
+  //   seedDb: true/false
+  // }
+  // -----------------------------------------------------------------------
+  if (!Array.isArray(body) && Array.isArray(body.recipients)) {
+    const {
+      templateId,
+      type,
+      purpose,
+      expiration,
+      anchorNow,
+      anchor,
+      seedDb,
+      studentDataRows,
+      gradeRows,
+      recipients,
+    } = body;
+
+    if (!templateId || !purpose) {
+      const e = new Error('Missing templateId or purpose'); e.status = 400; throw e;
+    }
+
+    // Optionally seed students + grades first
+    if (seedDb) {
+      await seedStudentsAndGradesFromPayload({
+        studentDataRows: studentDataRows || [],
+        gradeRows: gradeRows || [],
+      });
+    }
+
+    const items = (recipients || [])
+      .filter(r => r && r.studentNumber)
+      .map(r => ({
+        studentNumber: String(r.studentNumber).trim(),
+        templateId,
+        type,
+        purpose,
+        expiration,
+        anchorNow: anchorNow ?? anchor ?? false,
+        overrides: {
+          ...(r.fullName ? { fullName: r.fullName } : {}),
+          ...(r.program ? { program: r.program } : {}),
+          ...(r.dateGraduated ? { dateGraduated: r.dateGraduated } : {}),
+        },
+      }));
+
+    const results = [];
+    for (const item of items) {
+      try {
+        const r = await createOneIssue(item);
+        results.push(r);
+      } catch (e) {
+        results.push({ status: 'error', error: e.message, input: item });
+      }
+    }
+
+    const created    = results.filter(r => r.status === 'created').map(r => r.issue);
+    const duplicates = results.filter(r => r.status === 'duplicate').map(r => r.issue);
+    const errors     = results.filter(r => r.status === 'error');
+
+    return res.status(created.length ? 201 : 200).json({
+      createdCount:    created.length,
+      duplicateCount:  duplicates.length,
+      errorCount:      errors.length,
+      created,
+      duplicates,
+      errors,
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // LEGACY: body is already an ARRAY of items (no seeding)
+  // -----------------------------------------------------------------------
   if (Array.isArray(body)) {
     const results = [];
     for (const item of body) {
@@ -240,29 +477,45 @@ exports.createIssue = asyncHandler(async (req, res) => {
       }
     }
 
-    const created = results.filter(r => r.status === 'created').map(r => r.issue);
+    const created    = results.filter(r => r.status === 'created').map(r => r.issue);
     const duplicates = results.filter(r => r.status === 'duplicate').map(r => r.issue);
-    const errors = results.filter(r => r.status === 'error');
+    const errors     = results.filter(r => r.status === 'error');
 
     return res.status(created.length ? 201 : 200).json({
-      createdCount: created.length,
-      duplicateCount: duplicates.length,
-      errorCount: errors.length,
-      created, duplicates, errors,
+      createdCount:    created.length,
+      duplicateCount:  duplicates.length,
+      errorCount:      errors.length,
+      created,
+      duplicates,
+      errors,
     });
   }
 
-  // Single
+  // -----------------------------------------------------------------------
+  // LEGACY: single item body (no seeding)
+  // -----------------------------------------------------------------------
   const result = await createOneIssue(body);
   if (result.status === 'duplicate') {
-    return res.status(409).json({ message: 'Open issue already exists', issue: result.issue });
+    return res
+      .status(409)
+      .json({ message: 'Open issue already exists', issue: result.issue });
   }
   res.status(201).json(result.issue);
 });
 
 // 2) List issues
 exports.listIssues = asyncHandler(async (req, res) => {
-  const { type, range, program, q, template, status, orderNo, receiptNo, unpaidOnly } = req.query;
+  const {
+    type,
+    range,
+    program,
+    q,
+    template,
+    status,
+    orderNo,
+    receiptNo,
+    unpaidOnly,
+  } = req.query;
   const filter = {};
 
   if (type && type !== 'All') filter.type = String(type).toLowerCase();
@@ -273,27 +526,22 @@ exports.listIssues = asyncHandler(async (req, res) => {
     filter.status = status; // 'issued' | 'signed' | 'anchored' | 'void'
   }
 
-  if (orderNo)   filter.order_no = String(orderNo).trim();
+  if (orderNo)   filter.order_no  = String(orderNo).trim();
   if (receiptNo) filter.receipt_no = String(receiptNo).trim().toUpperCase();
 
-  // 👇 NEW: cashier wants only those without receipt yet
+  // cashier wants only those without receipt yet
   if (String(unpaidOnly).toLowerCase() === 'true') {
-    // only issues that have no receipt set
     filter.receipt_no = null;
-
-    // and usually you only care about "issued" ones
-    if (!filter.status) {
-      filter.status = 'issued';
-    }
+    if (!filter.status) filter.status = 'issued';
   }
 
   // Date range on createdAt
   if (range && range !== 'All') {
     let start = null;
-    if (range === 'today') { start = new Date(); start.setHours(0,0,0,0); }
+    if (range === 'today') { start = new Date(); start.setHours(0, 0, 0, 0); }
     if (range === '1w')    { start = new Date(Date.now() - 7  * 864e5); }
     if (range === '1m')    { start = new Date(Date.now() - 30 * 864e5); }
-    if (range === '6m')    { start = new Date(Date.now() - 182* 864e5); }
+    if (range === '6m')    { start = new Date(Date.now() - 182 * 864e5); }
     if (start) filter.createdAt = { $gte: start };
   }
 
@@ -301,7 +549,8 @@ exports.listIssues = asyncHandler(async (req, res) => {
     .populate({
       path: 'student',
       model: StudentData,
-      select: 'studentNumber program dateGraduated firstName lastName middleName extName',
+      select:
+        'studentNumber program dateGraduated firstName lastName middleName extName',
       ...(program && program !== 'All' ? { match: { program } } : {}),
     })
     .populate({ path: 'template', select: 'name slug version price' })
@@ -331,19 +580,28 @@ exports.listIssues = asyncHandler(async (req, res) => {
   res.json(rows);
 });
 
-
 // 3) Delete issue (allowed only while "issued" and not paid)
 exports.deleteIssue = asyncHandler(async (req, res) => {
   const id = req.params.id;
-  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid id'); }
+  if (!mongoose.isValidObjectId(id)) {
+    res.status(400);
+    throw new Error('Invalid id');
+  }
 
-  const issue = await VcIssue.findById(id).select('_id status receipt_no').lean();
-  if (!issue) { res.status(404); throw new Error('Issue not found'); }
+  const issue = await VcIssue.findById(id)
+    .select('_id status receipt_no')
+    .lean();
+  if (!issue) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
   if (issue.status !== 'issued') {
-    res.status(409); throw new Error('Cannot delete: issue already signed/anchored/void');
+    res.status(409);
+    throw new Error('Cannot delete: issue already signed/anchored/void');
   }
   if (issue.receipt_no) {
-    res.status(409); throw new Error('Cannot delete: already has a receipt number (paid)');
+    res.status(409);
+    throw new Error('Cannot delete: already has a receipt number (paid)');
   }
 
   await VcIssue.deleteOne({ _id: id, status: 'issued', receipt_no: null });
@@ -353,12 +611,21 @@ exports.deleteIssue = asyncHandler(async (req, res) => {
 // 4) Preview the VC payload that will be signed (no JWS yet)
 exports.preview = asyncHandler(async (req, res) => {
   const id = req.params.id;
-  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid id'); }
+  if (!mongoose.isValidObjectId(id)) {
+    res.status(400);
+    throw new Error('Invalid id');
+  }
 
   const issue = await VcIssue.findById(id).populate({
-    path: 'student', model: StudentData, select: 'studentNumber program dateGraduated firstName lastName middleName extName'
+    path: 'student',
+    model: StudentData,
+    select:
+      'studentNumber program dateGraduated firstName lastName middleName extName',
   });
-  if (!issue) { res.status(404); throw new Error('Issue not found'); }
+  if (!issue) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
 
   const issuerDid = process.env.ISSUER_DID || 'did:web:example.org';
   const vcPayload = makeVcPayload({
@@ -382,23 +649,42 @@ exports.preview = asyncHandler(async (req, res) => {
 // 5) Cashier payment → sign now (by issue id)
 exports.payAndSign = asyncHandler(async (req, res) => {
   const id = req.params.id;
-  if (!mongoose.isValidObjectId(id)) { res.status(400); throw new Error('Invalid id'); }
+  if (!mongoose.isValidObjectId(id)) {
+    res.status(400);
+    throw new Error('Invalid id');
+  }
 
   const { receipt_no, receipt_date, amount, anchorNow } = req.body || {};
-  if (!receipt_no) { res.status(400); throw new Error('receipt_no is required'); }
+  if (!receipt_no) {
+    res.status(400);
+    throw new Error('receipt_no is required');
+  }
 
   const issue = await VcIssue.findById(id)
-    .populate({ path: 'student',  model: StudentData, select: 'studentNumber program dateGraduated firstName lastName middleName extName' })
+    .populate({
+      path: 'student',
+      model: StudentData,
+      select:
+        'studentNumber program dateGraduated firstName lastName middleName extName',
+    })
     .populate({ path: 'template', select: 'name slug version price vc' });
 
-  if (!issue) { res.status(404); throw new Error('Issue not found'); }
+  if (!issue) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
 
   if (issue.status === 'signed' && issue.signedVc) {
     // idempotent: already signed
-    return res.json({ message: 'Already signed', credential_id: issue.signedVc, order_no: issue.order_no });
+    return res.json({
+      message: 'Already signed',
+      credential_id: issue.signedVc,
+      order_no: issue.order_no,
+    });
   }
   if (issue.status !== 'issued') {
-    res.status(409); throw new Error('Issue is not in "issued" status');
+    res.status(409);
+    throw new Error('Issue is not in "issued" status');
   }
 
   // ---- Step 1: record cashier inputs on the Issue ----
@@ -412,7 +698,8 @@ exports.payAndSign = asyncHandler(async (req, res) => {
     await issue.save();
   } catch (e) {
     if (e?.code === 11000 && e?.keyPattern?.receipt_no) {
-      res.status(409); throw new Error('Receipt number already used');
+      res.status(409);
+      throw new Error('Receipt number already used');
     }
     throw e;
   }
@@ -480,9 +767,15 @@ exports.payAndSign = asyncHandler(async (req, res) => {
 // 6) Cashier payment → sign now (by order number)
 exports.payAndSignByOrderNo = asyncHandler(async (req, res) => {
   const orderNo = String(req.params.orderNo || '').trim();
-  if (!orderNo) { res.status(400); throw new Error('orderNo is required'); }
+  if (!orderNo) {
+    res.status(400);
+    throw new Error('orderNo is required');
+  }
   const issue = await VcIssue.findOne({ order_no: orderNo });
-  if (!issue) { res.status(404); throw new Error('Issue not found'); }
+  if (!issue) {
+    res.status(404);
+    throw new Error('Issue not found');
+  }
   req.params.id = issue._id.toString();
   return exports.payAndSign(req, res);
 });
