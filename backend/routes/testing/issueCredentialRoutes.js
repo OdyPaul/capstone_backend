@@ -14,23 +14,25 @@ const {
   payAndSignByOrderNo,
 } = require('../../controllers/testing/issueCredentialController');
 
-// zod schema for a single issue creation payload
-const issueItem = z.object({
-  // Identify the student by either id or studentNumber
-  studentId:     objectId().optional(),
-  studentNumber: z.string().trim().max(64).optional(),
+const issueItemBase = z
+  .object({
+    studentId:     objectId().optional(),
+    studentNumber: z.string().trim().max(64).optional(),
+    templateId: objectId(),
+    type:       z.enum(['tor', 'diploma']).optional(),
+    purpose:    z.string().trim().max(120),
+    expiration: z.union([z.literal('N/A'), z.coerce.date()]).optional(),
+    overrides:  z.record(z.any()).optional(),
+    amount:     z.number().positive().optional(),
+    anchorNow:  z.boolean().optional(),
+  })
+  .strip();
 
-  templateId: objectId(),
-  type:       z.enum(['tor','diploma']).optional(), // optional; inferred from template if absent
-  purpose:    z.string().trim().max(120),
+const issueItem = issueItemBase.refine(
+  (v) => v.studentId || v.studentNumber,
+  { message: 'Either studentId or studentNumber is required' }
+);
 
-  expiration: z.union([z.literal('N/A'), z.coerce.date()]).optional(),
-  overrides:  z.record(z.any()).optional(),
-  amount:     z.number().positive().optional(),
-  anchorNow:  z.boolean().optional(),
-}).refine((v) => v.studentId || v.studentNumber, {
-  message: 'Either studentId or studentNumber is required',
-}).strip();
 
 // ----- Create (single or batch) -----
 router.post(
