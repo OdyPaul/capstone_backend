@@ -93,6 +93,9 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use('/api/web', web);
   app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
 
+  //testing:
+  app.use('/api/web', require('./routes/testing/issueCredentialRoutes'));
+
   // ✅ Mount verification routes directly under /api so paths match the frontend
   app.use('/api', require('./routes/web/verificationRoutes'));
 
