@@ -14,17 +14,20 @@ const {
   payAndSignByOrderNo,
 } = require('../../controllers/testing/issueCredentialController');
 
+/**
+ * Legacy per-item schema (single or array)
+ */
 const issueItemBase = z
   .object({
     studentId:     objectId().optional(),
     studentNumber: z.string().trim().max(64).optional(),
-    templateId: objectId(),
-    type:       z.enum(['tor', 'diploma']).optional(),
-    purpose:    z.string().trim().max(120),
-    expiration: z.union([z.literal('N/A'), z.coerce.date()]).optional(),
-    overrides:  z.record(z.any()).optional(),
-    amount:     z.number().positive().optional(),
-    anchorNow:  z.boolean().optional(),
+    templateId:    objectId(),
+    type:         z.enum(['tor', 'diploma']).optional(),
+    purpose:      z.string().trim().max(120),
+    expiration:   z.union([z.literal('N/A'), z.coerce.date()]).optional(),
+    overrides:    z.record(z.any()).optional(),
+    amount:       z.number().positive().optional(),
+    anchorNow:    z.boolean().optional(),
   })
   .strip();
 
@@ -33,30 +36,83 @@ const issueItem = issueItemBase.refine(
   { message: 'Either studentId or studentNumber is required' }
 );
 
+/**
+ * NEW: body shape for "seed DB + batch issue" mode
+ * This matches what your frontend is now sending.
+ *
+ * {
+ *   templateId, type, purpose, expiration, anchorNow/anchor, seedDb,
+ *   studentDataRows: [...],
+ *   gradeRows: [...],
+ *   recipients: [
+ *     { studentNumber, fullName?, program?, dateGraduated? }
+ *   ]
+ * }
+ */
+const seedBatchBody = z
+  .object({
+    templateId:  objectId(),
+    type:        z.enum(['tor', 'diploma']).optional(),
+    purpose:     z.string().trim().max(120),
+    expiration:  z.union([z.literal('N/A'), z.coerce.date()]).optional(),
+    anchorNow:   z.boolean().optional(),
+    anchor:      z.boolean().optional(),
+    seedDb:      z.boolean().optional(),
 
-// ----- Create (single or batch) -----
+    studentDataRows: z.array(z.record(z.any())).optional(),
+    gradeRows:      z.array(z.record(z.any())).optional(),
+
+    recipients: z
+      .array(
+        z
+          .object({
+            studentNumber: z.string().trim().max(64),
+            fullName:      z.string().trim().max(255).optional(),
+            program:       z.string().trim().max(255).optional(),
+            dateGraduated: z.string().trim().max(32).optional(),
+          })
+          .strip()
+      )
+      .min(1),
+  })
+  .strip();
+
+// ----- Create (single, batch, or seed+batch) -----
 router.post(
   '/issue',
-  protect, admin,
-  validate({ body: z.union([issueItem, z.array(issueItem).min(1).max(200)]) }),
+  protect,
+  admin,
+  validate({
+    body: z.union([
+      seedBatchBody,                    // <-- NEW MODE (what your FE sends now)
+      issueItem,                        // legacy single
+      z.array(issueItem).min(1).max(200), // legacy batch
+    ]),
+  }),
   createIssue
 );
 
 // ----- List -----
 router.get(
   '/issue',
-  protect, admin,
+  protect,
+  admin,
   validate({
-    query: z.object({
-      type:     z.string().trim().max(50).optional(),
-      range:    z.enum(['All','today','1w','1m','6m']).optional(),
-      program:  z.string().trim().max(80).optional(),
-      q:        z.string().trim().max(64).optional(),
-      template: objectId().optional(),
-      status:   z.enum(['All','issued','signed','anchored','void']).optional(),
-      orderNo:  z.string().trim().max(64).optional(),
-      receiptNo:z.string().trim().max(64).optional(),
-    }).strip()
+    query: z
+      .object({
+        type:     z.string().trim().max(50).optional(),
+        range:    z.enum(['All', 'today', '1w', '1m', '6m']).optional(),
+        program:  z.string().trim().max(80).optional(),
+        q:        z.string().trim().max(64).optional(),
+        template: objectId().optional(),
+        status:   z.enum(['All', 'issued', 'signed', 'anchored', 'void']).optional(),
+        orderNo:  z.string().trim().max(64).optional(),
+        receiptNo:z.string().trim().max(64).optional(),
+        unpaidOnly: z
+          .union([z.boolean(), z.string().trim().max(5)]) // true/false or "true"/"false"
+          .optional(),
+      })
+      .strip(),
   }),
   listIssues
 );
@@ -64,7 +120,8 @@ router.get(
 // ----- Delete (only while status=issued & unpaid) -----
 router.delete(
   '/issue/:id',
-  protect, admin,
+  protect,
+  admin,
   validate({ params: z.object({ id: objectId() }).strict() }),
   deleteIssue
 );
@@ -72,7 +129,8 @@ router.delete(
 // ----- Preview payload that will be signed -----
 router.get(
   '/issue/:id/preview',
-  protect, admin,
+  protect,
+  admin,
   validate({ params: z.object({ id: objectId() }).strict() }),
   preview
 );
@@ -80,15 +138,18 @@ router.get(
 // ----- Cashier: pay → sign (by id) -----
 router.post(
   '/issue/:id/pay',
-  protect, admin, // cashier should still be an admin-like role
+  protect,
+  admin, // cashier should still be an admin-like role
   validate({
     params: z.object({ id: objectId() }).strict(),
-    body: z.object({
-      receipt_no:  z.string().trim().max(64),
-      receipt_date:z.union([z.coerce.date(), z.string().trim().max(0)]).optional(), // allow empty
-      amount:      z.number().positive().optional(),
-      anchorNow:   z.boolean().optional(),
-    }).strip()
+    body: z
+      .object({
+        receipt_no:  z.string().trim().max(64),
+        receipt_date:z.union([z.coerce.date(), z.string().trim().max(0)]).optional(), // allow empty
+        amount:      z.number().positive().optional(),
+        anchorNow:   z.boolean().optional(),
+      })
+      .strip(),
   }),
   payAndSign
 );
@@ -96,8 +157,11 @@ router.post(
 // ----- Cashier: pay → sign (by order number) -----
 router.post(
   '/issue/pay-by-order/:orderNo',
-  protect, admin,
-  validate({ params: z.object({ orderNo: z.string().trim().max(64) }).strict() }),
+  protect,
+  admin,
+  validate({
+    params: z.object({ orderNo: z.string().trim().max(64) }).strict(),
+  }),
   payAndSignByOrderNo
 );
 
