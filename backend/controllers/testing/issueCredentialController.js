@@ -262,7 +262,7 @@ exports.createIssue = asyncHandler(async (req, res) => {
 
 // 2) List issues
 exports.listIssues = asyncHandler(async (req, res) => {
-  const { type, range, program, q, template, status, orderNo, receiptNo } = req.query;
+  const { type, range, program, q, template, status, orderNo, receiptNo, unpaidOnly } = req.query;
   const filter = {};
 
   if (type && type !== 'All') filter.type = String(type).toLowerCase();
@@ -275,6 +275,17 @@ exports.listIssues = asyncHandler(async (req, res) => {
 
   if (orderNo)   filter.order_no = String(orderNo).trim();
   if (receiptNo) filter.receipt_no = String(receiptNo).trim().toUpperCase();
+
+  // 👇 NEW: cashier wants only those without receipt yet
+  if (String(unpaidOnly).toLowerCase() === 'true') {
+    // only issues that have no receipt set
+    filter.receipt_no = null;
+
+    // and usually you only care about "issued" ones
+    if (!filter.status) {
+      filter.status = 'issued';
+    }
+  }
 
   // Date range on createdAt
   if (range && range !== 'All') {
@@ -319,6 +330,7 @@ exports.listIssues = asyncHandler(async (req, res) => {
 
   res.json(rows);
 });
+
 
 // 3) Delete issue (allowed only while "issued" and not paid)
 exports.deleteIssue = asyncHandler(async (req, res) => {
