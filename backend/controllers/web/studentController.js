@@ -2,7 +2,7 @@
 const asyncHandler = require('express-async-handler');
 const { isValidObjectId } = require('mongoose');
 
-const StudentData = require('../../models/students/studentDataModel');
+const StudentData = require('../../models/testing/studentDataModel');
 const Grade = require('../../models/students/gradeModel');
 const Curriculum = require('../../models/students/Curriculum');
 
