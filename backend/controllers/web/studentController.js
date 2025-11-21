@@ -3,8 +3,8 @@ const asyncHandler = require('express-async-handler');
 const { isValidObjectId } = require('mongoose');
 
 const StudentData = require('../../models/testing/studentDataModel');
-const Grade = require('../../models/students/gradeModel');
-const Curriculum = require('../../models/testing/gradeModel');
+const Grade = require('../../models/testing/gradeModel');
+const Curriculum = require('../../models/students/Curriculum');
 
 const escapeRegExp = require('../../utils/escapeRegExp');
 const cloudinary = require('../../utils/cloudinary');
