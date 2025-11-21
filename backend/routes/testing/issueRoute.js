@@ -1,7 +1,7 @@
 // routes/testing/issueRoute.js
 const express = require('express');
 const router = express.Router();
-const issueController = require('../controllers/issueController');
+const issueController = require('../../controllers/testing/issueController');
 
 // Create one or batch issue
 // POST /api/web/issuance/issue
