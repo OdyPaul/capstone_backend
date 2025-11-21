@@ -134,6 +134,7 @@ async function createBatchIssue({
   anchorNow,
   anchor,
 }) {
+    
   if (!templateId || !purpose) {
     throw Object.assign(new Error('Missing templateId or purpose'), {
       status: 400,
@@ -143,7 +144,7 @@ async function createBatchIssue({
   if (seedDb) {
     await seedStudentsAndGrades({ studentDataRows, gradeRows });
   }
-
+  
   const results = [];
   const effectiveAnchorNow = (anchorNow ?? anchor) ?? false;
 
@@ -175,7 +176,11 @@ async function createBatchIssue({
       });
     }
   }
-
+    console.log('✅ batch results summary:', {
+    created:    results.filter(r => r.status === 'created').length,
+    duplicates: results.filter(r => r.status === 'duplicate').length,
+    errors:     results.filter(r => r.status === 'error').length,
+  });
   return results;
 }
 
