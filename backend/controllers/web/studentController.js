@@ -87,25 +87,14 @@ function normalizeStudentForDetail(s) {
 
 // ---------- GET /student/passing ----------
 // Uses Student_Data
+// ---------- GET /students/passing ----------
+// Now: list ALL students with optional filters by college, program, year, q
 const getStudentPassing = asyncHandler(async (req, res) => {
   const { college, programs, year, q } = req.query;
 
   const and = [];
 
-  // Base: "passing" – but include students with no GWA yet
-  and.push({
-    $or: [
-      { gwa: { $lte: 3.0 } },
-      { collegeGwa: { $lte: 3.0 } },
-      {
-        $and: [
-          { gwa: { $exists: false } },
-          { collegeGwa: { $exists: false } },
-        ],
-      },
-    ],
-  });
-
+  // 🔹 College filter (optional)
   if (college && college !== 'All') {
     and.push({
       college: {
@@ -115,20 +104,22 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     });
   }
 
+  // 🔹 Program filter (optional)
   if (programs && programs !== 'All') {
     if (Array.isArray(programs)) {
       and.push({
         program: {
-          $in: programs.map((p) => String(p).toUpperCase()),
+          $in: programs.map((p) => String(p).trim().toUpperCase()),
         },
       });
     } else {
       and.push({
-        program: String(programs).toUpperCase(),
+        program: String(programs).trim().toUpperCase(),
       });
     }
   }
 
+  // 🔹 Graduation year filter (optional, single year)
   if (year && year !== 'All') {
     const y = parseInt(year, 10);
     if (!Number.isNaN(y)) {
@@ -141,25 +132,29 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     }
   }
 
+  // 🔹 Search (name / student no / program)
   if (q) {
     const safe = escapeRegExp(q);
     and.push({
       $or: [
-        { fullName: { $regex: safe, $options: 'i' } },
-        { lastName: { $regex: safe, $options: 'i' } },
-        { firstName: { $regex: safe, $options: 'i' } },
-        { middleName: { $regex: safe, $options: 'i' } },
+        { fullName:      { $regex: safe, $options: 'i' } },
+        { lastName:      { $regex: safe, $options: 'i' } },
+        { firstName:     { $regex: safe, $options: 'i' } },
+        { middleName:    { $regex: safe, $options: 'i' } },
         { studentNumber: { $regex: safe, $options: 'i' } },
-        { program: { $regex: safe, $options: 'i' } },
+        { program:       { $regex: safe, $options: 'i' } },
       ],
     });
   }
 
+  // ❗ NO MORE GWA FILTER HERE – we always return all matching students
   const filter = and.length ? { $and: and } : {};
+
   const students = await StudentData.find(filter).lean();
   const payload = students.map(normalizeStudentForList);
   res.json(payload);
 });
+
 
 // ---------- GET /student/:id/tor ----------
 // TOR now comes from Grade collection
