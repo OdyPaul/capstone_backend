@@ -4,7 +4,7 @@ const { isValidObjectId } = require('mongoose');
 
 const StudentData = require('../../models/testing/studentDataModel');
 const Grade = require('../../models/students/gradeModel');
-const Curriculum = require('../../models/students/Curriculum');
+const Curriculum = require('../../models/testing/gradeModel');
 
 const escapeRegExp = require('../../utils/escapeRegExp');
 const cloudinary = require('../../utils/cloudinary');
