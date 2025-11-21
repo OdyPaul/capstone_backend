@@ -1,11 +1,13 @@
 // backend/controllers/web/studentController.js
-const StudentData = require("../../models/testing/studentDataModel"); // ← adjust path if needed
-const Grade = require("../../models/testing/gradeModel");
-const Curriculum = require("../../models/students/Curriculum");
-const asyncHandler = require("express-async-handler");
-const escapeRegExp = require("../../utils/escapeRegExp");
-const { isValidObjectId } = require("mongoose");
-const cloudinary = require("../../utils/cloudinary");
+const asyncHandler = require('express-async-handler');
+const { isValidObjectId } = require('mongoose');
+
+const StudentData = require('../../models/students/studentDataModel');
+const Grade = require('../../models/students/gradeModel');
+const Curriculum = require('../../models/students/Curriculum');
+
+const escapeRegExp = require('../../utils/escapeRegExp');
+const cloudinary = require('../../utils/cloudinary');
 
 function minusYears(dateLike, years) {
   const d = new Date(dateLike);
@@ -14,24 +16,24 @@ function minusYears(dateLike, years) {
   return d;
 }
 
-async function uploadDataUriToCloudinary(dataUri, folder = "students_data") {
-  if (!/^data:image\//i.test(String(dataUri || ""))) return null;
+async function uploadDataUriToCloudinary(dataUri, folder = 'students_data') {
+  if (!/^data:image\//i.test(String(dataUri || ''))) return null;
   const res = await cloudinary.uploader.upload(dataUri, { folder });
-  return res?.secure_url || null;
+  return (res && res.secure_url) || null;
 }
 
 // ---------- Normalizers / helpers ----------
 
 function toFullName(s) {
-  if (!s) return "";
+  if (!s) return '';
   if (s.fullName) return String(s.fullName).trim();
 
   const parts = [];
-  if (s.lastName) parts.push(String(s.lastName).toUpperCase() + ",");
+  if (s.lastName) parts.push(String(s.lastName).toUpperCase() + ',');
   if (s.firstName) parts.push(String(s.firstName));
   if (s.middleName) parts.push(String(s.middleName));
   if (s.extName) parts.push(String(s.extName));
-  return parts.join(" ").replace(/\s+/g, " ").trim();
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 function normalizeStudentForList(s) {
@@ -40,14 +42,20 @@ function normalizeStudentForList(s) {
     _id: s._id,
     studentNumber: s.studentNumber,
     fullName: toFullName(s),
-    program: s.program || "",
-    major: s.major || "",
+    program: s.program || '',
+    major: s.major || '',
     dateAdmission: s.dateAdmission || s.dateAdmitted || null,
     dateGraduated: s.dateGraduated || null,
-    gwa: s.gwa ?? s.collegeGwa ?? null,
-    honor: s.honor ?? s.collegeAwardHonor ?? "",
+    gwa:
+      s.gwa !== undefined && s.gwa !== null
+        ? s.gwa
+        : s.collegeGwa !== undefined && s.collegeGwa !== null
+        ? s.collegeGwa
+        : null,
+    honor: s.honor || s.collegeAwardHonor || '',
     photoUrl: s.photoUrl || null,
     curriculum: s.curriculum || null,
+    college: s.college || null,
   };
 }
 
@@ -61,39 +69,58 @@ function normalizeStudentForDetail(s) {
     middleName: s.middleName,
     extName: s.extName,
     gender: s.gender,
-    address: s.address || s.permanentAddress || "",
-    placeOfBirth: s.placeOfBirth || "",
-    highSchool: s.highSchool || s.shsSchool || s.jhsSchool || "",
-    entranceCredentials: s.entranceCredentials || "",
-    collegeGwa: s.collegeGwa ?? null,
-    collegeAwardHonor: s.collegeAwardHonor || "",
-    jhsSchool: s.jhsSchool || "",
-    shsSchool: s.shsSchool || "",
+    address: s.address || s.permanentAddress || '',
+    placeOfBirth: s.placeOfBirth || '',
+    highSchool: s.highSchool || s.shsSchool || s.jhsSchool || '',
+    entranceCredentials: s.entranceCredentials || '',
+    collegeGwa:
+      s.collegeGwa !== undefined && s.collegeGwa !== null
+        ? s.collegeGwa
+        : s.gwa !== undefined && s.gwa !== null
+        ? s.gwa
+        : null,
+    collegeAwardHonor: s.collegeAwardHonor || s.honor || '',
+    jhsSchool: s.jhsSchool || '',
+    shsSchool: s.shsSchool || '',
   };
 }
 
 // ---------- GET /student/passing ----------
-// Uses Student_Data, not Student_Profiles.
+// Uses Student_Data
 const getStudentPassing = asyncHandler(async (req, res) => {
   const { college, programs, year, q } = req.query;
 
   const and = [];
 
-  // Base: passing — support both `gwa` and `collegeGwa`
+  // Base: "passing" – but include students with no GWA yet
   and.push({
-    $or: [{ gwa: { $lte: 3.0 } }, { collegeGwa: { $lte: 3.0 } }],
+    $or: [
+      { gwa: { $lte: 3.0 } },
+      { collegeGwa: { $lte: 3.0 } },
+      {
+        $and: [
+          { gwa: { $exists: false } },
+          { collegeGwa: { $exists: false } },
+        ],
+      },
+    ],
   });
 
-  if (college && college !== "All") {
+  if (college && college !== 'All') {
     and.push({
-      college: { $regex: `^${escapeRegExp(college)}$`, $options: "i" },
+      college: {
+        $regex: `^${escapeRegExp(college)}$`,
+        $options: 'i',
+      },
     });
   }
 
-  if (programs && programs !== "All") {
+  if (programs && programs !== 'All') {
     if (Array.isArray(programs)) {
       and.push({
-        program: { $in: programs.map((p) => String(p).toUpperCase()) },
+        program: {
+          $in: programs.map((p) => String(p).toUpperCase()),
+        },
       });
     } else {
       and.push({
@@ -102,7 +129,7 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     }
   }
 
-  if (year && year !== "All") {
+  if (year && year !== 'All') {
     const y = parseInt(year, 10);
     if (!Number.isNaN(y)) {
       and.push({
@@ -118,12 +145,12 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     const safe = escapeRegExp(q);
     and.push({
       $or: [
-        { fullName: { $regex: safe, $options: "i" } },
-        { lastName: { $regex: safe, $options: "i" } },
-        { firstName: { $regex: safe, $options: "i" } },
-        { middleName: { $regex: safe, $options: "i" } },
-        { studentNumber: { $regex: safe, $options: "i" } },
-        { program: { $regex: safe, $options: "i" } },
+        { fullName: { $regex: safe, $options: 'i' } },
+        { lastName: { $regex: safe, $options: 'i' } },
+        { firstName: { $regex: safe, $options: 'i' } },
+        { middleName: { $regex: safe, $options: 'i' } },
+        { studentNumber: { $regex: safe, $options: 'i' } },
+        { program: { $regex: safe, $options: 'i' } },
       ],
     });
   }
@@ -135,44 +162,47 @@ const getStudentPassing = asyncHandler(async (req, res) => {
 });
 
 // ---------- GET /student/:id/tor ----------
-// TOR now comes from Grade collection, not embedded subjects.
+// TOR now comes from Grade collection
 const getStudentTor = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.id;
   if (!isValidObjectId(id)) {
-    return res.status(400).json({ error: "Invalid student id" });
+    return res.status(400).json({ error: 'Invalid student id' });
   }
 
   const student = await StudentData.findById(id).lean();
-  if (!student) return res.status(404).json({ error: "Student not found" });
+  if (!student) {
+    return res.status(404).json({ error: 'Student not found' });
+  }
 
   const grades = await Grade.find({ student: student._id }).lean();
 
   const YEAR_ORDER = [
-    "1st Year",
-    "First Year",
-    "1st-year",
-    "2nd Year",
-    "Second Year",
-    "3rd Year",
-    "Third Year",
-    "4th Year",
-    "Fourth Year",
-    "5th Year",
+    '1st Year',
+    'First Year',
+    '1st-year',
+    '2nd Year',
+    'Second Year',
+    '3rd Year',
+    'Third Year',
+    '4th Year',
+    'Fourth Year',
+    '5th Year',
+    'Sixth Year',
   ];
   const SEM_ORDER = [
-    "1st Semester",
-    "First Semester",
-    "1st Sem",
-    "2nd Semester",
-    "Second Semester",
-    "2nd Sem",
-    "Mid Year Term",
-    "Mid-year",
-    "Mid Year",
-    "Summer",
+    '1st Semester',
+    'First Semester',
+    '1st Sem',
+    '2nd Semester',
+    'Second Semester',
+    '2nd Sem',
+    'Mid Year Term',
+    'Mid-year',
+    'Mid Year',
+    'Summer',
   ];
 
-  const norm = (v) => String(v || "").trim().toLowerCase();
+  const norm = (v) => String(v || '').trim().toLowerCase();
   const orderIndex = (v, list) => {
     const idx = list.findIndex((x) => norm(x) === norm(v));
     return idx === -1 ? 999 : idx;
@@ -187,8 +217,8 @@ const getStudentTor = asyncHandler(async (req, res) => {
     const sb = orderIndex(b.semester, SEM_ORDER);
     if (sa !== sb) return sa - sb;
 
-    return String(a.subjectCode || "").localeCompare(
-      String(b.subjectCode || "")
+    return String(a.subjectCode || '').localeCompare(
+      String(b.subjectCode || '')
     );
   });
 
@@ -212,16 +242,21 @@ const searchStudent = asyncHandler(async (req, res) => {
   const { q, college, programs } = req.query;
   const and = [];
 
-  if (college && college !== "All") {
+  if (college && college !== 'All') {
     and.push({
-      college: { $regex: `^${escapeRegExp(college)}$`, $options: "i" },
+      college: {
+        $regex: `^${escapeRegExp(college)}$`,
+        $options: 'i',
+      },
     });
   }
 
-  if (programs && programs !== "All") {
+  if (programs && programs !== 'All') {
     if (Array.isArray(programs)) {
       and.push({
-        program: { $in: programs.map((p) => String(p).toUpperCase()) },
+        program: {
+          $in: programs.map((p) => String(p).toUpperCase()),
+        },
       });
     } else {
       and.push({
@@ -234,12 +269,12 @@ const searchStudent = asyncHandler(async (req, res) => {
     const safe = escapeRegExp(q);
     and.push({
       $or: [
-        { fullName: { $regex: safe, $options: "i" } },
-        { lastName: { $regex: safe, $options: "i" } },
-        { firstName: { $regex: safe, $options: "i" } },
-        { middleName: { $regex: safe, $options: "i" } },
-        { studentNumber: { $regex: safe, $options: "i" } },
-        { program: { $regex: safe, $options: "i" } },
+        { fullName: { $regex: safe, $options: 'i' } },
+        { lastName: { $regex: safe, $options: 'i' } },
+        { firstName: { $regex: safe, $options: 'i' } },
+        { middleName: { $regex: safe, $options: 'i' } },
+        { studentNumber: { $regex: safe, $options: 'i' } },
+        { program: { $regex: safe, $options: 'i' } },
       ],
     });
   }
@@ -252,13 +287,15 @@ const searchStudent = asyncHandler(async (req, res) => {
 
 // ---------- GET /student/:id ----------
 const findStudent = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.id;
   if (!isValidObjectId(id)) {
-    return res.status(400).json({ error: "Invalid student id" });
+    return res.status(400).json({ error: 'Invalid student id' });
   }
 
   const student = await StudentData.findById(id).lean();
-  if (!student) return res.status(404).json({ error: "Student not found" });
+  if (!student) {
+    return res.status(404).json({ error: 'Student not found' });
+  }
 
   const payload = normalizeStudentForDetail(student);
   res.json(payload);
@@ -266,7 +303,7 @@ const findStudent = asyncHandler(async (req, res) => {
 
 // ---------- GET /programs ----------
 const searchPrograms = asyncHandler(async (req, res) => {
-  const { q = "", limit = 10 } = req.query;
+  const { q = '', limit = 10 } = req.query;
 
   const lim = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
 
@@ -274,8 +311,8 @@ const searchPrograms = asyncHandler(async (req, res) => {
   if (q) {
     const safe = escapeRegExp(String(q));
     filter.$or = [
-      { program: { $regex: safe, $options: "i" } },
-      { curriculumYear: { $regex: safe, $options: "i" } },
+      { program: { $regex: safe, $options: 'i' } },
+      { curriculumYear: { $regex: safe, $options: 'i' } },
     ];
   }
 
@@ -291,11 +328,10 @@ const searchPrograms = asyncHandler(async (req, res) => {
 });
 
 // ---------- PATCH /students/:id ----------
-// Updates basic Student_Data info (no grade regeneration here).
 const updateStudent = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = req.params.id;
   if (!isValidObjectId(id)) {
-    return res.status(400).json({ message: "Invalid student id" });
+    return res.status(400).json({ message: 'Invalid student id' });
   }
 
   const {
@@ -317,22 +353,25 @@ const updateStudent = asyncHandler(async (req, res) => {
 
   const $set = {};
 
-  if (typeof fullName === "string") $set.fullName = fullName.trim();
-  if (typeof extensionName === "string") $set.extName = extensionName.trim();
-  if (typeof gender === "string") $set.gender = gender.toLowerCase();
-  if (typeof address === "string") $set.permanentAddress = address.trim();
-  if (typeof placeOfBirth === "string") $set.placeOfBirth = placeOfBirth.trim();
-  if (typeof highSchool === "string") {
-    $set.highSchool = highSchool.trim();
-    $set.shsSchool = highSchool.trim();
+  if (typeof fullName === 'string') $set.fullName = fullName.trim();
+  if (typeof extensionName === 'string') $set.extName = extensionName.trim();
+  if (typeof gender === 'string') $set.gender = gender.toLowerCase();
+  if (typeof address === 'string') $set.permanentAddress = address.trim();
+  if (typeof placeOfBirth === 'string')
+    $set.placeOfBirth = placeOfBirth.trim();
+  if (typeof highSchool === 'string') {
+    const hs = highSchool.trim();
+    $set.highSchool = hs;
+    $set.shsSchool = hs;
   }
-  if (typeof entranceCredentials === "string")
+  if (typeof entranceCredentials === 'string')
     $set.entranceCredentials = entranceCredentials.trim();
-  if (typeof program === "string") $set.program = program.trim();
-  if (typeof major === "string") $set.major = major.trim();
-  if (typeof honor === "string") {
-    $set.honor = honor.trim();
-    $set.collegeAwardHonor = honor.trim();
+  if (typeof program === 'string') $set.program = program.trim();
+  if (typeof major === 'string') $set.major = major.trim();
+  if (typeof honor === 'string') {
+    const h = honor.trim();
+    $set.honor = h;
+    $set.collegeAwardHonor = h;
   }
 
   // dates
@@ -353,18 +392,20 @@ const updateStudent = asyncHandler(async (req, res) => {
   }
 
   // photo
-  if (typeof photoDataUrl === "string" && /^data:image\//i.test(photoDataUrl)) {
-    const url = await uploadDataUriToCloudinary(photoDataUrl, "students_data");
+  if (typeof photoDataUrl === 'string' && /^data:image\//i.test(photoDataUrl)) {
+    const url = await uploadDataUriToCloudinary(photoDataUrl, 'students_data');
     if (url) $set.photoUrl = url;
   }
 
   // curriculum switch (no grade regeneration – grades live in Grade collection)
   if (curriculumId !== undefined && curriculumId !== null) {
     if (!isValidObjectId(curriculumId)) {
-      return res.status(400).json({ message: "Invalid curriculumId" });
+      return res.status(400).json({ message: 'Invalid curriculumId' });
     }
     const cur = await Curriculum.findById(curriculumId).lean();
-    if (!cur) return res.status(404).json({ message: "Curriculum not found" });
+    if (!cur) {
+      return res.status(404).json({ message: 'Curriculum not found' });
+    }
     $set.curriculum = cur._id;
     if ($set.program === undefined) {
       $set.program = cur.program || cur.name || cur.title || undefined;
@@ -377,7 +418,9 @@ const updateStudent = asyncHandler(async (req, res) => {
     { new: true, runValidators: true }
   ).lean();
 
-  if (!updated) return res.status(404).json({ message: "Student not found" });
+  if (!updated) {
+    return res.status(404).json({ message: 'Student not found' });
+  }
 
   const payload = normalizeStudentForDetail(updated);
   res.json(payload);
