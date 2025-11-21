@@ -57,7 +57,7 @@ const programSearchSchema = {
     .strip(),
 };
 
-// ---------- Create student schema (unchanged) ----------
+// ---------- Create student schema ----------
 const createSchema = {
   body: z
     .object({
@@ -112,11 +112,21 @@ const updateSchema = {
     .strip(),
 };
 
-// ---------- Sub-router for /student/* GETs ----------
-const student = express.Router();
+// ---------------------------------------------------------------------------
+// EXPLICIT ROUTES – final paths under /api/web will be:
+//
+//   GET    /api/web/students/passing
+//   GET    /api/web/students/search
+//   GET    /api/web/students/:id/tor
+//   GET    /api/web/students/:id
+//   GET    /api/web/programs
+//   POST   /api/web/students
+//   PATCH  /api/web/students/:id
+// ---------------------------------------------------------------------------
 
-student.get(
-  "/passing",
+// Passing students
+router.get(
+  "/students/passing",
   protect,
   validate(passingSchema),
   rateLimitRedis({
@@ -128,8 +138,9 @@ student.get(
   getStudentPassing
 );
 
-student.get(
-  "/search",
+// Search students
+router.get(
+  "/students/search",
   protect,
   validate(searchSchema),
   rateLimitRedis({
@@ -141,13 +152,13 @@ student.get(
   searchStudent
 );
 
-student.get("/:id/tor", protect, getStudentTor);
-student.get("/:id", protect, findStudent);
+// TOR
+router.get("/students/:id/tor", protect, getStudentTor);
 
-// Mount /student/* endpoints
-router.use("/student", student);
+// Detail
+router.get("/students/:id", protect, findStudent);
 
-// ---------- Programs search (Curriculum) ----------
+// Programs search
 router.get(
   "/programs",
   protect,
@@ -161,7 +172,7 @@ router.get(
   searchPrograms
 );
 
-// ---------- POST /students (create) ----------
+// Create student
 router.post(
   "/students",
   protect,
@@ -170,7 +181,7 @@ router.post(
   createStudent
 );
 
-// ---------- PATCH /students/:id (update Student_Data) ----------
+// Update student
 router.patch(
   "/students/:id",
   protect,
