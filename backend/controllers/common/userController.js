@@ -1,3 +1,4 @@
+// backend/controllers/common/userController.js
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const asyncHandler = require("express-async-handler");
@@ -54,7 +55,9 @@ const loginMobileUser = asyncHandler(async (req, res) => {
   const emailNorm = String(req.body.email || "").toLowerCase().trim();
   const { password } = req.body;
 
-  const user = await User.findOne({ email: emailNorm, kind: "mobile" });
+  // ⬇️ NEED the hashed password because model has select:false
+  const user = await User.findOne({ email: emailNorm, kind: "mobile" }).select("+password");
+
   if (user && (await bcrypt.compare(password, user.password))) {
     return res.json({
       _id: user._id,
@@ -74,7 +77,7 @@ const loginMobileUser = asyncHandler(async (req, res) => {
 
 // ---------------- WEB CONTROLLERS ----------------
 
-// @desc    Create new web user (admin/superadmin/developer) — SUPERADMIN ONLY
+// @desc    Create new web user (admin/superadmin/developer/cashier) — SUPERADMIN ONLY
 // @route   POST /api/web/users
 // @access  Private (superadmin)
 const registerWebUser = asyncHandler(async (req, res) => {
@@ -97,7 +100,7 @@ const registerWebUser = asyncHandler(async (req, res) => {
     throw new Error("Missing required fields");
   }
 
-  if (!["admin", "superadmin", "developer","cashier"].includes(role)) {
+  if (!["admin", "superadmin", "developer", "cashier"].includes(role)) {
     res.status(400);
     throw new Error("Invalid role");
   }
@@ -174,10 +177,13 @@ const loginWebUser = asyncHandler(async (req, res) => {
   const emailNorm = String(req.body.email || "").toLowerCase().trim();
   const { password } = req.body;
 
-  const user = await User.findOne({ email: emailNorm, kind: "web" });
+  // ⬇️ NEED the hashed password because model has select:false
+  const user = await User.findOne({ email: emailNorm, kind: "web" }).select("+password");
+
+  // ⬇️ allow cashier to log in
+  const allowed = ["admin", "superadmin", "developer", "cashier"];
 
   if (user && (await bcrypt.compare(password, user.password))) {
-    const allowed = ["admin", "superadmin", "developer"];
     if (!allowed.includes(user.role)) {
       res.status(403);
       throw new Error("Unauthorized role");
@@ -234,7 +240,8 @@ const updateWebUser = asyncHandler(async (req, res) => {
       throw new Error("Current password required");
     }
 
-    const freshRequester = await User.findById(requester._id);
+    // ⬇️ NEED the hashed password because model has select:false
+    const freshRequester = await User.findById(requester._id).select("+password");
     const ok = await bcrypt.compare(String(currentPassword), freshRequester.password || "");
     if (!ok) {
       res.status(401);
