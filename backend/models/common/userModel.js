@@ -1,4 +1,3 @@
-// backend/models/auth/userModel.js
 const mongoose = require('mongoose');
 const { getAuthConn, getVcConn } = require('../../config/db');
 const readonlyPlugin = require('../_plugins/readonly');
@@ -6,7 +5,9 @@ const readonlyPlugin = require('../_plugins/readonly');
 const baseSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },
   email:    { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, required: true },
+
+  // Make password non-selectable so it never leaks with .lean()/.find()
+  password: { type: String, required: true, select: false },
 
   // 🔹 add "cashier" here
   role: {

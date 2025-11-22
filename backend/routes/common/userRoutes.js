@@ -28,25 +28,25 @@ const webLoginSchema = {
   }).strip(),
 };
 
-// const createWebUserSchema = {
-//   body: z.object({
-//     username: z.string().trim().min(2).max(100),
-//     fullName: z.string().trim().min(2).max(200).optional().nullable(),
-//     age: z.number().int().min(0).max(150).optional().nullable(),
-//     address: z.string().trim().max(1000).optional().nullable(),
-//     gender: z.enum(["male", "female", "other"]).optional().nullable(),
-//     email: z.string().trim().toLowerCase().email().max(254),
-//     password: z.string().min(8).max(200),
-//     contactNo: z.string().trim().max(50).optional().nullable(),
-//     role: z.enum(["admin", "superadmin", "developer"]).default("admin"),
-//     profilePicture: z.union([
-//       z.string().url(),
-//       z.string().startsWith("data:image/")
-//     ]).optional().nullable(),
-//     // profileImageId allowed if needed
-//     profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
-//   }).strip(),
-// };
+const createWebUserSchema = {
+  body: z.object({
+    username: z.string().trim().min(2).max(100),
+    fullName: z.string().trim().min(2).max(200).optional().nullable(),
+    age: z.number().int().min(0).max(150).optional().nullable(),
+    address: z.string().trim().max(1000).optional().nullable(),
+    gender: z.enum(["male", "female", "other"]).optional().nullable(),
+    email: z.string().trim().toLowerCase().email().max(254),
+    password: z.string().min(8).max(200),
+    contactNo: z.string().trim().max(50).optional().nullable(),
+    role: z.enum(["admin", "superadmin", "developer"]).default("admin"),
+    profilePicture: z.union([
+      z.string().url(),
+      z.string().startsWith("data:image/")
+    ]).optional().nullable(),
+    // profileImageId allowed if needed
+    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+  }).strip(),
+};
 
 const updateWebUserSchema = {
   params: z.object({
@@ -95,6 +95,9 @@ web.use(express.urlencoded({ extended: true, limit: "2mb" }));
 // );
 web.post(
   "/users",
+  protect,
+  allowRoles("superadmin"),
+  validate(createWebUserSchema),
   registerWebUser
 );
 
