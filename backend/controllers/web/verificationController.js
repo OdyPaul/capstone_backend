@@ -62,7 +62,9 @@ function extractPrintableFromPayload(payloadObj) {
     yearLevel: s.yearLevel || s.year || '',
     semester: s.semester || s.term || '',
     subjectCode: s.subjectCode || s.code || '',
-    subjectDescription: s.subjectDescription || s.title || s.name || '',
+    // ✅ preserve title and make description fall back to it
+    subjectTitle: s.subjectTitle || s.title || s.name || s.subjectDescription || '',
+    subjectDescription: s.subjectDescription || s.subjectTitle || s.title || s.name || '',
     finalGrade: s.finalGrade ?? s.grade ?? '',
     units: s.units ?? s.credit ?? s.credits ?? '',
   });
