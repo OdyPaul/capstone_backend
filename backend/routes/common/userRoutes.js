@@ -28,6 +28,13 @@ const webLoginSchema = {
   }).strip(),
 };
 
+const emptyToUndef = (schema) =>
+  z.preprocess((v) => (v === '' || v === null ? undefined : v), schema);
+
+const numberOrUndef = z.preprocess(
+  (v) => (v === '' || v === null || v === undefined ? undefined : Number(v)),
+  z.number().int().min(0).max(150)
+);
 const createWebUserSchema = {
   body: z.object({
     username: z.string().trim().min(2).max(100),
