@@ -61,7 +61,7 @@ const updateWebUserSchema = {
     email: z.string().trim().toLowerCase().email().max(254).optional(),
     password: z.string().min(8).max(200).optional(),
     contactNo: z.string().trim().max(50).optional().nullable(),
-    role: z.enum(["admin", "superadmin", "developer"]).optional(),
+    role: z.enum(["admin", "superadmin", "developer","cashier"]).optional(),
     profilePicture: z.union([
       z.string().url(),
       z.string().startsWith("data:image/")
