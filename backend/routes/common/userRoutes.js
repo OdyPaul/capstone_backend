@@ -28,52 +28,52 @@ const webLoginSchema = {
   }).strip(),
 };
 
-const createWebUserSchema = {
-  body: z.object({
-    username: z.string().trim().min(2).max(100),
-    fullName: z.string().trim().min(2).max(200).optional().nullable(),
-    age: z.number().int().min(0).max(150).optional().nullable(),
-    address: z.string().trim().max(1000).optional().nullable(),
-    gender: z.enum(["male", "female", "other"]).optional().nullable(),
-    email: z.string().trim().toLowerCase().email().max(254),
-    password: z.string().min(8).max(200),
-    contactNo: z.string().trim().max(50).optional().nullable(),
-    role: z.enum(["admin", "superadmin", "developer"]).default("admin"),
-    profilePicture: z.union([
-      z.string().url(),
-      z.string().startsWith("data:image/")
-    ]).optional().nullable(),
-    // profileImageId allowed if needed
-    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
-  }).strip(),
-};
-
-// const updateWebUserSchema = {
-//   params: z.object({
-//     id: z.string().regex(/^[a-fA-F0-9]{24}$/),
-//   }),
+// const createWebUserSchema = {
 //   body: z.object({
-//     username: z.string().trim().min(2).max(100).optional(),
+//     username: z.string().trim().min(2).max(100),
 //     fullName: z.string().trim().min(2).max(200).optional().nullable(),
 //     age: z.number().int().min(0).max(150).optional().nullable(),
 //     address: z.string().trim().max(1000).optional().nullable(),
 //     gender: z.enum(["male", "female", "other"]).optional().nullable(),
-//     email: z.string().trim().toLowerCase().email().max(254).optional(),
-//     password: z.string().min(8).max(200).optional(),
+//     email: z.string().trim().toLowerCase().email().max(254),
+//     password: z.string().min(8).max(200),
 //     contactNo: z.string().trim().max(50).optional().nullable(),
-//     role: z.enum(["admin", "superadmin", "developer"]).optional(),
+//     role: z.enum(["admin", "superadmin", "developer"]).default("admin"),
 //     profilePicture: z.union([
 //       z.string().url(),
 //       z.string().startsWith("data:image/")
 //     ]).optional().nullable(),
+//     // profileImageId allowed if needed
 //     profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
-
-//     // Required for superadmin update password verification
-//     currentPassword: z.string().min(1).max(200).optional(),
-//     passwordCurrent: z.string().min(1).max(200).optional(),
-//     adminPassword: z.string().min(1).max(200).optional(),
 //   }).strip(),
 // };
+
+const updateWebUserSchema = {
+  params: z.object({
+    id: z.string().regex(/^[a-fA-F0-9]{24}$/),
+  }),
+  body: z.object({
+    username: z.string().trim().min(2).max(100).optional(),
+    fullName: z.string().trim().min(2).max(200).optional().nullable(),
+    age: z.number().int().min(0).max(150).optional().nullable(),
+    address: z.string().trim().max(1000).optional().nullable(),
+    gender: z.enum(["male", "female", "other"]).optional().nullable(),
+    email: z.string().trim().toLowerCase().email().max(254).optional(),
+    password: z.string().min(8).max(200).optional(),
+    contactNo: z.string().trim().max(50).optional().nullable(),
+    role: z.enum(["admin", "superadmin", "developer"]).optional(),
+    profilePicture: z.union([
+      z.string().url(),
+      z.string().startsWith("data:image/")
+    ]).optional().nullable(),
+    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+
+    // Required for superadmin update password verification
+    currentPassword: z.string().min(1).max(200).optional(),
+    passwordCurrent: z.string().min(1).max(200).optional(),
+    adminPassword: z.string().min(1).max(200).optional(),
+  }).strip(),
+};
 
 // ---------- Subrouters ----------
 const web = express.Router();
