@@ -31,23 +31,29 @@ const webLoginSchema = {
 const createWebUserSchema = {
   body: z.object({
     username: z.string().trim().min(2).max(100),
-    fullName: z.string().trim().min(2).max(200).optional().nullable(),
-    age: z.number().int().min(0).max(150).optional().nullable(),
-    address: z.string().trim().max(1000).optional().nullable(),
-    gender: z.enum(["male", "female", "other"]).optional().nullable(),
+
+    fullName: emptyToUndef(z.string().trim().min(2).max(200)).optional(),
+    age: numberOrUndef.optional(),
+    address: emptyToUndef(z.string().trim().max(1000)).optional(),
+    gender: emptyToUndef(z.enum(['male','female','other'])).optional(),
+
     email: z.string().trim().toLowerCase().email().max(254),
     password: z.string().min(8).max(200),
-    contactNo: z.string().trim().max(50).optional().nullable(),
-    role: z.enum(["admin", "superadmin", "developer","cashier"]).default("admin"),
-    profilePicture: z.union([
-      z.string().url(),
-      z.string().startsWith("data:image/")
-    ]).optional().nullable(),
-    // profileImageId allowed if needed
-    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+
+    contactNo: emptyToUndef(z.string().trim().max(50)).optional(),
+
+    // ✅ includes cashier
+    role: z.enum(['admin','superadmin','developer','cashier']).default('admin'),
+
+    // Accept URL or data URI, but treat "" as undefined
+    profilePicture: z.preprocess(
+      (v) => (v === '' || v === null ? undefined : v),
+      z.union([z.string().url(), z.string().startsWith('data:image/')])
+    ).optional(),
+
+    profileImageId: emptyToUndef(z.string().regex(/^[a-fA-F0-9]{24}$/)).optional(),
   }).strip(),
 };
-
 const updateWebUserSchema = {
   params: z.object({
     id: z.string().regex(/^[a-fA-F0-9]{24}$/),
