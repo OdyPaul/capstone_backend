@@ -97,7 +97,7 @@ const registerWebUser = asyncHandler(async (req, res) => {
     throw new Error("Missing required fields");
   }
 
-  if (!["admin", "superadmin", "developer"].includes(role)) {
+  if (!["admin", "superadmin", "developer","cashier"].includes(role)) {
     res.status(400);
     throw new Error("Invalid role");
   }
