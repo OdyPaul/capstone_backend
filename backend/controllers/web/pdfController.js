@@ -49,7 +49,7 @@ async function loadSample(kind) {
           program: 'BS in Agriculture',
           major: 'Crop Science',
           dateGraduated: '2025-06-19',
-          issuedDate: '2025-07-01',
+          dateIssued: '2025-07-01',
           rows_page1: [],
           rows_page2: []
         }
@@ -58,7 +58,7 @@ async function loadSample(kind) {
           program: 'BS in Agriculture',
           major: 'Crop Science',
           dateGraduated: '2025-06-19',
-          issuedDate: '2025-07-01'
+          dateIssued: '2025-07-01'
         };
   }
 }
@@ -69,6 +69,10 @@ async function loadFonts() {
   try { bold = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-SemiBold.ttf')); } catch {}
   const font = { NotoSans: { data: regular, fallback: true } };
   if (bold) font.NotoSansSemiBold = { data: bold };
+
+  // Alias Roboto → NotoSans so template fonts still work
+  font.Roboto = font.NotoSans;
+
   return font;
 }
 
@@ -140,30 +144,29 @@ function buildPluginsForTemplate(template, schemas) {
   return plugins;
 }
 
-/** ---- 🔥 FIX: Split TOR data into 2 pages ---- */
-function splitTorDataForTemplate(data) {
-  return [
-    {
-      // PAGE 1
-      fullName: data.fullName,
-      address: data.address,
-      entranceCredentials: data.entranceCredentials,
-      highSchool: data.highSchool,
-      program: data.program,
-      major: data.major,
-      placeOfBirth: data.placeOfBirth,
-      dateAdmission: data.dateAdmission,
-      dateOfBirth: data.dateOfBirth,
-      dateGraduated: data.dateGraduated,
-      dateIssued: data.dateIssued,
-      rows_page1: data.rows_page1 || [],
-    },
-    {
-      // PAGE 2
-      fullName_page2: data.fullName,
-      rows_page2: data.rows_page2 || [],
-    }
-  ];
+/** ---- ✅ Normalizer for TOR: one input for all pages ---- */
+function normalizeTorInput(data = {}) {
+  const S = (v) => (v == null ? '' : String(v));
+  const A = (v) => (Array.isArray(v) ? v : []);
+
+  const fullName = S(data.fullName || data.fullname || data.name);
+
+  return {
+    fullName,
+    address: S(data.address),
+    entranceCredentials: S(data.entranceCredentials),
+    highSchool: S(data.highSchool),
+    program: S(data.program),
+    major: S(data.major),
+    placeOfBirth: S(data.placeOfBirth),
+    dateAdmission: S(data.dateAdmission),
+    dateOfBirth: S(data.dateOfBirth),
+    dateGraduated: S(data.dateGraduated),
+    dateIssued: S(data.dateIssued ?? data.issuedDate),
+    rows_page1: A(data.rows_page1),
+    rows_page2: A(data.rows_page2),
+    fullName_page2: S(data.fullName_page2 ?? fullName),
+  };
 }
 
 /** -------- Main builder -------- */
@@ -175,10 +178,10 @@ async function build(kind, data) {
   const plugins = buildPluginsForTemplate(template, schemas);
   const font = await loadFonts();
 
-  const inputs =
-    kind === 'tor'
-      ? splitTorDataForTemplate(data)
-      : [data];
+  // One object for all pages
+  const inputs = kind === 'tor'
+    ? [normalizeTorInput(data)]
+    : [data];
 
   const pdfBytes = await generate({
     template,
