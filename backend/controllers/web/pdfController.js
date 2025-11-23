@@ -141,7 +141,7 @@ function buildPluginsForTemplate(template, schemas) {
   return plugins;
 }
 
-/** ---- Normalize TOR input ---- */
+/** ---- Normalize TOR input (primitives->string, tables->array) ---- */
 function normalizeTorInput(data = {}) {
   const S = (v) => (v == null ? '' : String(v));
   const A = (v) => (Array.isArray(v) ? v : []);
@@ -160,27 +160,32 @@ function normalizeTorInput(data = {}) {
     dateOfBirth: S(data.dateOfBirth),
     dateGraduated: S(data.dateGraduated),
     dateIssued: S(data.dateIssued ?? data.issuedDate),
+
     rows_page1: A(data.rows_page1),
     rows_page2: A(data.rows_page2),
+
+    // page 2 text mirror
     fullName_page2: S(data.fullName_page2 ?? fullName),
   };
 }
 
-/** ---- Utilities for tables ---- */
-const S = (v) => (v == null ? '' : String(v));
-const A = (v) => (Array.isArray(v) ? v : []);
-
-function makeBlankRow(cols) {
-  const r = {};
-  cols.forEach((c) => { r[c] = ''; });
-  return r;
+/** ---- Build a blank row from head columns ---- */
+function blankRow(cols) {
+  return cols.map(() => '');
 }
 
-/** ---- Sanitize by template; pad blank rows; force content to string ---- */
-function sanitizeByTemplate(template, input) {
+/** ---- Sanitize tables: objects -> arrays-of-arrays; pad empties ----
+ *  - text fields: always string
+ *  - table fields: always array-of-arrays in the order of `head`
+ *  - if table is empty: pad with at least 1 blank row
+ *  - ensure table.content is a STRING ('') to avoid undefined.split
+ */
+function sanitizeTablesToAoA(template, input, minRowsMap = {}) {
   const out = { ...input };
-  const pages = Array.isArray(template.schemas) ? template.schemas : [];
+  const S = (v) => (v == null ? '' : String(v));
+  const A = (v) => (Array.isArray(v) ? v : []);
 
+  const pages = Array.isArray(template.schemas) ? template.schemas : [];
   pages.forEach((page) => {
     (page || []).forEach((field) => {
       if (!field || !field.type) return;
@@ -194,36 +199,47 @@ function sanitizeByTemplate(template, input) {
       if (field.type === 'table') {
         const key = field.name;
         const cols = Array.isArray(field.head) ? field.head.map(String) : [];
+        const minRows = Number.isFinite(minRowsMap[key]) ? minRowsMap[key] : 1;
 
-        // sanitize every cell to string
-        let rows = A(out[key]).map((row) => {
-          const r = row && typeof row === 'object' ? { ...row } : {};
-          cols.forEach((c) => { r[c] = S(r[c]); });
-          return r;
+        // Source rows can be objects or arrays; convert to arrays-of-arrays in head order
+        let src = A(out[key]);
+        let rows = src.map((row) => {
+          if (Array.isArray(row)) {
+            // Coerce each cell to string and fit to column count
+            const arr = cols.map((_, idx) => S(row[idx]));
+            return arr;
+          }
+          const obj = row && typeof row === 'object' ? row : {};
+          return cols.map((c) => S(obj[c]));
         });
 
-        // ✅ pad: ensure at least 1 blank row for safety
-        if (rows.length === 0) {
-          rows.push(makeBlankRow(cols));
-        }
-
-        // If you want to always pad page 2 to at least N rows, set N here:
-        if (key === 'rows_page2') {
-          const MIN_P2 = Number(process.env.PDF_TOR_MIN_ROWS_PAGE2 || 1); // change to 10+ if you like
-          while (rows.length < MIN_P2) rows.push(makeBlankRow(cols));
-        }
+        // Pad with blank rows if needed
+        while (rows.length < minRows) rows.push(blankRow(cols));
 
         out[key] = rows;
 
-        // ✅ critical: ensure table.content is a STRING, not undefined
-        if (typeof field.content !== 'string') {
-          field.content = '';
-        }
+        // Make sure content is a string (avoid undefined.split)
+        if (typeof field.content !== 'string') field.content = '';
       }
     });
   });
 
   return out;
+}
+
+/** ---- Debug: summarize tables just before generate ---- */
+function logPreflight(template, input) {
+  try {
+    for (const page of template.schemas || []) {
+      for (const f of page || []) {
+        if (f?.type === 'table') {
+          const v = input[f.name];
+          const firstRow = Array.isArray(v) && v.length ? v[0] : null;
+          console.log(`[preflight] table ${f.name}: rows=${Array.isArray(v) ? v.length : 'NA'} head=${(f.head||[]).length} firstRowType=${Array.isArray(firstRow) ? 'array' : typeof firstRow}`);
+        }
+      }
+    }
+  } catch {}
 }
 
 /** -------- Main builder -------- */
@@ -235,11 +251,18 @@ async function build(kind, data) {
   const plugins = buildPluginsForTemplate(template, schemas);
   const font = await loadFonts();
 
+  // One object for the whole document
   const normalized = kind === 'tor' ? normalizeTorInput(data) : data;
-  const safeInput = sanitizeByTemplate(template, normalized);
+
+  // Min rows policy — pad to at least 1 blank row if empty.
+  // You can bump these numbers any time: e.g., { rows_page1: 12, rows_page2: 12 }
+  const minRowsMap = { rows_page1: 1, rows_page2: 1 };
+
+  const safeInput = sanitizeTablesToAoA(template, normalized, minRowsMap);
   const inputs = [safeInput];
 
   console.log('🧩 pdfme inputs →', JSON.stringify(inputs, null, 2));
+  logPreflight(template, safeInput);
 
   let pdfBytes;
   try {
@@ -251,6 +274,7 @@ async function build(kind, data) {
     });
   } catch (e) {
     console.error('❌ pdfme.generate() failed:', e && (e.stack || e.message || e));
+    // Deep dump to inspect field wiring
     for (const page of template.schemas || []) {
       for (const f of page || []) {
         if (f.type === 'text') {
@@ -259,7 +283,8 @@ async function build(kind, data) {
         } else if (f.type === 'table') {
           const k = f.name;
           const v = inputs[0][k];
-          console.error(`[table] ${f.name} (${k}) ->`, Array.isArray(v) ? `rows:${v.length}` : typeof v);
+          const first = Array.isArray(v) && v.length ? v[0] : null;
+          console.error(`[table] ${f.name} (${k}) ->`, Array.isArray(v) ? `rows:${v.length} firstRowType=${Array.isArray(first)?'array':typeof first}` : typeof v);
         }
       }
     }
