@@ -63,24 +63,23 @@ async function loadSample(kind) {
   }
 }
 
+/** -------- Fonts -------- */
 async function loadFonts() {
   const regular = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-Regular.ttf'));
   let bold;
   try { bold = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-SemiBold.ttf')); } catch {}
 
-  // Only one fallback font allowed
+  // Only ONE fallback font is allowed
   const font = {
     NotoSans: { data: regular, fallback: true },
   };
-
   if (bold) font.NotoSansSemiBold = { data: bold };
 
-
+  // Provide a “Roboto” alias without fallback flag, so template fontName:"Roboto" works
   font.Roboto = { data: regular };
 
   return font;
 }
-
 
 function sendPdf(res, bytes, filename) {
   res.setHeader('Content-Type', 'application/pdf');
@@ -110,7 +109,6 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
     const b64 = idx >= 0 ? basePdfValue.slice(idx + 1) : '';
     return Buffer.from(b64, 'base64');
   }
-
   const fromObj = toBufferFromUnknown(basePdfValue);
   if (fromObj) return fromObj;
 
@@ -120,7 +118,6 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
       : path.join(baseDir, basePdfValue.trim());
     return fs.readFile(p);
   }
-
   const fallback = path.join(baseDir, 'base.pdf');
   if (await fileExists(fallback)) return fs.readFile(fallback);
 
@@ -150,7 +147,7 @@ function buildPluginsForTemplate(template, schemas) {
   return plugins;
 }
 
-/** ---- ✅ Normalizer for TOR: one input for all pages ---- */
+/** ---- Normalize TOR input (strings/tables) ---- */
 function normalizeTorInput(data = {}) {
   const S = (v) => (v == null ? '' : String(v));
   const A = (v) => (Array.isArray(v) ? v : []);
@@ -169,10 +166,36 @@ function normalizeTorInput(data = {}) {
     dateOfBirth: S(data.dateOfBirth),
     dateGraduated: S(data.dateGraduated),
     dateIssued: S(data.dateIssued ?? data.issuedDate),
+
     rows_page1: A(data.rows_page1),
     rows_page2: A(data.rows_page2),
+
+    // page 2 mirror
     fullName_page2: S(data.fullName_page2 ?? fullName),
   };
+}
+
+/** ---- Backfill any missing text/table keys by reading the template ---- */
+function hydrateInputsFromTemplate(template, dataObj) {
+  const out = { ...dataObj };
+  for (const page of template.schemas || []) {
+    for (const field of page || []) {
+      if (!field || !field.type || !field.name) continue;
+      if (field.type === 'text') {
+        if (out[field.name] === undefined || out[field.name] === null) {
+          out[field.name] = ''; // prevent undefined → .split error
+        } else {
+          out[field.name] = String(out[field.name]);
+        }
+      }
+      if (field.type === 'table') {
+        if (!Array.isArray(out[field.name])) out[field.name] = [];
+        // Ensure table schema has content: '' (defensive)
+        if (typeof field.content !== 'string') field.content = '';
+      }
+    }
+  }
+  return out;
 }
 
 /** -------- Main builder -------- */
@@ -184,15 +207,17 @@ async function build(kind, data) {
   const plugins = buildPluginsForTemplate(template, schemas);
   const font = await loadFonts();
 
-  // One object for all pages
-  const inputs = kind === 'tor'
-    ? [normalizeTorInput(data)]
-    : [data];
-console.log('🧩 pdfme inputs →', JSON.stringify(inputs, null, 2));
+  // One object for the whole document
+  const raw = kind === 'tor' ? normalizeTorInput(data) : data;
+  const hydrated = hydrateInputsFromTemplate(template, raw);
+
+  // Debug what pdfme actually receives
+  console.log('🧩 pdfme inputs →', JSON.stringify([hydrated], null, 2));
+
   const pdfBytes = await generate({
     template,
     plugins,
-    inputs,
+    inputs: [hydrated],
     options: { font },
   });
 
