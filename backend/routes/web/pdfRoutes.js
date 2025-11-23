@@ -1,13 +1,14 @@
+// backend/routes/web/pdfRoutes.js
 const express = require('express');
 const router = express.Router();
+const pdf = require('../../controllers/web/pdfController');
 
-const { protect, admin } = require('../../middleware/authMiddleware');
-const pdfCtrl = require('../../controllers/web/pdfController');
+// Open with sample data straight in the browser
+router.get('/pdf/tor', pdf.torSamplePdf);
+router.get('/pdf/diploma', pdf.diplomaSamplePdf);
 
-// Admin/manual render using Student doc + your Handlebars template
-router.get('/tor/:studentId/pdf', protect, admin, pdfCtrl.renderTorPdf);
-
-// Public signed, single-use render (verification portal path)
-router.get('/pdf/tor-from-session', pdfCtrl.torFromSessionSigned);
+// Generate from real JSON (POST body matches your template field names)
+router.post('/pdf/tor', pdf.torGeneratePdf);
+router.post('/pdf/diploma', pdf.diplomaGeneratePdf);
 
 module.exports = router;
