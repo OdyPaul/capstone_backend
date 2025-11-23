@@ -14,8 +14,8 @@ async function ensurePdfme() {
   return { generate: _generate, schemas: _schemas };
 }
 
-/** -------- Paths (pdf-build lives under backend/) -------- */
-const ROOT = path.join(__dirname, '../../'); // -> backend/
+/** -------- Paths -------- */
+const ROOT = path.join(__dirname, '../../');
 const BUILD_DIR = path.join(ROOT, 'pdf-build');
 const TOR_DIR = path.join(BUILD_DIR, 'tor');
 const DIP_DIR = path.join(BUILD_DIR, 'diploma');
@@ -26,22 +26,18 @@ async function readJSON(p) {
   const txt = await fs.readFile(p, 'utf8');
   return JSON.parse(txt);
 }
-
 async function fileExists(p) {
   try { await fs.access(p); return true; } catch { return false; }
 }
-
 async function loadTemplate(kind) {
   const base = kind === 'tor' ? TOR_DIR : DIP_DIR;
   return readJSON(path.join(base, 'template.json'));
 }
-
 async function loadSample(kind) {
   const base = kind === 'tor' ? TOR_DIR : DIP_DIR;
   const fp = path.join(base, 'data.sample.json');
   try { return await readJSON(fp); }
   catch {
-    // Minimal fallback so you can at least see a PDF if sample is missing
     return kind === 'tor'
       ? {
           fullName: 'Jane D. Student',
@@ -70,7 +66,6 @@ async function loadSample(kind) {
 }
 
 async function loadFonts() {
-  // Supply whatever TTF/OTF you’ve placed in backend/pdf-build/fonts
   const regular = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-Regular.ttf'));
   let bold;
   try { bold = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-SemiBold.ttf')); } catch {}
@@ -78,78 +73,77 @@ async function loadFonts() {
   if (bold) font.NotoSansSemiBold = { data: bold };
   return font;
 }
-
 function sendPdf(res, bytes, filename) {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.send(Buffer.from(bytes));
 }
 
-/** -------- Base PDF resolver --------
- * Accepts:
- *  - data URL string (data:application/pdf;base64,.....)
- *  - relative or absolute file path to a .pdf
- *  - missing -> falls back to backend/pdf-build/<kind>/base.pdf
- */
+/** ---- Robust basePdf resolver (prevents `.split` on undefined) ---- */
+function isDataUrl(v) {
+  return typeof v === 'string' && /^data:application\/pdf;base64,/i.test(v);
+}
+function toBufferFromUnknown(v) {
+  // Node Buffer JSON shape: { type:'Buffer', data:[...] }
+  if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data)) {
+    return Buffer.from(v.data);
+  }
+  // ArrayBuffer / Uint8Array / Buffer
+  if (v && typeof v === 'object' && typeof v.byteLength === 'number') {
+    return Buffer.from(new Uint8Array(v));
+  }
+  if (Buffer.isBuffer(v)) return v;
+  return null;
+}
+
 async function resolveBasePdfBytes(kind, basePdfValue) {
   const baseDir = kind === 'tor' ? TOR_DIR : DIP_DIR;
 
-  // If template has a data URL
-  if (typeof basePdfValue === 'string' && basePdfValue.startsWith('data:')) {
-    const b64 = basePdfValue.split(',')[1] || '';
+  // 1) data URL string
+  if (isDataUrl(basePdfValue)) {
+    const idx = basePdfValue.indexOf(',');
+    const b64 = idx >= 0 ? basePdfValue.slice(idx + 1) : '';
     return Buffer.from(b64, 'base64');
   }
 
-  // If template has a path-like string, resolve it (relative to its build dir)
+  // 2) buffer-like object / ArrayBuffer
+  const fromObj = toBufferFromUnknown(basePdfValue);
+  if (fromObj) return fromObj;
+
+  // 3) path-like string
   if (typeof basePdfValue === 'string' && basePdfValue.trim()) {
     const p = path.isAbsolute(basePdfValue)
       ? basePdfValue
-      : path.join(baseDir, basePdfValue);
+      : path.join(baseDir, basePdfValue.trim());
     return fs.readFile(p);
   }
 
-  // Fallback: backend/pdf-build/<kind>/base.pdf
+  // 4) fallback file
   const fallback = path.join(baseDir, 'base.pdf');
-  if (await fileExists(fallback)) {
-    return fs.readFile(fallback);
-  }
+  if (await fileExists(fallback)) return fs.readFile(fallback);
 
-  // No base found -> throw a helpful error
-  const where = kind === 'tor' ? 'pdf-build/tor' : 'pdf-build/diploma';
   throw new Error(
-    `No base PDF found. Put your base at "${where}/base.pdf" or set a valid data URL/path in template.basePdf.`
+    `No base PDF found. Place "base.pdf" under ${path.relative(process.cwd(), baseDir)} or embed a data URL/path in template.basePdf.`
   );
 }
 
-/** -------- Build plugin map from template usage --------
- * Only register plugins your template actually uses AND that exist in the installed schemas.
- * Clear error if a required plugin is missing (e.g. "table" not exported by your version).
- */
+/** ---- Only register the plugins your template actually uses ---- */
 function buildPluginsForTemplate(template, schemas) {
-  const usedTypes = new Set();
+  const used = new Set();
   for (const page of template.schemas || []) {
     for (const field of page || []) {
-      if (field && typeof field.type === 'string') usedTypes.add(field.type);
+      if (field?.type) used.add(field.type);
     }
   }
-  // If no fields yet (empty template), still provide text/image/line basics safely when available
-  if (usedTypes.size === 0) {
-    ['text', 'image', 'line', 'rect', 'table'].forEach(t => {
-      if (schemas[t]) usedTypes.add(t);
-    });
-  }
+  // If empty template, enable common basics when available
+  if (used.size === 0) ['text', 'image', 'line', 'rect', 'table'].forEach(t => schemas[t] && used.add(t));
 
   const plugins = {};
   const missing = [];
-  usedTypes.forEach(t => {
-    if (schemas[t]) plugins[t] = schemas[t];
-    else missing.push(t);
-  });
-
+  used.forEach(t => (schemas[t] ? (plugins[t] = schemas[t]) : missing.push(t)));
   if (missing.length) {
     throw new Error(
-      `Your template uses unknown/missing plugin(s): ${missing.join(', ')}. ` +
-      `Install a schemas version that exports them, or remove these field types from the template.`
+      `Template uses unknown/missing plugin(s): ${missing.join(', ')}. Update @pdfme/schemas or remove these field types from template.`
     );
   }
   return plugins;
@@ -160,12 +154,11 @@ async function build(kind, data) {
   const { generate, schemas } = await ensurePdfme();
   const template = await loadTemplate(kind);
 
-  // Ensure basePdf is actual bytes
+  // Ensure basePdf is bytes (this prevents the split-on-undefined crash)
   template.basePdf = await resolveBasePdfBytes(kind, template.basePdf);
 
-  // Only register plugins your template needs & your installed version provides
+  // Register only needed plugins
   const plugins = buildPluginsForTemplate(template, schemas);
-
   const font = await loadFonts();
 
   const pdfBytes = await generate({
@@ -178,29 +171,24 @@ async function build(kind, data) {
 }
 
 /** -------- Controllers -------- */
-// Quick-open sample (GET)
 const torSamplePdf = async (req, res, next) => {
   try {
     const bytes = await build('tor', await loadSample('tor'));
     sendPdf(res, bytes, 'tor.pdf');
   } catch (e) { next(e); }
 };
-
 const diplomaSamplePdf = async (req, res, next) => {
   try {
     const bytes = await build('diploma', await loadSample('diploma'));
     sendPdf(res, bytes, 'diploma.pdf');
   } catch (e) { next(e); }
 };
-
-// Generate from real payload (POST)
 const torGeneratePdf = async (req, res, next) => {
   try {
     const bytes = await build('tor', req.body || {});
     sendPdf(res, bytes, 'tor.pdf');
   } catch (e) { next(e); }
 };
-
 const diplomaGeneratePdf = async (req, res, next) => {
   try {
     const bytes = await build('diploma', req.body || {});
