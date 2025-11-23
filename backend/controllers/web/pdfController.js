@@ -73,7 +73,7 @@ async function loadFonts() {
   const font = { NotoSans: { data: regular, fallback: true } };
   if (bold) font.NotoSansSemiBold = { data: bold };
 
-  // Alias so fontName:"Roboto" works in template
+  // Alias so fontName:"Roboto" works in template (no fallback flag here)
   font.Roboto = { data: regular };
 
   return font;
@@ -166,13 +166,21 @@ function normalizeTorInput(data = {}) {
   };
 }
 
-/** ---- Sanitize by template & remove table.content ---- */
+/** ---- Utilities for tables ---- */
+const S = (v) => (v == null ? '' : String(v));
+const A = (v) => (Array.isArray(v) ? v : []);
+
+function makeBlankRow(cols) {
+  const r = {};
+  cols.forEach((c) => { r[c] = ''; });
+  return r;
+}
+
+/** ---- Sanitize by template; pad blank rows; force content to string ---- */
 function sanitizeByTemplate(template, input) {
   const out = { ...input };
-  const S = (v) => (v == null ? '' : String(v));
-  const A = (v) => (Array.isArray(v) ? v : []);
-
   const pages = Array.isArray(template.schemas) ? template.schemas : [];
+
   pages.forEach((page) => {
     (page || []).forEach((field) => {
       if (!field || !field.type) return;
@@ -185,14 +193,32 @@ function sanitizeByTemplate(template, input) {
 
       if (field.type === 'table') {
         const key = field.name;
-        const cols = Array.isArray(field.head) ? field.head : [];
-        out[key] = A(out[key]).map((row) => {
+        const cols = Array.isArray(field.head) ? field.head.map(String) : [];
+
+        // sanitize every cell to string
+        let rows = A(out[key]).map((row) => {
           const r = row && typeof row === 'object' ? { ...row } : {};
           cols.forEach((c) => { r[c] = S(r[c]); });
           return r;
         });
-        // 🚫 Critical: prevent table parser from touching field.content
-        if ('content' in field) delete field.content;
+
+        // ✅ pad: ensure at least 1 blank row for safety
+        if (rows.length === 0) {
+          rows.push(makeBlankRow(cols));
+        }
+
+        // If you want to always pad page 2 to at least N rows, set N here:
+        if (key === 'rows_page2') {
+          const MIN_P2 = Number(process.env.PDF_TOR_MIN_ROWS_PAGE2 || 1); // change to 10+ if you like
+          while (rows.length < MIN_P2) rows.push(makeBlankRow(cols));
+        }
+
+        out[key] = rows;
+
+        // ✅ critical: ensure table.content is a STRING, not undefined
+        if (typeof field.content !== 'string') {
+          field.content = '';
+        }
       }
     });
   });
