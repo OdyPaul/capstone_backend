@@ -17,8 +17,8 @@ async function ensurePdfme() {
 }
 
 /** -------- Paths -------- */
-const ROOT = path.join(__dirname, '../../../');
-const BUILD_DIR = path.join(ROOT, 'pdf-build');
+const ROOT = path.join(__dirname, '../../');
+const BUILD_DIR = path.join(ROOT, 'pdf_build');
 const TOR_DIR = path.join(BUILD_DIR, 'tor');
 const DIP_DIR = path.join(BUILD_DIR, 'diploma');
 const FONTS_DIR = path.join(BUILD_DIR, 'fonts');
