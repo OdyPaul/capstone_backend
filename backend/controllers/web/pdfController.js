@@ -67,14 +67,20 @@ async function loadFonts() {
   const regular = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-Regular.ttf'));
   let bold;
   try { bold = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-SemiBold.ttf')); } catch {}
-  const font = { NotoSans: { data: regular, fallback: true } };
+
+  // Only one fallback font allowed
+  const font = {
+    NotoSans: { data: regular, fallback: true },
+  };
+
   if (bold) font.NotoSansSemiBold = { data: bold };
 
-  // Alias Roboto → NotoSans so template fonts still work
-  font.Roboto = font.NotoSans;
+
+  font.Roboto = { data: regular };
 
   return font;
 }
+
 
 function sendPdf(res, bytes, filename) {
   res.setHeader('Content-Type', 'application/pdf');
