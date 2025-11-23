@@ -69,13 +69,11 @@ async function loadFonts() {
   let bold;
   try { bold = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-SemiBold.ttf')); } catch {}
 
-  // Only ONE fallback font allowed
-  const font = {
-    NotoSans: { data: regular, fallback: true },
-  };
+  // Exactly ONE fallback font
+  const font = { NotoSans: { data: regular, fallback: true } };
   if (bold) font.NotoSansSemiBold = { data: bold };
 
-  // Provide a Roboto alias (no fallback flag) so template fontName:"Roboto" works
+  // Alias so fontName:"Roboto" works in template
   font.Roboto = { data: regular };
 
   return font;
@@ -87,7 +85,7 @@ function sendPdf(res, bytes, filename) {
   res.send(Buffer.from(bytes));
 }
 
-/** ---- Robust basePdf resolver ---- */
+/** ---- Base PDF resolver ---- */
 function isDataUrl(v) {
   return typeof v === 'string' && /^data:application\/pdf;base64,/i.test(v);
 }
@@ -113,9 +111,7 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
   if (fromObj) return fromObj;
 
   if (typeof basePdfValue === 'string' && basePdfValue.trim()) {
-    const p = path.isAbsolute(basePdfValue)
-      ? basePdfValue
-      : path.join(baseDir, basePdfValue.trim());
+    const p = path.isAbsolute(basePdfValue) ? basePdfValue : path.join(baseDir, basePdfValue.trim());
     return fs.readFile(p);
   }
   const fallback = path.join(baseDir, 'base.pdf');
@@ -145,7 +141,7 @@ function buildPluginsForTemplate(template, schemas) {
   return plugins;
 }
 
-/** ---- Normalize TOR input (strings/tables) ---- */
+/** ---- Normalize TOR input ---- */
 function normalizeTorInput(data = {}) {
   const S = (v) => (v == null ? '' : String(v));
   const A = (v) => (Array.isArray(v) ? v : []);
@@ -166,15 +162,13 @@ function normalizeTorInput(data = {}) {
     dateIssued: S(data.dateIssued ?? data.issuedDate),
     rows_page1: A(data.rows_page1),
     rows_page2: A(data.rows_page2),
-    // page 2 mirror
     fullName_page2: S(data.fullName_page2 ?? fullName),
   };
 }
 
-/** ---- 🛡️ Sanitize by template: text -> string, table cells -> string ---- */
+/** ---- Sanitize by template & remove table.content ---- */
 function sanitizeByTemplate(template, input) {
   const out = { ...input };
-
   const S = (v) => (v == null ? '' : String(v));
   const A = (v) => (Array.isArray(v) ? v : []);
 
@@ -184,23 +178,21 @@ function sanitizeByTemplate(template, input) {
       if (!field || !field.type) return;
 
       if (field.type === 'text') {
-        // pdfme text reads the *content* key from the input
         const key = typeof field.content === 'string' ? field.content : '';
         if (!key) return;
-        out[key] = S(out[key]);            // never undefined → .split crash avoided
+        out[key] = S(out[key]);
       }
 
       if (field.type === 'table') {
-        // pdfme table uses field.name to read rows
         const key = field.name;
         const cols = Array.isArray(field.head) ? field.head : [];
         out[key] = A(out[key]).map((row) => {
           const r = row && typeof row === 'object' ? { ...row } : {};
-          cols.forEach((c) => { r[c] = S(r[c]); }); // all cells become strings
+          cols.forEach((c) => { r[c] = S(r[c]); });
           return r;
         });
-        // defensive: tables should have content: '' (won't be used, but avoid undefined)
-        if (typeof field.content !== 'string') field.content = '';
+        // 🚫 Critical: prevent table parser from touching field.content
+        if ('content' in field) delete field.content;
       }
     });
   });
@@ -217,12 +209,10 @@ async function build(kind, data) {
   const plugins = buildPluginsForTemplate(template, schemas);
   const font = await loadFonts();
 
-  // One object for all pages + sanitize strictly by template schema
   const normalized = kind === 'tor' ? normalizeTorInput(data) : data;
   const safeInput = sanitizeByTemplate(template, normalized);
   const inputs = [safeInput];
 
-  // Debug: verify exactly what pdfme will receive
   console.log('🧩 pdfme inputs →', JSON.stringify(inputs, null, 2));
 
   let pdfBytes;
@@ -235,7 +225,6 @@ async function build(kind, data) {
     });
   } catch (e) {
     console.error('❌ pdfme.generate() failed:', e && (e.stack || e.message || e));
-    // Optional: deep dump to see any residual non-strings/non-arrays
     for (const page of template.schemas || []) {
       for (const f of page || []) {
         if (f.type === 'text') {
