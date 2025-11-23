@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs/promises');
 
 /** -------- pdfme (ESM) loader for CommonJS projects -------- */
+
+
 let _generate = null;
 let _schemas = null;
 async function ensurePdfme() {
@@ -15,7 +17,7 @@ async function ensurePdfme() {
 }
 
 /** -------- Paths -------- */
-const ROOT = path.join(__dirname, '../../');
+const ROOT = path.join(__dirname, '../../../');
 const BUILD_DIR = path.join(ROOT, 'pdf-build');
 const TOR_DIR = path.join(BUILD_DIR, 'tor');
 const DIP_DIR = path.join(BUILD_DIR, 'diploma');
