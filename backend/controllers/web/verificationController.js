@@ -11,8 +11,12 @@ const AnchorBatch = require('../../models/web/anchorBatchModel');
 const VerificationSession = require('../../models/web/verificationSessionModel');
 const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 
+// NEW: queue + redis
+const { enqueueConsentPush } = require('../../queues/consent.queue');
+const { redis } = require('../../lib/redis');
+
 /* ---------- 🔔 Minimal audit (auth DB) ---------- */
-const { getAuthConn, getVcConn } = require('../../config/db'); // 👈 add getVcConn
+const { getAuthConn, getVcConn } = require('../../config/db');
 const AuditLogSchema = require('../../models/common/auditLog.schema');
 let AuditLogAuth = null;
 function getAuditLogAuth() {
@@ -47,78 +51,8 @@ const pickHolderName = (payloadObj) =>
   payloadObj?.subject?.name ||
   null;
 
-// decode a JWS payload (no verify here)
-function decodeJwsPayload(jws) {
-  try {
-    const [, b64] = String(jws).split('.');
-    if (!b64) return null;
-    const buf = fromB64url(b64);
-    return JSON.parse(buf.toString('utf8'));
-  } catch { return null; }
-}
-function extractPrintableFromPayload(payloadObj) {
-  const cs = payloadObj?.credentialSubject || payloadObj?.subject || {};
-  const mapSubj = (s = {}) => ({
-    yearLevel: s.yearLevel || s.year || '',
-    semester: s.semester || s.term || '',
-    subjectCode: s.subjectCode || s.code || '',
-    // ✅ preserve title and make description fall back to it
-    subjectTitle: s.subjectTitle || s.title || s.name || s.subjectDescription || '',
-    subjectDescription: s.subjectDescription || s.subjectTitle || s.title || s.name || '',
-    finalGrade: s.finalGrade ?? s.grade ?? '',
-    units: s.units ?? s.credit ?? s.credits ?? '',
-  });
 
-  return {
-    fullName: cs.fullName || cs.name || '',
-    studentNumber: cs.studentNumber || cs.student_id || cs.id || '',
-    address: cs.address || '',
-    entranceCredentials: cs.entranceCredentials || '',
-    highSchool: cs.highSchool || '',
-    program: cs.program || cs.course || '',
-    major: cs.major || '',
-    placeOfBirth: cs.placeOfBirth || cs.birthPlace || '',
-    dateAdmission: cs.dateAdmission || cs.admissionDate || '',
-    dateGraduated: cs.dateGraduated || cs.graduationDate || '',
-    gwa: cs.gwa || cs.GWA || '',
-    subjects: Array.isArray(cs.subjects) ? cs.subjects.map(mapSubj) : [],
-  };
-}
-
-/**
- * Compute vc_type and holder_name from SignedVC (payload first, then user).
- * Falls back to template_id (e.g., 'TOR', 'Diploma') when VC type array is absent.
- */
-async function inferTypeAndHolderFromSigned(signed) {
-  const p = signed?.vc_payload || decodeJwsPayload(signed?.jws) || null;
-
-  // vc_type from payload.type or payload.vc.type (first element if array)
-  let vcType =
-    (Array.isArray(p?.vc?.type) ? p.vc.type[0] : p?.vc?.type) ??
-    (Array.isArray(p?.type) ? p.type[0] : p?.type) ??
-    signed?.template_id ??
-    'VC';
-
-  // holder name: payload preferred
-  let holderName = pickHolderName(p);
-
-  // If still missing, try the user doc on vcConn
-  if (!holderName && signed?.holder_user_id) {
-    try {
-      const User = getVCUserModel();
-      if (User) {
-        const u = await User.findById(signed.holder_user_id).lean().select('fullName username');
-        if (u) holderName = u.fullName || u.username || null;
-      }
-    } catch { /* ignore */ }
-  }
-
-  return { vcType, holderName };
-}
-
-/**
- * emitVerifyAudit — best-effort writer to the auth DB's AuditLog.
- */
+  /* ---------- emitVerifyAudit (best-effort) ---------- */
 async function emitVerifyAudit({
   event,
   actorId = null,
@@ -174,12 +108,99 @@ async function emitVerifyAudit({
         ...extra,
       },
     });
-  } catch { /* swallow — never block main flow */ }
+  } catch {
+    /* swallow — never block main flow */
+  }
 }
 
-/* ---------- utils ---------- */
+/* ---------- inferTypeAndHolderFromSigned ---------- */
+async function inferTypeAndHolderFromSigned(signed) {
+  const p = signed?.vc_payload || (signed?.jws ? decodeJwsPayload(signed.jws) : null) || null;
+
+  const vcType =
+    (Array.isArray(p?.vc?.type) ? p.vc.type[0] : p?.vc?.type) ??
+    (Array.isArray(p?.type) ? p.type[0] : p?.type) ??
+    signed?.template_id ??
+    'VC';
+
+  let holderName =
+    p?.credentialSubject?.fullName ||
+    p?.credentialSubject?.name ||
+    p?.subject?.fullName ||
+    p?.subject?.name ||
+    null;
+
+  if (!holderName && signed?.holder_user_id) {
+    try {
+      const User = getVCUserModel();
+      if (User) {
+        const u = await User.findById(signed.holder_user_id).lean().select('fullName username');
+        if (u) holderName = u.fullName || u.username || null;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return { vcType, holderName };
+}
+
+// decode a JWS payload (no verify here)
+function decodeJwsPayload(jws) {
+  try {
+    const [, b64] = String(jws).split('.');
+    if (!b64) return null;
+    const buf = fromB64url(b64);
+    return JSON.parse(buf.toString('utf8'));
+  } catch { return null; }
+}
+
+function extractPrintableFromPayload(payloadObj) {
+  const cs = payloadObj?.credentialSubject || payloadObj?.subject || {};
+  const mapSubj = (s = {}) => ({
+    yearLevel: s.yearLevel || s.year || '',
+    semester: s.semester || s.term || '',
+    subjectCode: s.subjectCode || s.code || '',
+    subjectTitle: s.subjectTitle || s.title || s.name || s.subjectDescription || '',
+    subjectDescription: s.subjectDescription || s.subjectTitle || s.title || s.name || '',
+    finalGrade: s.finalGrade ?? s.grade ?? '',
+    units: s.units ?? s.credit ?? s.credits ?? '',
+  });
+
+  return {
+    fullName: cs.fullName || cs.name || '',
+    studentNumber: cs.studentNumber || cs.student_id || cs.id || '',
+    address: cs.address || '',
+    entranceCredentials: cs.entranceCredentials || '',
+    highSchool: cs.highSchool || '',
+    program: cs.program || cs.course || '',
+    major: cs.major || '',
+    placeOfBirth: cs.placeOfBirth || cs.birthPlace || '',
+    dateAdmission: cs.dateAdmission || cs.admissionDate || '',
+    dateGraduated: cs.dateGraduated || cs.graduationDate || '',
+    gwa: cs.gwa || cs.GWA || '',
+    subjects: Array.isArray(cs.subjects) ? cs.subjects.map(mapSubj) : [],
+  };
+}
+
+/* ---------- helpers ---------- */
 const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
 const isFinal = (r) => r && r.reason && r.reason !== 'pending';
+
+async function resolveHolderUserIdFromSession(sess) {
+  // If you store this directly on the session, prefer it:
+  if (sess?.holder_user_id) return String(sess.holder_user_id);
+
+  // Otherwise, try to infer from hinted credential:
+  const hint = sess?.request?.cred_hint;
+  if (hint) {
+    const signed = await loadSignedVCByCredentialId(hint);
+    if (signed?.holder_user_id) return String(signed.holder_user_id);
+  }
+  return null;
+}
+
+function _safeParse(v) {
+  try { return JSON.parse(v); } catch { return {}; }
+}
 
 /* ---------- Merkle proof helper ---------- */
 function verifyProof(leafBuf, proof, rootHex) {
@@ -234,7 +255,6 @@ async function verifyByCredentialId(credential_id) {
   const signed = await loadSignedVCByCredentialId(credential_id);
   if (!signed) return { ok: false, reason: 'not_found_or_revoked' };
 
-  // derive vc_type + holder_name from vc_payload / user
   const { vcType, holderName } = await inferTypeAndHolderFromSigned(signed);
 
   const metaBase = {
@@ -347,20 +367,13 @@ async function verifyStatelessPayload(payload) {
 
 /* ---------- Controllers ---------- */
 const createSession = asyncHandler(async (req, res) => {
-  const {
-    org,
-    contact,
-    types = ['TOR'],
-    ttlHours = 168,
-    credential_id,
-    ui_base,
-  } = req.body || {};
+  const { org, contact, types = ['TOR'], ttlHours = 168, credential_id, ui_base } = req.body || {};
 
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
   const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
 
   const hint_key = crypto.randomBytes(6).toString('base64url');
-  const nonce = crypto.randomBytes(16).toString('base64url'); // ← per-session nonce
+  const nonce = crypto.randomBytes(16).toString('base64url');
 
   await VerificationSession.create({
     session_id,
@@ -370,28 +383,27 @@ const createSession = asyncHandler(async (req, res) => {
       purpose: 'Hiring',
       cred_hint: credential_id || null,
       hint_key,
-      nonce, // store nonce in request
+      nonce,
     },
     result: { valid: false, reason: 'pending' },
     expires_at,
   });
 
-  const UI_BASE =
-    String(
-      ui_base ||
+  const UI_BASE = String(
+    ui_base ||
       process.env.FRONTEND_BASE_URL ||
       process.env.UI_BASE_URL ||
       process.env.BASE_URL ||
       `${req.protocol}://${req.get('host')}`
-    ).replace(/\/+$/, '');
+  ).replace(/\/+$/, '');
 
   function buildVerifyUrl(base, session, hint) {
     const hasPlaceholder = /\{session\}/.test(base);
     const url = hasPlaceholder
       ? base.replace('{session}', session)
       : base.endsWith('/verification-portal') || base.endsWith('/verify')
-        ? `${base}/${session}`
-        : `${base}/verify/${session}`;
+      ? `${base}/${session}`
+      : `${base}/verify/${session}`;
     const sep = url.includes('?') ? '&' : '?';
     return `${url}${sep}hint=${encodeURIComponent(hint)}`;
   }
@@ -403,11 +415,7 @@ const createSession = asyncHandler(async (req, res) => {
     sessionId: session_id,
     title: 'Verification session created',
     body: 'A verifier created a new verification session.',
-    extra: {
-      employer: { org: org || '', contact: contact || '' },
-      types: Array.isArray(types) ? types : ['TOR'],
-      expires_at,
-    },
+    extra: { employer: { org: org || '', contact: contact || '' }, types: Array.isArray(types) ? types : ['TOR'], expires_at },
     dedupeKey: `verification.create:${session_id}`,
   }).catch(() => {});
 
@@ -417,6 +425,7 @@ const createSession = asyncHandler(async (req, res) => {
 const beginSession = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
   const { org, contact, purpose = 'General verification' } = req.body || {};
+
   const sess = await VerificationSession.findOne({ session_id: sessionId });
   if (!sess) return res.status(404).json({ message: 'Session not found' });
   if (sess.expires_at < new Date()) return res.status(410).json({ message: 'Session expired' });
@@ -433,12 +442,27 @@ const beginSession = asyncHandler(async (req, res) => {
     sessionId,
     title: 'Verification initiated',
     body: 'The verifier began the verification session.',
-    extra: {
-      employer: { org: org || '', contact: contact || '' },
-      purpose,
-    },
+    extra: { employer: { org: org || '', contact: contact || '' }, purpose },
     dedupeKey: `verification.begin:${sessionId}`,
   }).catch(() => {});
+
+  // ⬇️ Enqueue the push so the holder is notified
+  try {
+    const holderUserId = await resolveHolderUserIdFromSession(sess);
+    if (holderUserId) {
+      await enqueueConsentPush({
+        userId: holderUserId,
+        sessionId,
+        nonce: sess?.request?.nonce,
+        org: sess?.employer?.org,
+        purpose: sess?.request?.purpose,
+        title: 'Consent requested',
+        body: `“${sess?.employer?.org || 'A verifier'}” is requesting your credential.`,
+      });
+    }
+  } catch (e) {
+    console.warn('enqueueConsentPush failed:', e?.message || e);
+  }
 
   res.json({ ok: true });
 });
@@ -477,6 +501,12 @@ const submitPresentation = asyncHandler(async (req, res) => {
     sess.markModified('result');
     await sess.save();
 
+    // clear pending
+    try {
+      const holderUserId = await resolveHolderUserIdFromSession(sess);
+      if (holderUserId && redis) await redis.hdel(`consent:pending:${holderUserId}`, sessionId);
+    } catch {}
+
     emitVerifyAudit({
       event: 'verification.session.presented',
       sessionId,
@@ -496,6 +526,12 @@ const submitPresentation = asyncHandler(async (req, res) => {
     sess.markModified('result');
     await sess.save();
 
+    // clear pending
+    try {
+      const holderUserId = await resolveHolderUserIdFromSession(sess);
+      if (holderUserId && redis) await redis.hdel(`consent:pending:${holderUserId}`, sessionId);
+    } catch {}
+
     emitVerifyAudit({
       event: 'verification.session.presented',
       sessionId,
@@ -510,7 +546,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
     return res.json({ ok: true, session: sess.session_id, result: sess.result });
   }
 
-  // --- Nonce check (bind presentation to this session)
+  // --- Nonce check
   const expectedNonce = sess?.request?.nonce || null;
   if (expectedNonce) {
     if (!nonce) {
@@ -558,7 +594,7 @@ const submitPresentation = asyncHandler(async (req, res) => {
   // success
   sess.result = outcome.result;
 
-  // --- Attach printable snapshot & signed print URL (for portal "Request printable VC")
+  // Attach printable snapshot & signed print URL (non-fatal if fails)
   try {
     const { _buildSignedTorFromSessionUrl } = require('./pdfController');
     const UI_BASE = String(process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
@@ -577,16 +613,21 @@ const submitPresentation = asyncHandler(async (req, res) => {
       sess.result.meta = { ...(sess.result.meta || {}), printable };
       const ttl = Number(process.env.PRINT_URL_TTL_MIN || 15);
       const printUrl = _buildSignedTorFromSessionUrl({ base: UI_BASE, sessionId: sess.session_id, ttlMin: ttl });
-      // keep a list for single-use enforcement in pdf controller
       if (!Array.isArray(sess.result.meta.print_tokens_used)) {
         sess.result.meta.print_tokens_used = [];
       }
       sess.result.meta.print_url = printUrl;
     }
     sess.markModified('result');
-  } catch { /* non-fatal */ }
+  } catch {}
 
   await sess.save();
+
+  // clear pending
+  try {
+    const holderUserId = await resolveHolderUserIdFromSession(sess);
+    if (holderUserId && redis) await redis.hdel(`consent:pending:${holderUserId}`, sessionId);
+  } catch {}
 
   emitVerifyAudit({
     event: 'verification.session.presented',
@@ -594,13 +635,11 @@ const submitPresentation = asyncHandler(async (req, res) => {
     ok: true,
     reason: outcome.result?.reason || 'ok',
     title: 'Credential presented',
-    body: outcome.result?.reason === 'not_anchored'
-      ? 'Credential verified but not yet anchored.'
-      : 'Credential verified successfully.',
-    extra: {
-      method: credential_id ? 'by_id' : 'stateless',
-      valid: !!outcome.result?.valid,
-    },
+    body:
+      outcome.result?.reason === 'not_anchored'
+        ? 'Credential verified but not yet anchored.'
+        : 'Credential verified successfully.',
+    extra: { method: credential_id ? 'by_id' : 'stateless', valid: !!outcome.result?.valid },
     dedupeKey: `verification.present:${sessionId}:${outcome.result?.reason || 'ok'}`,
   }).catch(() => {});
 
@@ -612,7 +651,6 @@ const sessionQrPng = asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
   const size = Math.min(Number(req.query.size) || 220, 800);
 
-  // Load session to get the nonce
   const sess = await VerificationSession.findOne({ session_id: sessionId }).lean();
   if (!sess) return res.status(404).end();
 
@@ -620,8 +658,10 @@ const sessionQrPng = asyncHandler(async (req, res) => {
     t: 'vc-session',
     v: 1,
     session: sessionId,
-    nonce: sess?.request?.nonce || null,   // include nonce
-    api: (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '') + '/api',
+    nonce: sess?.request?.nonce || null,
+    api:
+      (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '') +
+      '/api',
     ts: Date.now(),
   };
 
@@ -637,10 +677,27 @@ const sessionQrPng = asyncHandler(async (req, res) => {
   res.send(png);
 });
 
+// NEW — list pending from Redis for the signed-in user
+const listPending = asyncHandler(async (req, res) => {
+  const userId = req?.auth?.userId || req?.user?.id || null;
+  if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+  if (!redis) return res.json({ ok: true, items: [] });
+
+  const map = await redis.hgetall(`consent:pending:${userId}`);
+  const items = Object.entries(map || {}).map(([sessionId, raw]) => ({
+    sessionId,
+    ..._safeParse(raw),
+  }));
+
+  res.json({ ok: true, items });
+});
+
 module.exports = {
   createSession,
   beginSession,
   getSession,
   submitPresentation,
   sessionQrPng,
+  listPending,
 };

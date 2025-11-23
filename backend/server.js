@@ -72,6 +72,8 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
 
   // Common users (merged web + mobile user routes)
   app.use('/api', require('./routes/common/userRoutes'));
+//push notif
+app.use('/api', require('./routes/mobile/pushRoutes'));
 
   // Web area (non-user web routes) with larger body limits
   const web = express.Router();
