@@ -100,13 +100,28 @@ function toBufferFromUnknown(v) {
   return null;
 }
 async function resolveBasePdfBytes(kind, basePdfValue) {
+  // If template already uses an object basePdf ({width,height,padding}),
+  // just pass it through. No file I/O, no PDF buffer.
+  if (basePdfValue && typeof basePdfValue === 'object' && 'width' in basePdfValue && 'height' in basePdfValue) {
+    return basePdfValue; // <-- important
+  }
+
   const baseDir = kind === 'tor' ? TOR_DIR : DIP_DIR;
+
+  const isDataUrl = (v) => typeof v === 'string' && /^data:application\/pdf;base64,/i.test(v);
+  const toBufferFromUnknown = (v) => {
+    if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data)) return Buffer.from(v.data);
+    if (v && typeof v === 'object' && typeof v.byteLength === 'number') return Buffer.from(new Uint8Array(v));
+    if (Buffer.isBuffer(v)) return v;
+    return null;
+  };
 
   if (isDataUrl(basePdfValue)) {
     const idx = basePdfValue.indexOf(',');
     const b64 = idx >= 0 ? basePdfValue.slice(idx + 1) : '';
     return Buffer.from(b64, 'base64');
   }
+
   const fromObj = toBufferFromUnknown(basePdfValue);
   if (fromObj) return fromObj;
 
@@ -114,13 +129,12 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
     const p = path.isAbsolute(basePdfValue) ? basePdfValue : path.join(baseDir, basePdfValue.trim());
     return fs.readFile(p);
   }
-  const fallback = path.join(baseDir, 'base.pdf');
-  if (await fileExists(fallback)) return fs.readFile(fallback);
 
-  throw new Error(
-    `No base PDF found. Place "base.pdf" under ${path.relative(process.cwd(), baseDir)} or embed a data URL/path in template.basePdf.`
-  );
+  // No explicit value; DO NOT fall back to a PDF file when you need tables/re-layout.
+  // Instead return an A4 virtual page so table re-layout will work.
+  return { width: 210, height: 297, padding: [0, 0, 0, 0] }; // A4 (mm)
 }
+
 
 /** ---- Only register plugins used by template ---- */
 function buildPluginsForTemplate(template, schemas) {
