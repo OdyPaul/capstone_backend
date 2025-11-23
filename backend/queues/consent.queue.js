@@ -1,12 +1,14 @@
 // queues/consent.queue.js
+const axios = require('axios');
 const { Queue, Worker, QueueEvents } = require('bullmq');
 const { redis } = require('../lib/redis');
-const { Expo } = require('expo-server-sdk');
 
-const expo = new Expo();
+const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
 
 // Reuse your ioredis instance where possible
-const connection = redis || (process.env.REDIS_URL ? { url: process.env.REDIS_URL } : null);
+const connection =
+  redis || (process.env.REDIS_URL ? { url: process.env.REDIS_URL } : null);
+
 const queueName = 'consent-push';
 
 const consentQueue = connection
@@ -17,6 +19,23 @@ const consentQueue = connection
     })
   : null;
 
+/* ------------------------- helpers ------------------------- */
+
+function isExpoPushToken(token) {
+  if (typeof token !== 'string') return false;
+  // Accept both legacy and new formats
+  return (
+    /^ExponentPushToken\[[\w\-.]+\]$/.test(token) ||
+    /^ExpoPushToken\[[\w\-.]+\]$/.test(token)
+  );
+}
+
+function chunk(arr, size = 90) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 // Per-user rate cap using Redis INCR + EXPIRE
 async function allowUserPush(userId, windowSec = 300, max = 3) {
   if (!connection) return true; // fail-open if no Redis
@@ -26,10 +45,20 @@ async function allowUserPush(userId, windowSec = 300, max = 3) {
   return count <= max;
 }
 
+/* ------------------------- enqueue API ------------------------- */
+
 /**
  * Enqueue a consent push (idempotent by sessionId).
  */
-async function enqueueConsentPush({ userId, sessionId, nonce, org, purpose, title, body }) {
+async function enqueueConsentPush({
+  userId,
+  sessionId,
+  nonce,
+  org,
+  purpose,
+  title,
+  body,
+}) {
   if (!consentQueue) return;
 
   const ok = await allowUserPush(userId, 300, 3);
@@ -61,13 +90,20 @@ async function enqueueConsentPush({ userId, sessionId, nonce, org, purpose, titl
   }
 }
 
-async function sendToExpo(userId, payload) {
+/* --------------------- HTTP push sender ---------------------- */
+
+async function sendToExpoHTTP(userId, payload) {
+  if (!redis) return;
+
   // Device tokens stored as a Redis SET by /api/push/register
   const tokens = await redis.smembers(`user:devices:${userId}`);
   if (!tokens?.length) return;
 
-  const messages = tokens.map((t) => ({
-    to: t,
+  const valid = tokens.filter(isExpoPushToken);
+  if (!valid.length) return;
+
+  const messages = valid.map((to) => ({
+    to,
     sound: 'default',
     title: payload.title,
     body: payload.body,
@@ -79,17 +115,38 @@ async function sendToExpo(userId, payload) {
     priority: 'high',
   }));
 
-  const chunks = expo.chunkPushNotifications(messages);
-  for (const chunk of chunks) {
+  // Expo allows up to 100 messages per request
+  const batches = chunk(messages, 90);
+
+  for (const batch of batches) {
     try {
-      await expo.sendPushNotificationsAsync(chunk);
+      const res = await axios.post(EXPO_PUSH_ENDPOINT, batch, {
+        timeout: 15000,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = res?.data;
+      // Response shape: { data: [{ status: 'ok' | 'error', ... }, ...] }
+      if (!data || !Array.isArray(data.data)) continue;
+
+      data.data.forEach((ticket, i) => {
+        if (ticket.status !== 'ok') {
+          const t = batch[i]?.to;
+          console.warn(
+            '[expo-push:error]',
+            t,
+            ticket?.message || ticket?.details || ticket
+          );
+        }
+      });
     } catch (err) {
-      console.warn('expo push error', err?.message || err);
+      console.warn('[expo-push:http-error]', err?.message || err);
     }
   }
 }
 
-// Worker
+/* ------------------------ worker wiring ---------------------- */
+
 if (connection) {
   const worker = new Worker(
     queueName,
@@ -97,20 +154,24 @@ if (connection) {
       if (job.name !== 'consent-requested') return;
       const { userId } = job.data;
 
-      // 1) Send push
-      await sendToExpo(userId, job.data);
+      // 1) Send push via HTTP
+      await sendToExpoHTTP(userId, job.data);
 
       // 2) Cache "pending" for app UX (badge/list)
-      const pendingKey = `consent:pending:${userId}`;
-      const item = {
-        sessionId: job.data.sessionId,
-        nonce: job.data.nonce,
-        org: job.data.org,
-        purpose: job.data.purpose,
-        ts: Date.now(),
-      };
-      await redis.hset(pendingKey, job.data.sessionId, JSON.stringify(item));
-      await redis.expire(pendingKey, 60 * 60 * 24 * 7); // 7 days
+      try {
+        const pendingKey = `consent:pending:${userId}`;
+        const item = {
+          sessionId: job.data.sessionId,
+          nonce: job.data.nonce,
+          org: job.data.org,
+          purpose: job.data.purpose,
+          ts: Date.now(),
+        };
+        await redis.hset(pendingKey, job.data.sessionId, JSON.stringify(item));
+        await redis.expire(pendingKey, 60 * 60 * 24 * 7); // 7 days
+      } catch (e) {
+        console.warn('[consent:pending-cache] failed:', e?.message || e);
+      }
     },
     { connection, concurrency: 4 }
   );
