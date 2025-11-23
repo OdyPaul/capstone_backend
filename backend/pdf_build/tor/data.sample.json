@@ -18,8 +18,8 @@
   ],
 
   "rows_page2": [
-    { "term": "2nd Sem (2019-2020)", "code": "ENG 102",  "desc": "Communication Skills 2","final": "1.50", "reexam": "", "units": "3" },
-    { "term": "",                     "code": "CHEM 101", "desc": "General Chemistry",     "final": "2.25", "reexam": "", "units": "4" },
-    { "term": "",                     "code": "AGRI 110", "desc": "Intro to Agriculture",  "final": "1.75", "reexam": "", "units": "3" }
+    { "term": "2nd Sem (2019-2020)", "code": "ENG 102",  "desc": "Communication Skills 2", "final": "1.50", "reexam": "", "units": "3" },
+    { "term": "",                     "code": "CHEM 101", "desc": "General Chemistry",      "final": "2.25", "reexam": "", "units": "4" },
+    { "term": "",                     "code": "AGRI 110", "desc": "Intro to Agriculture",   "final": "1.75", "reexam": "", "units": "3" }
   ]
 }
