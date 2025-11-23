@@ -63,19 +63,17 @@ async function loadSample(kind) {
   }
 }
 
-/** -------- Fonts -------- */
+/** -------- Fonts (one fallback only) -------- */
 async function loadFonts() {
   const regular = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-Regular.ttf'));
   let bold;
   try { bold = await fs.readFile(path.join(FONTS_DIR, 'NotoSans-SemiBold.ttf')); } catch {}
 
-  // Exactly ONE fallback font
   const font = { NotoSans: { data: regular, fallback: true } };
   if (bold) font.NotoSansSemiBold = { data: bold };
 
-  // Alias so fontName:"Roboto" works in template (no fallback flag here)
+  // Alias to match template's "Roboto"
   font.Roboto = { data: regular };
-
   return font;
 }
 
@@ -100,28 +98,13 @@ function toBufferFromUnknown(v) {
   return null;
 }
 async function resolveBasePdfBytes(kind, basePdfValue) {
-  // If template already uses an object basePdf ({width,height,padding}),
-  // just pass it through. No file I/O, no PDF buffer.
-  if (basePdfValue && typeof basePdfValue === 'object' && 'width' in basePdfValue && 'height' in basePdfValue) {
-    return basePdfValue; // <-- important
-  }
-
   const baseDir = kind === 'tor' ? TOR_DIR : DIP_DIR;
-
-  const isDataUrl = (v) => typeof v === 'string' && /^data:application\/pdf;base64,/i.test(v);
-  const toBufferFromUnknown = (v) => {
-    if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data)) return Buffer.from(v.data);
-    if (v && typeof v === 'object' && typeof v.byteLength === 'number') return Buffer.from(new Uint8Array(v));
-    if (Buffer.isBuffer(v)) return v;
-    return null;
-  };
 
   if (isDataUrl(basePdfValue)) {
     const idx = basePdfValue.indexOf(',');
     const b64 = idx >= 0 ? basePdfValue.slice(idx + 1) : '';
     return Buffer.from(b64, 'base64');
   }
-
   const fromObj = toBufferFromUnknown(basePdfValue);
   if (fromObj) return fromObj;
 
@@ -129,12 +112,13 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
     const p = path.isAbsolute(basePdfValue) ? basePdfValue : path.join(baseDir, basePdfValue.trim());
     return fs.readFile(p);
   }
+  const fallback = path.join(baseDir, 'base.pdf');
+  if (await fileExists(fallback)) return fs.readFile(fallback);
 
-  // No explicit value; DO NOT fall back to a PDF file when you need tables/re-layout.
-  // Instead return an A4 virtual page so table re-layout will work.
-  return { width: 210, height: 297, padding: [0, 0, 0, 0] }; // A4 (mm)
+  throw new Error(
+    `No base PDF found. Place "base.pdf" under ${path.relative(process.cwd(), baseDir)} or embed a data URL/path in template.basePdf.`
+  );
 }
-
 
 /** ---- Only register plugins used by template ---- */
 function buildPluginsForTemplate(template, schemas) {
@@ -155,13 +139,39 @@ function buildPluginsForTemplate(template, schemas) {
   return plugins;
 }
 
-/** ---- Normalize TOR input (primitives->string, tables->array) ---- */
+/** ---- Normalizers ---- */
+const S = (v) => (v == null ? '' : String(v));
+const A = (v) => (Array.isArray(v) ? v : []);
+
+/** Turn any table rows (objects or arrays) into arrays of strings aligned to head. */
+function normalizeTableRows(head, value, minRows = 0) {
+  const rows = A(value);
+  const headArr = A(head).map(S);
+  const cols = headArr.length;
+
+  const norm = rows.map((row) => {
+    if (Array.isArray(row)) {
+      // ensure length and stringify
+      const arr = row.slice(0, cols);
+      while (arr.length < cols) arr.push('');
+      return arr.map(S);
+    }
+    // object → array by head order
+    const out = [];
+    for (const h of headArr) out.push(S(row && row[h]));
+    return out;
+  });
+
+  // pad with empty rows if needed
+  while (norm.length < minRows) {
+    norm.push(Array.from({ length: cols }, () => ''));
+  }
+  return norm;
+}
+
+/** ---- Normalize TOR input (strings only) ---- */
 function normalizeTorInput(data = {}) {
-  const S = (v) => (v == null ? '' : String(v));
-  const A = (v) => (Array.isArray(v) ? v : []);
-
   const fullName = S(data.fullName || data.fullname || data.name);
-
   return {
     fullName,
     address: S(data.address),
@@ -174,30 +184,15 @@ function normalizeTorInput(data = {}) {
     dateOfBirth: S(data.dateOfBirth),
     dateGraduated: S(data.dateGraduated),
     dateIssued: S(data.dateIssued ?? data.issuedDate),
-
     rows_page1: A(data.rows_page1),
     rows_page2: A(data.rows_page2),
-
-    // page 2 text mirror
     fullName_page2: S(data.fullName_page2 ?? fullName),
   };
 }
 
-/** ---- Build a blank row from head columns ---- */
-function blankRow(cols) {
-  return cols.map(() => '');
-}
-
-/** ---- Sanitize tables: objects -> arrays-of-arrays; pad empties ----
- *  - text fields: always string
- *  - table fields: always array-of-arrays in the order of `head`
- *  - if table is empty: pad with at least 1 blank row
- *  - ensure table.content is a STRING ('') to avoid undefined.split
- */
-function sanitizeTablesToAoA(template, input, minRowsMap = {}) {
+/** ---- Sanitize by template: coerce text fields; fix table rows; delete table.content ---- */
+function sanitizeByTemplate(template, input) {
   const out = { ...input };
-  const S = (v) => (v == null ? '' : String(v));
-  const A = (v) => (Array.isArray(v) ? v : []);
 
   const pages = Array.isArray(template.schemas) ? template.schemas : [];
   pages.forEach((page) => {
@@ -212,28 +207,11 @@ function sanitizeTablesToAoA(template, input, minRowsMap = {}) {
 
       if (field.type === 'table') {
         const key = field.name;
-        const cols = Array.isArray(field.head) ? field.head.map(String) : [];
-        const minRows = Number.isFinite(minRowsMap[key]) ? minRowsMap[key] : 1;
-
-        // Source rows can be objects or arrays; convert to arrays-of-arrays in head order
-        let src = A(out[key]);
-        let rows = src.map((row) => {
-          if (Array.isArray(row)) {
-            // Coerce each cell to string and fit to column count
-            const arr = cols.map((_, idx) => S(row[idx]));
-            return arr;
-          }
-          const obj = row && typeof row === 'object' ? row : {};
-          return cols.map((c) => S(obj[c]));
-        });
-
-        // Pad with blank rows if needed
-        while (rows.length < minRows) rows.push(blankRow(cols));
-
-        out[key] = rows;
-
-        // Make sure content is a string (avoid undefined.split)
-        if (typeof field.content !== 'string') field.content = '';
+        const head = Array.isArray(field.head) ? field.head : [];
+        // 🛡️ Normalize all cells to strings, pad to at least 1 empty row if undefined/empty
+        out[key] = normalizeTableRows(head, out[key], /*minRows*/ 1);
+        // Avoid table plugin reading stale content
+        if ('content' in field) delete field.content;
       }
     });
   });
@@ -241,54 +219,42 @@ function sanitizeTablesToAoA(template, input, minRowsMap = {}) {
   return out;
 }
 
-/** ---- Debug: summarize tables just before generate ---- */
-function logPreflight(template, input) {
-  try {
-    for (const page of template.schemas || []) {
-      for (const f of page || []) {
-        if (f?.type === 'table') {
-          const v = input[f.name];
-          const firstRow = Array.isArray(v) && v.length ? v[0] : null;
-          console.log(`[preflight] table ${f.name}: rows=${Array.isArray(v) ? v.length : 'NA'} head=${(f.head||[]).length} firstRowType=${Array.isArray(firstRow) ? 'array' : typeof firstRow}`);
-        }
-      }
-    }
-  } catch {}
-}
-
 /** -------- Main builder -------- */
 async function build(kind, data) {
   const { generate, schemas } = await ensurePdfme();
   const template = await loadTemplate(kind);
 
-  template.basePdf = await resolveBasePdfBytes(kind, template.basePdf);
+  // Load base PDF (background)
+  const baseBytes = await resolveBasePdfBytes(kind, template.basePdf);
+  template.basePdf = baseBytes;
+  console.log(`📄 basePdf loaded (${kind}): ${baseBytes.length.toLocaleString()} bytes`);
+
   const plugins = buildPluginsForTemplate(template, schemas);
   const font = await loadFonts();
 
-  // One object for the whole document
   const normalized = kind === 'tor' ? normalizeTorInput(data) : data;
-
-  // Min rows policy — pad to at least 1 blank row if empty.
-  // You can bump these numbers any time: e.g., { rows_page1: 12, rows_page2: 12 }
-  const minRowsMap = { rows_page1: 1, rows_page2: 1 };
-
-  const safeInput = sanitizeTablesToAoA(template, normalized, minRowsMap);
+  const safeInput = sanitizeByTemplate(template, normalized);
   const inputs = [safeInput];
 
-  console.log('🧩 pdfme inputs →', JSON.stringify(inputs, null, 2));
-  logPreflight(template, safeInput);
+  // Preflight logs
+  const t1 = (template.schemas?.[0] || []).find(f => f.type === 'table');
+  const t2 = (template.schemas?.[1] || []).find(f => f.type === 'table');
+  if (t1) console.log(`[preflight] table ${t1.name}: rows=${inputs[0][t1.name]?.length} head=${t1.head?.length} firstRowType=${Array.isArray(inputs[0][t1.name]?.[0]) ? 'array' : typeof inputs[0][t1.name]?.[0]}`);
+  if (t2) console.log(`[preflight] table ${t2.name}: rows=${inputs[0][t2.name]?.length} head=${t2.head?.length} firstRowType=${Array.isArray(inputs[0][t2.name]?.[0]) ? 'array' : typeof inputs[0][t2.name]?.[0]}`);
 
-  let pdfBytes;
+  console.log('🧩 pdfme inputs →', JSON.stringify(inputs, null, 2));
+
   try {
-    pdfBytes = await generate({
+    const pdfBytes = await generate({
       template,
       plugins,
       inputs,
       options: { font },
     });
+    return pdfBytes;
   } catch (e) {
     console.error('❌ pdfme.generate() failed:', e && (e.stack || e.message || e));
-    // Deep dump to inspect field wiring
+    // Extra introspection
     for (const page of template.schemas || []) {
       for (const f of page || []) {
         if (f.type === 'text') {
@@ -297,15 +263,12 @@ async function build(kind, data) {
         } else if (f.type === 'table') {
           const k = f.name;
           const v = inputs[0][k];
-          const first = Array.isArray(v) && v.length ? v[0] : null;
-          console.error(`[table] ${f.name} (${k}) ->`, Array.isArray(v) ? `rows:${v.length} firstRowType=${Array.isArray(first)?'array':typeof first}` : typeof v);
+          console.error(`[table] ${f.name} (${k}) ->`, Array.isArray(v) ? `rows:${v.length}` : typeof v, ' | sampleRow:', JSON.stringify(v?.[0]));
         }
       }
     }
     throw e;
   }
-
-  return pdfBytes;
 }
 
 /** -------- Controllers -------- */
