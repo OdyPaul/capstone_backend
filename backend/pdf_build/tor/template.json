@@ -448,7 +448,7 @@
       {
         "name": "fullName_page2",
         "type": "text",
-        "content": "fullName",
+        "content": "fullName_page2",
         "position": {
           "x": 23.23,
           "y": 70.58
