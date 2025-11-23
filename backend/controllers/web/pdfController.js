@@ -188,7 +188,7 @@ async function build(kind, data) {
   const inputs = kind === 'tor'
     ? [normalizeTorInput(data)]
     : [data];
-
+console.log('🧩 pdfme inputs →', JSON.stringify(inputs, null, 2));
   const pdfBytes = await generate({
     template,
     plugins,
