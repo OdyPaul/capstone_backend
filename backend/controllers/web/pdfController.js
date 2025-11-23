@@ -3,8 +3,6 @@ const path = require('path');
 const fs = require('fs/promises');
 
 /** -------- pdfme (ESM) loader for CommonJS projects -------- */
-
-
 let _generate = null;
 let _schemas = null;
 async function ensurePdfme() {
@@ -52,10 +50,8 @@ async function loadSample(kind) {
           major: 'Crop Science',
           dateGraduated: '2025-06-19',
           issuedDate: '2025-07-01',
-          rows: [
-            { term: '1st Sem 2021–2022', code: 'ENG 101', desc: 'Communication Arts 1', final: '1.75', reexam: '', units: '3' },
-            { term: '', code: 'MATH 101', desc: 'College Algebra', final: '2.00', reexam: '', units: '3' }
-          ]
+          rows_page1: [],
+          rows_page2: []
         }
       : {
           fullName: 'Jane D. Student',
@@ -75,44 +71,39 @@ async function loadFonts() {
   if (bold) font.NotoSansSemiBold = { data: bold };
   return font;
 }
+
 function sendPdf(res, bytes, filename) {
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.send(Buffer.from(bytes));
 }
 
-/** ---- Robust basePdf resolver (prevents `.split` on undefined) ---- */
+/** ---- Robust basePdf resolver ---- */
 function isDataUrl(v) {
   return typeof v === 'string' && /^data:application\/pdf;base64,/i.test(v);
 }
 function toBufferFromUnknown(v) {
-  // Node Buffer JSON shape: { type:'Buffer', data:[...] }
   if (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data)) {
     return Buffer.from(v.data);
   }
-  // ArrayBuffer / Uint8Array / Buffer
   if (v && typeof v === 'object' && typeof v.byteLength === 'number') {
     return Buffer.from(new Uint8Array(v));
   }
   if (Buffer.isBuffer(v)) return v;
   return null;
 }
-
 async function resolveBasePdfBytes(kind, basePdfValue) {
   const baseDir = kind === 'tor' ? TOR_DIR : DIP_DIR;
 
-  // 1) data URL string
   if (isDataUrl(basePdfValue)) {
     const idx = basePdfValue.indexOf(',');
     const b64 = idx >= 0 ? basePdfValue.slice(idx + 1) : '';
     return Buffer.from(b64, 'base64');
   }
 
-  // 2) buffer-like object / ArrayBuffer
   const fromObj = toBufferFromUnknown(basePdfValue);
   if (fromObj) return fromObj;
 
-  // 3) path-like string
   if (typeof basePdfValue === 'string' && basePdfValue.trim()) {
     const p = path.isAbsolute(basePdfValue)
       ? basePdfValue
@@ -120,7 +111,6 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
     return fs.readFile(p);
   }
 
-  // 4) fallback file
   const fallback = path.join(baseDir, 'base.pdf');
   if (await fileExists(fallback)) return fs.readFile(fallback);
 
@@ -129,7 +119,7 @@ async function resolveBasePdfBytes(kind, basePdfValue) {
   );
 }
 
-/** ---- Only register the plugins your template actually uses ---- */
+/** ---- Only register plugins used by template ---- */
 function buildPluginsForTemplate(template, schemas) {
   const used = new Set();
   for (const page of template.schemas || []) {
@@ -137,7 +127,6 @@ function buildPluginsForTemplate(template, schemas) {
       if (field?.type) used.add(field.type);
     }
   }
-  // If empty template, enable common basics when available
   if (used.size === 0) ['text', 'image', 'line', 'rect', 'table'].forEach(t => schemas[t] && used.add(t));
 
   const plugins = {};
@@ -145,10 +134,36 @@ function buildPluginsForTemplate(template, schemas) {
   used.forEach(t => (schemas[t] ? (plugins[t] = schemas[t]) : missing.push(t)));
   if (missing.length) {
     throw new Error(
-      `Template uses unknown/missing plugin(s): ${missing.join(', ')}. Update @pdfme/schemas or remove these field types from template.`
+      `Template uses unknown/missing plugin(s): ${missing.join(', ')}.`
     );
   }
   return plugins;
+}
+
+/** ---- 🔥 FIX: Split TOR data into 2 pages ---- */
+function splitTorDataForTemplate(data) {
+  return [
+    {
+      // PAGE 1
+      fullName: data.fullName,
+      address: data.address,
+      entranceCredentials: data.entranceCredentials,
+      highSchool: data.highSchool,
+      program: data.program,
+      major: data.major,
+      placeOfBirth: data.placeOfBirth,
+      dateAdmission: data.dateAdmission,
+      dateOfBirth: data.dateOfBirth,
+      dateGraduated: data.dateGraduated,
+      dateIssued: data.dateIssued,
+      rows_page1: data.rows_page1 || [],
+    },
+    {
+      // PAGE 2
+      fullName_page2: data.fullName,
+      rows_page2: data.rows_page2 || [],
+    }
+  ];
 }
 
 /** -------- Main builder -------- */
@@ -156,19 +171,22 @@ async function build(kind, data) {
   const { generate, schemas } = await ensurePdfme();
   const template = await loadTemplate(kind);
 
-  // Ensure basePdf is bytes (this prevents the split-on-undefined crash)
   template.basePdf = await resolveBasePdfBytes(kind, template.basePdf);
-
-  // Register only needed plugins
   const plugins = buildPluginsForTemplate(template, schemas);
   const font = await loadFonts();
+
+  const inputs =
+    kind === 'tor'
+      ? splitTorDataForTemplate(data)
+      : [data];
 
   const pdfBytes = await generate({
     template,
     plugins,
-    inputs: [data],
+    inputs,
     options: { font },
   });
+
   return pdfBytes;
 }
 
