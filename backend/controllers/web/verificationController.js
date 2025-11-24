@@ -15,6 +15,9 @@ const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 const { enqueueConsentPush } = require('../../queues/consent.queue');
 const { redis } = require('../../lib/redis');
 
+// Expo push endpoint (used for direct fallback push)
+const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
+
 /* ---------- 🔔 Minimal audit (auth DB) ---------- */
 const { getAuthConn, getVcConn } = require('../../config/db');
 const AuditLogSchema = require('../../models/common/auditLog.schema');
@@ -51,8 +54,7 @@ const pickHolderName = (payloadObj) =>
   payloadObj?.subject?.name ||
   null;
 
-
-  /* ---------- emitVerifyAudit (best-effort) ---------- */
+/* ---------- emitVerifyAudit (best-effort) ---------- */
 async function emitVerifyAudit({
   event,
   actorId = null,
@@ -182,6 +184,14 @@ function extractPrintableFromPayload(payloadObj) {
 }
 
 /* ---------- helpers ---------- */
+function isExpoPushToken(token) {
+  if (typeof token !== 'string') return false;
+  return (
+    /^ExponentPushToken\[[\w\-.]+\]$/.test(token) ||
+    /^ExpoPushToken\[[\w\-.]+\]$/.test(token)
+  );
+}
+
 const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
 const isFinal = (r) => r && r.reason && r.reason !== 'pending';
 
@@ -200,6 +210,56 @@ async function resolveHolderUserIdFromSession(sess) {
 
 function _safeParse(v) {
   try { return JSON.parse(v); } catch { return {}; }
+}
+
+/* ---------- Direct Expo push fallback (no queue) ---------- */
+/**
+ * If for some reason the BullMQ queue isn't sending, this function
+ * can push directly to Expo using the tokens stored at:
+ *   user:devices:${userId}
+ */
+async function pushConsentDirectToExpo(userId, payload) {
+  if (!redis) {
+    console.warn('[verification.begin] Redis not available, cannot send direct Expo push');
+    return;
+  }
+
+  try {
+    const tokens = await redis.smembers(`user:devices:${userId}`);
+    console.log('[verification.begin] direct push, tokens for user', userId, tokens?.length || 0);
+
+    if (!tokens || !tokens.length) return;
+
+    const validTokens = tokens.filter(isExpoPushToken);
+    if (!validTokens.length) {
+      console.warn('[verification.begin] direct push, no valid Expo tokens');
+      return;
+    }
+
+    const messages = validTokens.map((to) => ({
+      to,
+      sound: 'default',
+      title: payload.title,
+      body: payload.body,
+      data: {
+        type: 'CONSENT_REQUESTED',
+        sessionId: payload.sessionId,
+        nonce: payload.nonce,
+      },
+      priority: 'high',
+    }));
+
+    const resp = await fetch(EXPO_PUSH_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(messages),
+    });
+
+    const text = await resp.text();
+    console.log('[verification.begin] direct Expo push status', resp.status, text);
+  } catch (err) {
+    console.warn('[verification.begin] direct Expo push failed', err?.message || err);
+  }
 }
 
 /* ---------- Merkle proof helper ---------- */
@@ -449,8 +509,10 @@ const beginSession = asyncHandler(async (req, res) => {
   // ⬇️ Enqueue the push so the holder is notified
   try {
     const holderUserId = await resolveHolderUserIdFromSession(sess);
+    console.log('[verification.begin] resolved holderUserId =', holderUserId, 'for session', sessionId);
+
     if (holderUserId) {
-      await enqueueConsentPush({
+      const payloadForPush = {
         userId: holderUserId,
         sessionId,
         nonce: sess?.request?.nonce,
@@ -458,7 +520,17 @@ const beginSession = asyncHandler(async (req, res) => {
         purpose: sess?.request?.purpose,
         title: 'Consent requested',
         body: `“${sess?.employer?.org || 'A verifier'}” is requesting your credential.`,
-      });
+      };
+
+      if (typeof enqueueConsentPush === 'function') {
+        console.log('[verification.begin] enqueueing consent push job for user', holderUserId);
+        await enqueueConsentPush(payloadForPush);
+      } else {
+        console.warn('[verification.begin] enqueueConsentPush missing, using direct Expo push fallback');
+        await pushConsentDirectToExpo(holderUserId, payloadForPush);
+      }
+    } else {
+      console.warn('[verification.begin] could not resolve holderUserId for session', sessionId);
     }
   } catch (e) {
     console.warn('enqueueConsentPush failed:', e?.message || e);
