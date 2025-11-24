@@ -5,13 +5,13 @@ const ctrl = require('../../controllers/web/verificationController');
 
 const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
 const { z, validate } = require('../../middleware/validate');
+const { protect } = require('../../middleware/authMiddleware');
 
 // ---- Redis rate limits
 const RL_CREATE  = rateLimitRedis({ prefix: 'rl:veri:create',  windowMs: 60_000, max: 20 });
 const RL_BEGIN   = rateLimitRedis({ prefix: 'rl:veri:begin',   windowMs: 60_000, max: 60 });
 const RL_POLL    = rateLimitRedis({ prefix: 'rl:veri:poll',    windowMs: 60_000, max: 240 });
 const RL_PRESENT = rateLimitRedis({ prefix: 'rl:veri:present', windowMs: 60_000, max: 60 });
-
 
 // ---- Validation
 const vSessionParam = validate({
@@ -26,7 +26,7 @@ const vCreateBody = validate({
     contact: z.string().max(120).optional(),
     types: z.array(z.string().max(40)).min(1).max(8).optional(),
     ttlHours: z.coerce.number().int().min(1).max(168).optional(),
-    ui_base: z.string().max(300).optional(), 
+    ui_base: z.string().max(300).optional(),
     credential_id: z.string().max(256).optional(),
   }).strict(),
 });
@@ -43,12 +43,10 @@ const vBeginBody = validate({
   }).strict(),
 });
 
-// Either credential_id OR payload
 const PresentWithId = z.object({
   credential_id: z.string().max(256),
   nonce: z.string().max(180).optional(),
 }).strict();
-
 
 const PresentWithPayload = z.object({
   payload: z.object({
@@ -68,11 +66,23 @@ const vPresentBody = validate({
 });
 
 // ---- Routes (NO leading /api — we’ll mount under /api in server.js)
-router.post('/verification/session', RL_CREATE, vCreateBody, ctrl.createSession);
+
+// Holder (mobile) creates a session → must be authenticated to link to user
+router.post('/verification/session', protect, RL_CREATE, vCreateBody, ctrl.createSession);
+
+// Verifier begins (web portal, usually unauthenticated)
 router.post('/verification/session/:sessionId/begin', RL_BEGIN, vSessionParam, vBeginBody, ctrl.beginSession);
+
+// Verifier or holder polls
 router.get('/verification/session/:sessionId', RL_POLL, vSessionParam, ctrl.getSession);
+
+// Holder presents
 router.post('/verification/session/:sessionId/present', RL_PRESENT, vSessionParam, vPresentBody, ctrl.submitPresentation);
 
+// QR for wallet scan
 router.get('/verification/session/:sessionId/qr.png', RL_POLL, vSessionParam, ctrl.sessionQrPng);
+
+// Mobile wallet: list pending consent requests (needs auth)
+router.get('/verification/pending', protect, ctrl.listPending);
 
 module.exports = router;

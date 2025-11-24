@@ -15,9 +15,6 @@ const { digestJws, fromB64url } = require('../../utils/vcCrypto');
 const { enqueueConsentPush } = require('../../queues/consent.queue');
 const { redis } = require('../../lib/redis');
 
-// Expo push endpoint (used for direct fallback push)
-const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
-
 /* ---------- 🔔 Minimal audit (auth DB) ---------- */
 const { getAuthConn, getVcConn } = require('../../config/db');
 const AuditLogSchema = require('../../models/common/auditLog.schema');
@@ -115,34 +112,12 @@ async function emitVerifyAudit({
   }
 }
 
-/* ---------- inferTypeAndHolderFromSigned ---------- */
-async function inferTypeAndHolderFromSigned(signed) {
-  const p = signed?.vc_payload || (signed?.jws ? decodeJwsPayload(signed.jws) : null) || null;
+/* ---------- helpers ---------- */
+const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
+const isFinal = (r) => r && r.reason && r.reason !== 'pending';
 
-  const vcType =
-    (Array.isArray(p?.vc?.type) ? p.vc.type[0] : p?.vc?.type) ??
-    (Array.isArray(p?.type) ? p.type[0] : p?.type) ??
-    signed?.template_id ??
-    'VC';
-
-  let holderName =
-    p?.credentialSubject?.fullName ||
-    p?.credentialSubject?.name ||
-    p?.subject?.fullName ||
-    p?.subject?.name ||
-    null;
-
-  if (!holderName && signed?.holder_user_id) {
-    try {
-      const User = getVCUserModel();
-      if (User) {
-        const u = await User.findById(signed.holder_user_id).lean().select('fullName username');
-        if (u) holderName = u.fullName || u.username || null;
-      }
-    } catch { /* ignore */ }
-  }
-
-  return { vcType, holderName };
+function _safeParse(v) {
+  try { return JSON.parse(v); } catch { return {}; }
 }
 
 // decode a JWS payload (no verify here)
@@ -155,111 +130,43 @@ function decodeJwsPayload(jws) {
   } catch { return null; }
 }
 
-function extractPrintableFromPayload(payloadObj) {
-  const cs = payloadObj?.credentialSubject || payloadObj?.subject || {};
-  const mapSubj = (s = {}) => ({
-    yearLevel: s.yearLevel || s.year || '',
-    semester: s.semester || s.term || '',
-    subjectCode: s.subjectCode || s.code || '',
-    subjectTitle: s.subjectTitle || s.title || s.name || s.subjectDescription || '',
-    subjectDescription: s.subjectDescription || s.subjectTitle || s.title || s.name || '',
-    finalGrade: s.finalGrade ?? s.grade ?? '',
-    units: s.units ?? s.credit ?? s.credits ?? '',
-  });
-
-  return {
-    fullName: cs.fullName || cs.name || '',
-    studentNumber: cs.studentNumber || cs.student_id || cs.id || '',
-    address: cs.address || '',
-    entranceCredentials: cs.entranceCredentials || '',
-    highSchool: cs.highSchool || '',
-    program: cs.program || cs.course || '',
-    major: cs.major || '',
-    placeOfBirth: cs.placeOfBirth || cs.birthPlace || '',
-    dateAdmission: cs.dateAdmission || cs.admissionDate || '',
-    dateGraduated: cs.dateGraduated || cs.graduationDate || '',
-    gwa: cs.gwa || cs.GWA || '',
-    subjects: Array.isArray(cs.subjects) ? cs.subjects.map(mapSubj) : [],
-  };
-}
-
-/* ---------- helpers ---------- */
-function isExpoPushToken(token) {
-  if (typeof token !== 'string') return false;
-  return (
-    /^ExponentPushToken\[[\w\-.]+\]$/.test(token) ||
-    /^ExpoPushToken\[[\w\-.]+\]$/.test(token)
-  );
-}
-
-const hexToBuf = (h) => Buffer.from(String(h || '').replace(/^0x/i, ''), 'hex');
-const isFinal = (r) => r && r.reason && r.reason !== 'pending';
-
+/* ---------- Shadow helpers ---------- */
 async function resolveHolderUserIdFromSession(sess) {
-  // If you store this directly on the session, prefer it:
-  if (sess?.holder_user_id) return String(sess.holder_user_id);
+  // 1) Preferred: explicit holder_user_id stored on the session
+  if (sess?.holder_user_id) {
+    console.log(
+      '[resolveHolderUserIdFromSession] using session.holder_user_id =',
+      String(sess.holder_user_id)
+    );
+    return String(sess.holder_user_id);
+  }
 
-  // Otherwise, try to infer from hinted credential:
+  // 2) Fallback: look up the hinted credential and use its holder_user_id
   const hint = sess?.request?.cred_hint;
   if (hint) {
-    const signed = await loadSignedVCByCredentialId(hint);
-    if (signed?.holder_user_id) return String(signed.holder_user_id);
-  }
-  return null;
-}
-
-function _safeParse(v) {
-  try { return JSON.parse(v); } catch { return {}; }
-}
-
-/* ---------- Direct Expo push fallback (no queue) ---------- */
-/**
- * If for some reason the BullMQ queue isn't sending, this function
- * can push directly to Expo using the tokens stored at:
- *   user:devices:${userId}
- */
-async function pushConsentDirectToExpo(userId, payload) {
-  if (!redis) {
-    console.warn('[verification.begin] Redis not available, cannot send direct Expo push');
-    return;
-  }
-
-  try {
-    const tokens = await redis.smembers(`user:devices:${userId}`);
-    console.log('[verification.begin] direct push, tokens for user', userId, tokens?.length || 0);
-
-    if (!tokens || !tokens.length) return;
-
-    const validTokens = tokens.filter(isExpoPushToken);
-    if (!validTokens.length) {
-      console.warn('[verification.begin] direct push, no valid Expo tokens');
-      return;
+    try {
+      const signed = await loadSignedVCByCredentialId(hint);
+      if (signed?.holder_user_id) {
+        console.log(
+          '[resolveHolderUserIdFromSession] using SignedVC.holder_user_id from cred_hint =',
+          hint
+        );
+        return String(signed.holder_user_id);
+      }
+      console.warn(
+        '[resolveHolderUserIdFromSession] SignedVC has no holder_user_id for cred_hint =',
+        hint
+      );
+    } catch (e) {
+      console.warn(
+        '[resolveHolderUserIdFromSession] error loading SignedVC for cred_hint =',
+        hint,
+        e?.message || e
+      );
     }
-
-    const messages = validTokens.map((to) => ({
-      to,
-      sound: 'default',
-      title: payload.title,
-      body: payload.body,
-      data: {
-        type: 'CONSENT_REQUESTED',
-        sessionId: payload.sessionId,
-        nonce: payload.nonce,
-      },
-      priority: 'high',
-    }));
-
-    const resp = await fetch(EXPO_PUSH_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(messages),
-    });
-
-    const text = await resp.text();
-    console.log('[verification.begin] direct Expo push status', resp.status, text);
-  } catch (err) {
-    console.warn('[verification.begin] direct Expo push failed', err?.message || err);
   }
+
+  return null;
 }
 
 /* ---------- Merkle proof helper ---------- */
@@ -308,6 +215,64 @@ async function loadSignedVCByCredentialId(credential_id) {
   } catch {}
 
   return null;
+}
+
+/* ---------- inferTypeAndHolderFromSigned ---------- */
+async function inferTypeAndHolderFromSigned(signed) {
+  const p = signed?.vc_payload || (signed?.jws ? decodeJwsPayload(signed.jws) : null) || null;
+
+  const vcType =
+    (Array.isArray(p?.vc?.type) ? p.vc.type[0] : p?.vc?.type) ??
+    (Array.isArray(p?.type) ? p.type[0] : p?.type) ??
+    signed?.template_id ??
+    'VC';
+
+  let holderName =
+    p?.credentialSubject?.fullName ||
+    p?.credentialSubject?.name ||
+    p?.subject?.fullName ||
+    p?.subject?.name ||
+    null;
+
+  if (!holderName && signed?.holder_user_id) {
+    try {
+      const User = getVCUserModel();
+      if (User) {
+        const u = await User.findById(signed.holder_user_id).lean().select('fullName username');
+        if (u) holderName = u.fullName || u.username || null;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return { vcType, holderName };
+}
+
+function extractPrintableFromPayload(payloadObj) {
+  const cs = payloadObj?.credentialSubject || payloadObj?.subject || {};
+  const mapSubj = (s = {}) => ({
+    yearLevel: s.yearLevel || s.year || '',
+    semester: s.semester || s.term || '',
+    subjectCode: s.subjectCode || s.code || '',
+    subjectTitle: s.subjectTitle || s.title || s.name || s.subjectDescription || '',
+    subjectDescription: s.subjectDescription || s.subjectTitle || s.title || s.name || '',
+    finalGrade: s.finalGrade ?? s.grade ?? '',
+    units: s.units ?? s.credit ?? s.credits ?? '',
+  });
+
+  return {
+    fullName: cs.fullName || cs.name || '',
+    studentNumber: cs.studentNumber || cs.student_id || cs.id || '',
+    address: cs.address || '',
+    entranceCredentials: cs.entranceCredentials || '',
+    highSchool: cs.highSchool || '',
+    program: cs.program || cs.course || '',
+    major: cs.major || '',
+    placeOfBirth: cs.placeOfBirth || cs.birthPlace || '',
+    dateAdmission: cs.dateAdmission || cs.admissionDate || '',
+    dateGraduated: cs.dateGraduated || cs.graduationDate || '',
+    gwa: cs.gwa || cs.GWA || '',
+    subjects: Array.isArray(cs.subjects) ? cs.subjects.map(mapSubj) : [],
+  };
 }
 
 /* ---------- Core verifiers ---------- */
@@ -409,7 +374,7 @@ async function verifyStatelessPayload(payload) {
         reason: 'ok',
         meta: {
           ...metaBase,
-          anchoring: { ...(metaBase.anchoring || {}), merkle_root: batch.merkle_root },
+          anchoring: { ...(anchoring || {}), merkle_root: batch.merkle_root },
         },
       },
     };
@@ -426,20 +391,8 @@ async function verifyStatelessPayload(payload) {
 }
 
 /* ---------- Controllers ---------- */
-// ⬇️ replace your existing createSession with this version
 const createSession = asyncHandler(async (req, res) => {
-  const {
-    org,
-    contact,
-    types = ['TOR'],
-    ttlHours = 168,
-    credential_id,
-    ui_base,
-
-    // NEW: allow caller to pass holder id directly
-    holderUserId,
-    holder_user_id,
-  } = req.body || {};
+  const { org, contact, types = ['TOR'], ttlHours = 168, credential_id, ui_base } = req.body || {};
 
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
   const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
@@ -447,16 +400,26 @@ const createSession = asyncHandler(async (req, res) => {
   const hint_key = crypto.randomBytes(6).toString('base64url');
   const nonce = crypto.randomBytes(16).toString('base64url');
 
-  // 🔹 Try to figure out who the holder is
-  let resolvedHolderUserId = holderUserId || holder_user_id || null;
+  // NEW: tie this session to the HOLDER's user account (from JWT)
+  let holderUserId =
+    (req?.auth && req.auth.userId) ||
+    (req?.user && (req.user.id || req.user._id)) ||
+    null;
 
-  // If not explicitly given, try to infer from the credential_id
-  if (!resolvedHolderUserId && credential_id) {
+  // Fallback: if not from auth but credential_id is present, try VC
+  if (!holderUserId && credential_id) {
     try {
       const signed = await loadSignedVCByCredentialId(credential_id);
-      if (signed?.holder_user_id) {
-        resolvedHolderUserId = String(signed.holder_user_id);
-      } else {
+      if (signed?.holder_user_id) holderUserId = String(signed.holder_user_id);
+      console.log(
+        '[verification.create] new session',
+        session_id,
+        'holder_user_id =',
+        holderUserId || null,
+        'cred_hint =',
+        credential_id
+      );
+      if (signed && !signed.holder_user_id) {
         console.warn(
           '[verification.create] Signed VC has no holder_user_id for credential_id =',
           credential_id
@@ -464,33 +427,30 @@ const createSession = asyncHandler(async (req, res) => {
       }
     } catch (e) {
       console.warn(
-        '[verification.create] failed resolving holder from credential_id',
+        '[verification.create] error resolving holderUserId from credential_id =',
         credential_id,
         e?.message || e
       );
     }
+  } else {
+    console.log(
+      '[verification.create] new session',
+      session_id,
+      'holder_user_id =',
+      holderUserId || null,
+      'cred_hint =',
+      credential_id || null
+    );
   }
-
-  console.log(
-    '[verification.create] new session',
-    session_id,
-    'holder_user_id =',
-    resolvedHolderUserId,
-    'cred_hint =',
-    credential_id
-  );
 
   await VerificationSession.create({
     session_id,
+    holder_user_id: holderUserId || undefined,
     employer: { org: org || '', contact: contact || '' },
-
-    // 🔹 Store it on the session so resolveHolderUserIdFromSession can use it later
-    holder_user_id: resolvedHolderUserId || undefined,
-
     request: {
       types: Array.isArray(types) ? types : ['TOR'],
       purpose: 'Hiring',
-      cred_hint: credential_id || null, // still keep for fallback
+      cred_hint: credential_id || null,
       hint_key,
       nonce,
     },
@@ -562,10 +522,17 @@ const beginSession = asyncHandler(async (req, res) => {
   // ⬇️ Enqueue the push so the holder is notified
   try {
     const holderUserId = await resolveHolderUserIdFromSession(sess);
-    console.log('[verification.begin] resolved holderUserId =', holderUserId, 'for session', sessionId);
+    console.log(
+      '[verification.begin] resolved holderUserId =',
+      holderUserId,
+      'for session',
+      sessionId
+    );
 
-    if (holderUserId) {
-      const payloadForPush = {
+    if (!holderUserId) {
+      console.warn('[verification.begin] could not resolve holderUserId for session', sessionId);
+    } else {
+      await enqueueConsentPush({
         userId: holderUserId,
         sessionId,
         nonce: sess?.request?.nonce,
@@ -573,17 +540,7 @@ const beginSession = asyncHandler(async (req, res) => {
         purpose: sess?.request?.purpose,
         title: 'Consent requested',
         body: `“${sess?.employer?.org || 'A verifier'}” is requesting your credential.`,
-      };
-
-      if (typeof enqueueConsentPush === 'function') {
-        console.log('[verification.begin] enqueueing consent push job for user', holderUserId);
-        await enqueueConsentPush(payloadForPush);
-      } else {
-        console.warn('[verification.begin] enqueueConsentPush missing, using direct Expo push fallback');
-        await pushConsentDirectToExpo(holderUserId, payloadForPush);
-      }
-    } else {
-      console.warn('[verification.begin] could not resolve holderUserId for session', sessionId);
+      });
     }
   } catch (e) {
     console.warn('enqueueConsentPush failed:', e?.message || e);
@@ -722,7 +679,9 @@ const submitPresentation = asyncHandler(async (req, res) => {
   // Attach printable snapshot & signed print URL (non-fatal if fails)
   try {
     const { _buildSignedTorFromSessionUrl } = require('./pdfController');
-    const UI_BASE = String(process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+    const UI_BASE = String(
+      process.env.BASE_URL || `${req.protocol}://${req.get('host')}`
+    ).replace(/\/+$/, '');
     let printable = null;
 
     if (payload && payload.jws) {
@@ -737,7 +696,11 @@ const submitPresentation = asyncHandler(async (req, res) => {
     if (printable) {
       sess.result.meta = { ...(sess.result.meta || {}), printable };
       const ttl = Number(process.env.PRINT_URL_TTL_MIN || 15);
-      const printUrl = _buildSignedTorFromSessionUrl({ base: UI_BASE, sessionId: sess.session_id, ttlMin: ttl });
+      const printUrl = _buildSignedTorFromSessionUrl({
+        base: UI_BASE,
+        sessionId: sess.session_id,
+        ttlMin: ttl,
+      });
       if (!Array.isArray(sess.result.meta.print_tokens_used)) {
         sess.result.meta.print_tokens_used = [];
       }
