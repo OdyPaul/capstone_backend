@@ -426,8 +426,20 @@ async function verifyStatelessPayload(payload) {
 }
 
 /* ---------- Controllers ---------- */
+// ⬇️ replace your existing createSession with this version
 const createSession = asyncHandler(async (req, res) => {
-  const { org, contact, types = ['TOR'], ttlHours = 168, credential_id, ui_base } = req.body || {};
+  const {
+    org,
+    contact,
+    types = ['TOR'],
+    ttlHours = 168,
+    credential_id,
+    ui_base,
+
+    // NEW: allow caller to pass holder id directly
+    holderUserId,
+    holder_user_id,
+  } = req.body || {};
 
   const session_id = 'prs_' + crypto.randomBytes(6).toString('base64url');
   const expires_at = new Date(Date.now() + Number(ttlHours || 168) * 3600 * 1000);
@@ -435,13 +447,50 @@ const createSession = asyncHandler(async (req, res) => {
   const hint_key = crypto.randomBytes(6).toString('base64url');
   const nonce = crypto.randomBytes(16).toString('base64url');
 
+  // 🔹 Try to figure out who the holder is
+  let resolvedHolderUserId = holderUserId || holder_user_id || null;
+
+  // If not explicitly given, try to infer from the credential_id
+  if (!resolvedHolderUserId && credential_id) {
+    try {
+      const signed = await loadSignedVCByCredentialId(credential_id);
+      if (signed?.holder_user_id) {
+        resolvedHolderUserId = String(signed.holder_user_id);
+      } else {
+        console.warn(
+          '[verification.create] Signed VC has no holder_user_id for credential_id =',
+          credential_id
+        );
+      }
+    } catch (e) {
+      console.warn(
+        '[verification.create] failed resolving holder from credential_id',
+        credential_id,
+        e?.message || e
+      );
+    }
+  }
+
+  console.log(
+    '[verification.create] new session',
+    session_id,
+    'holder_user_id =',
+    resolvedHolderUserId,
+    'cred_hint =',
+    credential_id
+  );
+
   await VerificationSession.create({
     session_id,
     employer: { org: org || '', contact: contact || '' },
+
+    // 🔹 Store it on the session so resolveHolderUserIdFromSession can use it later
+    holder_user_id: resolvedHolderUserId || undefined,
+
     request: {
       types: Array.isArray(types) ? types : ['TOR'],
       purpose: 'Hiring',
-      cred_hint: credential_id || null,
+      cred_hint: credential_id || null, // still keep for fallback
       hint_key,
       nonce,
     },
@@ -475,7 +524,11 @@ const createSession = asyncHandler(async (req, res) => {
     sessionId: session_id,
     title: 'Verification session created',
     body: 'A verifier created a new verification session.',
-    extra: { employer: { org: org || '', contact: contact || '' }, types: Array.isArray(types) ? types : ['TOR'], expires_at },
+    extra: {
+      employer: { org: org || '', contact: contact || '' },
+      types: Array.isArray(types) ? types : ['TOR'],
+      expires_at,
+    },
     dedupeKey: `verification.create:${session_id}`,
   }).catch(() => {});
 
