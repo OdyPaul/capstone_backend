@@ -1,79 +1,138 @@
-// routes/web/verificationRoutes.js
+// routes/mobile/verificationRoutes.js
 const express = require('express');
 const router = express.Router();
-const ctrl = require('../../controllers/web/verificationController');
 
+const verificationCtrl = require('../../controllers/mobile/verificationController');
+const { protect, admin } = require('../../middleware/authMiddleware');
+const { z, validate, objectId } = require('../../middleware/validate');
+const requestLogger = require('../../middleware/requestLogger');
 const { rateLimitRedis } = require('../../middleware/rateLimitRedis');
-const { z, validate } = require('../../middleware/validate');
 
-// ---- Redis rate limits
-const RL_CREATE  = rateLimitRedis({ prefix: 'rl:veri:create',  windowMs: 60_000, max: 20 });
-const RL_BEGIN   = rateLimitRedis({ prefix: 'rl:veri:begin',   windowMs: 60_000, max: 60 });
-const RL_POLL    = rateLimitRedis({ prefix: 'rl:veri:poll',    windowMs: 60_000, max: 240 });
-const RL_PRESENT = rateLimitRedis({ prefix: 'rl:veri:present', windowMs: 60_000, max: 60 });
-const RL_PENDING = rateLimitRedis({ prefix: 'rl:veri:pending', windowMs: 60_000, max: 240 });
+// ---------- Schemas (sanitize + strip unknowns) ----------
+const createSchema = z.object({
+  personal: z.object({
+    fullName: z.string().trim().min(1).max(120),
+    address: z.string().trim().min(1).max(240),
+    birthPlace: z.string().trim().min(1).max(120),
+    birthDate: z.coerce.date(),
+  }).strip(),
+  education: z.object({
+    highSchool: z.string().trim().min(1).max(160),
+    admissionDate: z.string().trim().max(32),
+    graduationDate: z.string().trim().max(32),
+  }).strip(),
+  selfieImageId: objectId(),
+  idImageId: objectId(),
+  // ❌ did removed entirely
+}).strip();
 
-// ---- Validation
-const vSessionParam = validate({
-  params: z.object({
-    sessionId: z.string().regex(/^(?:prs|ors)_[A-Za-z0-9\-_]{6,32}$/),
-  }).strict(),
+const listSchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  status: z.enum(['all','pending','verified','rejected']).optional(),
+  q: z.string().trim().max(120).optional(),
+  from: z.string().trim().max(30).optional(),
+  to: z.string().trim().max(30).optional(),
+  includeImages: z.enum(['0','1','true','false']).optional(),
+}).strip();
+
+const idParam = z.object({ id: objectId() }).strict();
+const verifyBody = z.object({ studentId: objectId().optional() }).strip();
+const rejectBody = z.object({ reason: z.string().trim().max(240).optional() }).strip();
+
+// ---------- Rate limits ----------
+const rlStudentCreate = rateLimitRedis({
+  prefix: 'rl:vr:create',
+  windowMs: 10 * 60 * 1000,
+  max: 4,
+  keyFn: (req) => req.user?._id || req.ip,
 });
 
-const vCreateBody = validate({
-  body: z.object({
-    org: z.string().max(120).optional(),
-    contact: z.string().max(120).optional(),
-    types: z.array(z.string().max(40)).min(1).max(8).optional(),
-    ttlHours: z.coerce.number().int().min(1).max(168).optional(),
-    ui_base: z.string().max(300).optional(),
-    credential_id: z.string().max(256).optional(),
-  }).strict(),
+const rlStudentMine = rateLimitRedis({
+  prefix: 'rl:vr:mine',
+  windowMs: 60 * 1000,
+  max: 30,
+  keyFn: (req) => req.user?._id || req.ip,
 });
 
-const PresentWithDecision = z.object({
-  decision: z.literal('deny'),
-}).strict();
-
-const vBeginBody = validate({
-  body: z.object({
-    org: z.string().max(120).optional(),
-    contact: z.string().max(120).optional(),
-    purpose: z.string().max(240).optional(),
-  }).strict(),
+const rlAdminList = rateLimitRedis({
+  prefix: 'rl:vr:list',
+  windowMs: 60 * 1000,
+  max: 60,
+  keyFn: (req) => req.user?._id || req.ip,
 });
 
-const PresentWithId = z.object({
-  credential_id: z.string().max(256),
-  nonce: z.string().max(180).optional(),
-}).strict();
-
-const PresentWithPayload = z.object({
-  payload: z.object({
-    jws: z.string(),
-    salt: z.string(),
-    digest: z.string(),
-    anchoring: z.any().optional(),
-    alg: z.string().optional(),
-    kid: z.string().optional(),
-    jwk: z.any().optional(),
-  }).strict(),
-  nonce: z.string().max(180).optional(),
-}).strict();
-
-const vPresentBody = validate({
-  body: z.union([PresentWithDecision, PresentWithId, PresentWithPayload]),
+const rlAdminGet = rateLimitRedis({
+  prefix: 'rl:vr:get',
+  windowMs: 60 * 1000,
+  max: 120,
+  keyFn: (req) => req.user?._id || req.ip,
 });
 
-// ---- Routes (mounted under /api in server.js)
-router.post('/verification/session', RL_CREATE, vCreateBody, ctrl.createSession);
-router.post('/verification/session/:sessionId/begin', RL_BEGIN, vSessionParam, vBeginBody, ctrl.beginSession);
-router.get('/verification/session/:sessionId', RL_POLL, vSessionParam, ctrl.getSession);
-router.post('/verification/session/:sessionId/present', RL_PRESENT, vSessionParam, vPresentBody, ctrl.submitPresentation);
+const rlAdminAction = rateLimitRedis({
+  prefix: 'rl:vr:act',
+  windowMs: 60 * 1000,
+  max: 30,
+  keyFn: (req) => req.user?._id || req.ip,
+});
 
-router.get('/verification/session/:sessionId/qr.png', RL_POLL, vSessionParam, ctrl.sessionQrPng);
+// ---------- STUDENT ----------
+router.post(
+  '/',
+  protect,
+  rlStudentCreate,
+  validate({ body: createSchema }),
+  requestLogger('verification.create', { db: 'auth' }),
+  verificationCtrl.createVerificationRequest
+);
 
-// NEW — Pending consent list for signed-in holder
-router.get('/verification/pending', RL_PENDING, ctrl.listPending);
+router.get(
+  '/mine',
+  protect,
+  rlStudentMine,
+  requestLogger('verification.mine', { db: 'auth' }),
+  verificationCtrl.getMyVerificationRequests
+);
+
+// ---------- ADMIN ----------
+router.get(
+  '/',
+  protect,
+  admin,
+  rlAdminList,
+  validate({ query: listSchema }),
+  requestLogger('verification.admin.list', { db: 'auth' }),
+  verificationCtrl.getVerificationRequests
+);
+
+router.get(
+  '/:id',
+  protect,
+  admin,
+  rlAdminGet,
+  validate({ params: idParam }),
+  requestLogger('verification.admin.get', { db: 'auth' }),
+  verificationCtrl.getVerificationRequestById
+);
+
+router.post(
+  '/:id/verify',
+  protect,
+  admin,
+  rlAdminAction,
+  validate({ params: idParam, body: verifyBody }),
+  requestLogger('verification.admin.verify', { db: 'auth' }),
+  verificationCtrl.verifyRequest
+);
+
+router.post(
+  '/:id/reject',
+  protect,
+  admin,
+  rlAdminAction,
+  validate({ params: idParam, body: rejectBody }),
+  requestLogger('verification.admin.reject', { db: 'auth' }),
+  verificationCtrl.rejectRequest
+);
 
 module.exports = router;
