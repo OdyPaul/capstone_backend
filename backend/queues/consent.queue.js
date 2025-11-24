@@ -1,31 +1,26 @@
 // queues/consent.queue.js
+// --- Polyfill for Node < 18 ---
+if (typeof fetch === 'undefined') {
+  const { fetch, Headers, Request, Response } = require('undici');
+  globalThis.fetch = fetch; globalThis.Headers = Headers;
+  globalThis.Request = Request; globalThis.Response = Response;
+}
+
 const { Queue, Worker, QueueEvents } = require('bullmq');
 const { redis } = require('../lib/redis');
 
 const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
 
-const connection =
-  redis || (process.env.REDIS_URL ? { url: process.env.REDIS_URL } : null);
-
+const connection = redis || (process.env.REDIS_URL ? { url: process.env.REDIS_URL } : null);
 const queueName = 'consent-push';
-
-const consentQueue = connection
-  ? new Queue(queueName, { connection })
-  : null;
+const consentQueue = connection ? new Queue(queueName, { connection }) : null;
 
 /* helpers */
 function isExpoPushToken(token) {
   if (typeof token !== 'string') return false;
-  return (
-    /^ExponentPushToken\[[\w\-.]+\]$/.test(token) ||
-    /^ExpoPushToken\[[\w\-.]+\]$/.test(token)
-  );
+  return /^ExponentPushToken\[[\w\-.]+\]$/.test(token) || /^ExpoPushToken\[[\w\-.]+\]$/.test(token);
 }
-function chunk(arr, size = 90) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
+function chunk(arr, size = 90) { const out = []; for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size)); return out; }
 async function allowUserPush(userId, windowSec = 300, max = 3) {
   if (!connection) return true;
   const key = `consent:rate:${userId}`;
@@ -46,6 +41,7 @@ async function enqueueConsentPush({ userId, sessionId, nonce, org, purpose, titl
       { userId, sessionId, nonce, org: org || '', purpose: purpose || '', title: title || 'Consent requested', body: body || 'A verifier is asking permission to view your credential.' },
       { jobId, attempts: 3, backoff: { type: 'exponential', delay: 2000 }, removeOnComplete: true, removeOnFail: 25 }
     );
+    console.log('[push] enqueued consent job', jobId, 'for user', userId);
   } catch (e) {
     if (!/already exists/i.test(String(e?.message || ''))) throw e;
   }
@@ -55,9 +51,11 @@ async function enqueueConsentPush({ userId, sessionId, nonce, org, purpose, titl
 async function sendToExpoHTTP(userId, payload) {
   if (!redis) return;
   const tokens = await redis.smembers(`user:devices:${userId}`);
+  console.log('[push] tokens for user', userId, tokens.length);
   if (!tokens?.length) return;
+
   const valid = tokens.filter(isExpoPushToken);
-  if (!valid.length) return;
+  if (!valid.length) { console.warn('[push] no valid Expo tokens'); return; }
 
   const messages = valid.map((to) => ({
     to,
@@ -118,7 +116,8 @@ if (connection) {
 
   const events = new QueueEvents(queueName, { connection });
   events.on('failed', ({ jobId, failedReason }) => console.warn(`[${queueName}] job ${jobId} failed:`, failedReason));
-  events.on('completed', () => {});
+  events.on('completed', ({ jobId }) => { /* console.log(`[${queueName}] job ${jobId} completed`); */ });
+
   const shutdown = async () => { try { await worker.close(); await events.close(); } catch {} process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
