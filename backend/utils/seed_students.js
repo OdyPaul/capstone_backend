@@ -160,6 +160,11 @@ function fillMissingStudentFields(base, { graduationYear } = {}) {
     out.permanentAddress = getRandomMagalangAddress();
   }
 
+  // NEW: random place of birth if missing
+  if (!out.placeOfBirth) {
+    out.placeOfBirth = randomPlaceOfBirth();
+  }
+
   // Admission + Graduation
   if (!out.dateAdmitted || !out.dateGraduated) {
     const gradYear =
