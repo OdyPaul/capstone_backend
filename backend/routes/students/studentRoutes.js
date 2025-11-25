@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 
 const {
+  createStudent,
   getStudentPassing,
   getStudentTor,
   searchStudent,
@@ -10,8 +11,6 @@ const {
   searchPrograms,
   updateStudent,
 } = require("../../controllers/web/studentController");
-
-const { createStudent } = require("../../controllers/web/createStudentController");
 
 const { protect, allowRoles } = require("../../middleware/authMiddleware");
 const { rateLimitRedis } = require("../../middleware/rateLimitRedis");
@@ -62,10 +61,31 @@ const createSchema = {
   body: z
     .object({
       fullName: z.string().trim().min(2).max(200),
+
       studentNumber: z.string().trim().max(50).optional(),
+
       program: z.string().trim().max(200).optional(),
+      major: z.string().trim().max(200).optional(),
+
       curriculumId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+
+      gender: z
+        .preprocess(
+          (v) => (typeof v === "string" ? v.toLowerCase().trim() : v),
+          z.enum(["male", "female", "other"]),
+        )
+        .optional(),
+
+      address: z.string().trim().max(500).optional(),
+      placeOfBirth: z.string().trim().max(200).optional(),
+      highSchool: z.string().trim().max(200).optional(),
+      honor: z.string().trim().max(200).optional(),
+
+      dateOfBirth: z.any().optional(),
       dateGraduated: z.any().optional(),
+
+      randomizeMissing: z.coerce.boolean().optional(),
+
       photoDataUrl: z
         .string()
         .startsWith("data:image/")
@@ -88,7 +108,7 @@ const updateSchema = {
       gender: z
         .preprocess(
           (v) => (typeof v === "string" ? v.toLowerCase().trim() : v),
-          z.enum(["male", "female", "other"])
+          z.enum(["male", "female", "other"]),
         )
         .optional(),
 
@@ -136,7 +156,7 @@ router.get(
     max: 60,
     keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  getStudentPassing
+  getStudentPassing,
 );
 
 // Search students
@@ -150,7 +170,7 @@ router.get(
     max: 30,
     keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  searchStudent
+  searchStudent,
 );
 
 // TOR
@@ -170,25 +190,25 @@ router.get(
     max: 60,
     keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  searchPrograms
+  searchPrograms,
 );
 
 // Create student
 router.post(
   "/students",
   protect,
-  allowRoles("admin", "superadmin"),
+  allowRoles("admin", "superadmin", "developer"),
   validate(createSchema),
-  createStudent
+  createStudent,
 );
 
 // Update student
 router.patch(
   "/students/:id",
   protect,
-  allowRoles("admin", "superadmin"),
+  allowRoles("admin", "superadmin", "developer"),
   validate(updateSchema),
-  updateStudent
+  updateStudent,
 );
 
 module.exports = router;

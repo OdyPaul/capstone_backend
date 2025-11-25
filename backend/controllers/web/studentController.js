@@ -8,6 +8,13 @@ const Curriculum = require('../../models/students/Curriculum');
 
 const escapeRegExp = require('../../utils/escapeRegExp');
 const cloudinary = require('../../utils/cloudinary');
+const {
+  createSingleStudentWithGrades,
+} = require('../../services/studentService');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function minusYears(dateLike, years) {
   const d = new Date(dateLike);
@@ -17,6 +24,7 @@ function minusYears(dateLike, years) {
 }
 
 async function uploadDataUriToCloudinary(dataUri, folder = 'students_data') {
+  if (!dataUri || typeof dataUri !== 'string') return null;
   if (!/^data:image\//i.test(String(dataUri || ''))) return null;
   const res = await cloudinary.uploader.upload(dataUri, { folder });
   return (res && res.secure_url) || null;
@@ -46,7 +54,7 @@ function normalizeStudentForList(s) {
     major: s.major || '',
     dateAdmission: s.dateAdmission || s.dateAdmitted || null,
     dateGraduated: s.dateGraduated || null,
-    dateOfBirth: s.dateOfBirth || null, // 👈 add this
+    dateOfBirth: s.dateOfBirth || null,
     gwa:
       s.gwa !== undefined && s.gwa !== null
         ? s.gwa
@@ -59,7 +67,6 @@ function normalizeStudentForList(s) {
     college: s.college || null,
   };
 }
-
 
 function normalizeStudentForDetail(s) {
   if (!s) return null;
@@ -75,7 +82,7 @@ function normalizeStudentForDetail(s) {
     placeOfBirth: s.placeOfBirth || '',
     highSchool: s.highSchool || s.shsSchool || s.jhsSchool || '',
     entranceCredentials: s.entranceCredentials || '',
-    dateOfBirth: s.dateOfBirth || null, // 👈 add this
+    dateOfBirth: s.dateOfBirth || null,
     collegeGwa:
       s.collegeGwa !== undefined && s.collegeGwa !== null
         ? s.collegeGwa
@@ -88,11 +95,61 @@ function normalizeStudentForDetail(s) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// CREATE: POST /api/web/students
+// ---------------------------------------------------------------------------
 
-// ---------- GET /student/passing ----------
-// Uses Student_Data
-// ---------- GET /students/passing ----------
-// Now: list ALL students with optional filters by college, program, year, q
+const createStudent = asyncHandler(async (req, res) => {
+  const {
+    fullName,
+    studentNumber,
+    program,
+    major,
+    curriculumId,
+    gender,
+    address,
+    placeOfBirth,
+    highSchool,
+    honor,
+    dateGraduated,
+    dateOfBirth,
+    photoDataUrl,
+    randomizeMissing,
+  } = req.body || {};
+
+  // Upload photo if provided
+  let photoUrl = null;
+  if (photoDataUrl) {
+    photoUrl = await uploadDataUriToCloudinary(photoDataUrl, 'students_data');
+  }
+
+  const { student, grades } = await createSingleStudentWithGrades({
+    fullName,
+    studentNumber,
+    program,
+    major,
+    curriculumId,
+    gender,
+    address,
+    placeOfBirth,
+    highSchool,
+    honor,
+    dateGraduated,
+    dateOfBirth,
+    randomizeMissing: Boolean(randomizeMissing),
+    photoUrl,
+  });
+
+  res.status(201).json({
+    student,
+    gradesCreated: Array.isArray(grades) ? grades.length : 0,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LIST (passing): GET /api/web/students/passing
+// ---------------------------------------------------------------------------
+
 const getStudentPassing = asyncHandler(async (req, res) => {
   const { college, programs, year, q } = req.query;
 
@@ -141,17 +198,16 @@ const getStudentPassing = asyncHandler(async (req, res) => {
     const safe = escapeRegExp(q);
     and.push({
       $or: [
-        { fullName:      { $regex: safe, $options: 'i' } },
-        { lastName:      { $regex: safe, $options: 'i' } },
-        { firstName:     { $regex: safe, $options: 'i' } },
-        { middleName:    { $regex: safe, $options: 'i' } },
+        { fullName: { $regex: safe, $options: 'i' } },
+        { lastName: { $regex: safe, $options: 'i' } },
+        { firstName: { $regex: safe, $options: 'i' } },
+        { middleName: { $regex: safe, $options: 'i' } },
         { studentNumber: { $regex: safe, $options: 'i' } },
-        { program:       { $regex: safe, $options: 'i' } },
+        { program: { $regex: safe, $options: 'i' } },
       ],
     });
   }
 
-  // ❗ NO MORE GWA FILTER HERE – we always return all matching students
   const filter = and.length ? { $and: and } : {};
 
   const students = await StudentData.find(filter).lean();
@@ -159,9 +215,10 @@ const getStudentPassing = asyncHandler(async (req, res) => {
   res.json(payload);
 });
 
+// ---------------------------------------------------------------------------
+// TOR: GET /api/web/students/:id/tor
+// ---------------------------------------------------------------------------
 
-// ---------- GET /student/:id/tor ----------
-// TOR now comes from Grade collection
 const getStudentTor = asyncHandler(async (req, res) => {
   const id = req.params.id;
   if (!isValidObjectId(id)) {
@@ -217,7 +274,7 @@ const getStudentTor = asyncHandler(async (req, res) => {
     if (sa !== sb) return sa - sb;
 
     return String(a.subjectCode || '').localeCompare(
-      String(b.subjectCode || '')
+      String(b.subjectCode || ''),
     );
   });
 
@@ -236,7 +293,10 @@ const getStudentTor = asyncHandler(async (req, res) => {
   res.json(payload);
 });
 
-// ---------- GET /student/search ----------
+// ---------------------------------------------------------------------------
+// SEARCH: GET /api/web/students/search
+// ---------------------------------------------------------------------------
+
 const searchStudent = asyncHandler(async (req, res) => {
   const { q, college, programs } = req.query;
   const and = [];
@@ -284,7 +344,10 @@ const searchStudent = asyncHandler(async (req, res) => {
   res.json(payload);
 });
 
-// ---------- GET /student/:id ----------
+// ---------------------------------------------------------------------------
+// DETAIL: GET /api/web/students/:id
+// ---------------------------------------------------------------------------
+
 const findStudent = asyncHandler(async (req, res) => {
   const id = req.params.id;
   if (!isValidObjectId(id)) {
@@ -300,7 +363,10 @@ const findStudent = asyncHandler(async (req, res) => {
   res.json(payload);
 });
 
-// ---------- GET /programs ----------
+// ---------------------------------------------------------------------------
+// PROGRAMS: GET /api/web/programs
+// ---------------------------------------------------------------------------
+
 const searchPrograms = asyncHandler(async (req, res) => {
   const { q = '', limit = 10 } = req.query;
 
@@ -317,7 +383,7 @@ const searchPrograms = asyncHandler(async (req, res) => {
 
   const docs = await Curriculum.find(
     filter,
-    { program: 1, curriculumYear: 1 } // projection
+    { program: 1, curriculumYear: 1 }, // projection
   )
     .sort({ program: 1, curriculumYear: -1 })
     .limit(lim)
@@ -326,7 +392,10 @@ const searchPrograms = asyncHandler(async (req, res) => {
   res.json(docs);
 });
 
-// ---------- PATCH /students/:id ----------
+// ---------------------------------------------------------------------------
+// UPDATE: PATCH /api/web/students/:id
+// ---------------------------------------------------------------------------
+
 const updateStudent = asyncHandler(async (req, res) => {
   const id = req.params.id;
   if (!isValidObjectId(id)) {
@@ -339,7 +408,7 @@ const updateStudent = asyncHandler(async (req, res) => {
     gender,
     address,
     placeOfBirth,
-    dateOfBirth, 
+    dateOfBirth,
     highSchool,
     entranceCredentials,
     program,
@@ -390,10 +459,12 @@ const updateStudent = asyncHandler(async (req, res) => {
     const a = new Date(dateAdmission);
     if (!isNaN(a)) $set.dateAdmitted = a;
   }
-if (dateOfBirth !== undefined && dateOfBirth !== null) {   // 👈 add this block
+
+  if (dateOfBirth !== undefined && dateOfBirth !== null) {
     const dob = new Date(dateOfBirth);
     if (!isNaN(dob)) $set.dateOfBirth = dob;
   }
+
   // photo
   if (typeof photoDataUrl === 'string' && /^data:image\//i.test(photoDataUrl)) {
     const url = await uploadDataUriToCloudinary(photoDataUrl, 'students_data');
@@ -418,7 +489,7 @@ if (dateOfBirth !== undefined && dateOfBirth !== null) {   // 👈 add this bloc
   const updated = await StudentData.findByIdAndUpdate(
     id,
     { $set },
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   ).lean();
 
   if (!updated) {
@@ -430,6 +501,7 @@ if (dateOfBirth !== undefined && dateOfBirth !== null) {   // 👈 add this bloc
 });
 
 module.exports = {
+  createStudent,
   getStudentPassing,
   getStudentTor,
   searchStudent,
