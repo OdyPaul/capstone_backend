@@ -18,7 +18,7 @@ const {
   getTermNameFromSemester,
   getSampleSchoolYear,
   fillMissingStudentFields,
-} = require('../utils/seed_student');
+} = require('../utils/seed_students');
 
 const { toFullName } = require('./gradeService');
 
