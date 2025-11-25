@@ -97,7 +97,7 @@ app.use('/api', require('./routes/mobile/pushRoutes'));
 
   //testing:
  app.use('/api/web/issuance', require('./routes/testing/issueRoute'));
-
+  app.use('/api', require('./routes/common/passwordResetRoutes'));
   // ✅ Mount verification routes directly under /api so paths match the frontend
   app.use('/api', require('./routes/web/verificationRoutes'));
 
