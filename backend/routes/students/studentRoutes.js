@@ -62,13 +62,12 @@ const createSchema = {
     .object({
       fullName: z.string().trim().min(2).max(200),
 
-      // Names (optional but recommended; controller will enforce first/last)
+      // 👇 names for Student_Data
       firstName: z.string().trim().max(100).optional(),
       middleName: z.string().trim().max(100).optional(),
       lastName: z.string().trim().max(100).optional(),
 
       studentNumber: z.string().trim().max(50).optional(),
-
       program: z.string().trim().max(200).optional(),
       major: z.string().trim().max(200).optional(),
 
@@ -77,7 +76,7 @@ const createSchema = {
       gender: z
         .preprocess(
           (v) => (typeof v === "string" ? v.toLowerCase().trim() : v),
-          z.enum(["male", "female", "other"]),
+          z.enum(["male", "female", "other"])
         )
         .optional(),
 
@@ -85,12 +84,13 @@ const createSchema = {
       placeOfBirth: z.string().trim().max(200).optional(),
       highSchool: z.string().trim().max(200).optional(),
 
-      dateOfBirth: z.any().optional(),
+      dateOfBirth: z.any().optional(), // YYYY-MM-DD from frontend
 
+      // Graduation year (we'll convert to dates server-side)
       graduationYear: z
         .preprocess(
           (v) => (v === "" || v == null ? undefined : v),
-          z.coerce.number().int().min(1900).max(2100),
+          z.coerce.number().int().min(1900).max(2100)
         )
         .optional(),
 
@@ -118,7 +118,7 @@ const updateSchema = {
       gender: z
         .preprocess(
           (v) => (typeof v === "string" ? v.toLowerCase().trim() : v),
-          z.enum(["male", "female", "other"]),
+          z.enum(["male", "female", "other"])
         )
         .optional(),
 
@@ -166,7 +166,7 @@ router.get(
     max: 60,
     keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  getStudentPassing,
+  getStudentPassing
 );
 
 // Search students
@@ -180,7 +180,7 @@ router.get(
     max: 30,
     keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  searchStudent,
+  searchStudent
 );
 
 // TOR
@@ -200,25 +200,26 @@ router.get(
     max: 60,
     keyFn: (req) => req.user?._id?.toString() || req.ip,
   }),
-  searchPrograms,
+  searchPrograms
 );
 
 // Create student
 router.post(
   "/students",
   protect,
+  // include developer so it matches your frontend canCreate
   allowRoles("admin", "superadmin", "developer"),
   validate(createSchema),
-  createStudent,
+  createStudent
 );
 
 // Update student
 router.patch(
   "/students/:id",
   protect,
-  allowRoles("admin", "superadmin", "developer"),
+  allowRoles("admin", "superadmin"),
   validate(updateSchema),
-  updateStudent,
+  updateStudent
 );
 
 module.exports = router;
