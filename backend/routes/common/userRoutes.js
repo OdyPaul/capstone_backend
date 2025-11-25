@@ -1,4 +1,4 @@
-// routes/common/userRoutes.js
+// backend/routes/common/userRoutes.js
 const express = require("express");
 const router = express.Router();
 
@@ -11,9 +11,14 @@ const {
   getMe,
   logoutWebUser,
   updateWebUser,
+  updateMobileUser,
+  deleteMobileUser,
 } = require("../../controllers/common/userController");
 
-const { requestOtp, verifyOtp } = require("../../controllers/mobile/otpController");
+const {
+  requestOtp,
+  verifyOtp,
+} = require("../../controllers/mobile/otpController");
 const { protect, allowRoles } = require("../../middleware/authMiddleware");
 const { rateLimitRedis } = require("../../middleware/rateLimitRedis");
 const { z, validate } = require("../../middleware/validate");
@@ -22,70 +27,102 @@ const requireOtpSession = require("../../middleware/requireOtpSession");
 
 // ---------- Schemas ----------
 const webLoginSchema = {
-  body: z.object({
-    email: z.string().trim().toLowerCase().email().max(254),
-    password: z.string().min(8).max(200),
-  }).strip(),
+  body: z
+    .object({
+      email: z.string().trim().toLowerCase().email().max(254),
+      password: z.string().min(8).max(200),
+    })
+    .strip(),
 };
 
 const emptyToUndef = (schema) =>
-  z.preprocess((v) => (v === '' || v === null ? undefined : v), schema);
+  z.preprocess((v) => (v === "" || v === null ? undefined : v), schema);
 
 const numberOrUndef = z.preprocess(
-  (v) => (v === '' || v === null || v === undefined ? undefined : Number(v)),
+  (v) => (v === "" || v === null || v === undefined ? undefined : Number(v)),
   z.number().int().min(0).max(150)
 );
+
 const createWebUserSchema = {
-  body: z.object({
-    username: z.string().trim().min(2).max(100),
+  body: z
+    .object({
+      username: z.string().trim().min(2).max(100),
 
-    fullName: emptyToUndef(z.string().trim().min(2).max(200)).optional(),
-    age: numberOrUndef.optional(),
-    address: emptyToUndef(z.string().trim().max(1000)).optional(),
-    gender: emptyToUndef(z.enum(['male','female','other'])).optional(),
+      fullName: emptyToUndef(z.string().trim().min(2).max(200)).optional(),
+      age: numberOrUndef.optional(),
+      address: emptyToUndef(z.string().trim().max(1000)).optional(),
+      gender: emptyToUndef(z.enum(["male", "female", "other"])).optional(),
 
-    email: z.string().trim().toLowerCase().email().max(254),
-    password: z.string().min(8).max(200),
+      email: z.string().trim().toLowerCase().email().max(254),
+      password: z.string().min(8).max(200),
 
-    contactNo: emptyToUndef(z.string().trim().max(50)).optional(),
+      contactNo: emptyToUndef(z.string().trim().max(50)).optional(),
 
-    // ✅ includes cashier
-    role: z.enum(['admin','superadmin','developer','cashier']).default('admin'),
+      // includes cashier
+      role: z.enum(["admin", "superadmin", "developer", "cashier"]).default(
+        "admin"
+      ),
 
-    // Accept URL or data URI, but treat "" as undefined
-    profilePicture: z.preprocess(
-      (v) => (v === '' || v === null ? undefined : v),
-      z.union([z.string().url(), z.string().startsWith('data:image/')])
-    ).optional(),
+      // Accept URL or data URI, but treat "" as undefined
+      profilePicture: z
+        .preprocess(
+          (v) => (v === "" || v === null ? undefined : v),
+          z.union([z.string().url(), z.string().startsWith("data:image/")])
+        )
+        .optional(),
 
-    profileImageId: emptyToUndef(z.string().regex(/^[a-fA-F0-9]{24}$/)).optional(),
-  }).strip(),
+      profileImageId: emptyToUndef(
+        z.string().regex(/^[a-fA-F0-9]{24}$/)
+      ).optional(),
+    })
+    .strip(),
 };
+
 const updateWebUserSchema = {
   params: z.object({
     id: z.string().regex(/^[a-fA-F0-9]{24}$/),
   }),
-  body: z.object({
-    username: z.string().trim().min(2).max(100).optional(),
-    fullName: z.string().trim().min(2).max(200).optional().nullable(),
-    age: z.number().int().min(0).max(150).optional().nullable(),
-    address: z.string().trim().max(1000).optional().nullable(),
-    gender: z.enum(["male", "female", "other"]).optional().nullable(),
-    email: z.string().trim().toLowerCase().email().max(254).optional(),
-    password: z.string().min(8).max(200).optional(),
-    contactNo: z.string().trim().max(50).optional().nullable(),
-    role: z.enum(["admin", "superadmin", "developer","cashier"]).optional(),
-    profilePicture: z.union([
-      z.string().url(),
-      z.string().startsWith("data:image/")
-    ]).optional().nullable(),
-    profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
+  body: z
+    .object({
+      username: z.string().trim().min(2).max(100).optional(),
+      fullName: z.string().trim().min(2).max(200).optional().nullable(),
+      age: z.number().int().min(0).max(150).optional().nullable(),
+      address: z.string().trim().max(1000).optional().nullable(),
+      gender: z.enum(["male", "female", "other"]).optional().nullable(),
+      email: z.string().trim().toLowerCase().email().max(254).optional(),
+      password: z.string().min(8).max(200).optional(),
+      contactNo: z.string().trim().max(50).optional().nullable(),
+      role: z.enum(["admin", "superadmin", "developer", "cashier"]).optional(),
+      profilePicture: z
+        .union([z.string().url(), z.string().startsWith("data:image/")])
+        .optional()
+        .nullable(),
+      profileImageId: z.string().regex(/^[a-fA-F0-9]{24}$/).optional(),
 
-    // Required for superadmin update password verification
-    currentPassword: z.string().min(1).max(200).optional(),
-    passwordCurrent: z.string().min(1).max(200).optional(),
-    adminPassword: z.string().min(1).max(200).optional(),
-  }).strip(),
+      // Required for superadmin update password verification
+      currentPassword: z.string().min(1).max(200).optional(),
+      passwordCurrent: z.string().min(1).max(200).optional(),
+      adminPassword: z.string().min(1).max(200).optional(),
+    })
+    .strip(),
+};
+
+const updateMobileUserSchema = {
+  params: z.object({
+    id: z.string().regex(/^[a-fA-F0-9]{24}$/),
+  }),
+  body: z
+    .object({
+      username: z.string().trim().min(2).max(100).optional(),
+      fullName: z.string().trim().min(2).max(200).optional().nullable(),
+      email: z.string().trim().toLowerCase().email().max(254).optional(),
+      password: z.string().min(8).max(200).optional(),
+      contactNo: z.string().trim().max(50).optional().nullable(),
+      verified: z
+        .enum(["unverified", "verified", "rejected"])
+        .optional(),
+    })
+    .strip(),
 };
 
 // ---------- Subrouters ----------
@@ -99,13 +136,6 @@ web.use(express.urlencoded({ extended: true, limit: "2mb" }));
 // =================== WEB ===================
 
 // Create web user (superadmin only)
-// web.post(
-//   "/users",
-//   protect,
-//   allowRoles("superadmin"),
-//   validate(createWebUserSchema),
-//   registerWebUser
-// );
 web.post(
   "/users",
   protect,
@@ -131,7 +161,7 @@ web.post(
 // Current web user
 web.get("/users/me", protect, requestLogger("web.me", { db: "auth" }), getMe);
 
-// List users
+// List users (kind=query: web | mobile | all)
 web.get(
   "/users",
   protect,
@@ -147,6 +177,25 @@ web.put(
   validate(updateWebUserSchema),
   requestLogger("web.users.update", { db: "auth" }),
   updateWebUser
+);
+
+// Update mobile user (admin panel)
+web.put(
+  "/mobile-users/:id",
+  protect,
+  allowRoles("admin", "superadmin", "developer"),
+  validate(updateMobileUserSchema),
+  requestLogger("web.mobileUsers.update", { db: "auth" }),
+  updateMobileUser
+);
+
+// Delete mobile user (superadmin only)
+web.delete(
+  "/mobile-users/:id",
+  protect,
+  allowRoles("superadmin"),
+  requestLogger("web.mobileUsers.delete", { db: "auth" }),
+  deleteMobileUser
 );
 
 // Logout

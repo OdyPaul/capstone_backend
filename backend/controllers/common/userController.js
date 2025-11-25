@@ -3,7 +3,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const asyncHandler = require("express-async-handler");
 const User = require("../../models/common/userModel");
-const UserImage = require('../../models/common/userImageModel');
+const UserImage = require("../../models/common/userImageModel");
 
 // ---------------- HELPERS ----------------
 const generateToken = (id) => {
@@ -22,7 +22,9 @@ const registerMobileUser = asyncHandler(async (req, res) => {
     throw new Error("Please add all fields");
   }
 
-  const exists = await User.findOne({ email: String(email).toLowerCase().trim() });
+  const exists = await User.findOne({
+    email: String(email).toLowerCase().trim(),
+  });
   if (exists) {
     res.status(400);
     throw new Error("User already exists");
@@ -55,8 +57,11 @@ const loginMobileUser = asyncHandler(async (req, res) => {
   const emailNorm = String(req.body.email || "").toLowerCase().trim();
   const { password } = req.body;
 
-  // ⬇️ NEED the hashed password because model has select:false
-  const user = await User.findOne({ email: emailNorm, kind: "mobile" }).select("+password");
+  // NEED the hashed password because model has select:false
+  const user = await User.findOne({
+    email: emailNorm,
+    kind: "mobile",
+  }).select("+password");
 
   if (user && (await bcrypt.compare(password, user.password))) {
     return res.json({
@@ -105,7 +110,9 @@ const registerWebUser = asyncHandler(async (req, res) => {
     throw new Error("Invalid role");
   }
 
-  const exists = await User.findOne({ email: String(email).toLowerCase().trim() });
+  const exists = await User.findOne({
+    email: String(email).toLowerCase().trim(),
+  });
   if (exists) {
     res.status(400);
     throw new Error("User already exists");
@@ -177,10 +184,13 @@ const loginWebUser = asyncHandler(async (req, res) => {
   const emailNorm = String(req.body.email || "").toLowerCase().trim();
   const { password } = req.body;
 
-  // ⬇️ NEED the hashed password because model has select:false
-  const user = await User.findOne({ email: emailNorm, kind: "web" }).select("+password");
+  // NEED the hashed password because model has select:false
+  const user = await User.findOne({
+    email: emailNorm,
+    kind: "web",
+  }).select("+password");
 
-  // ⬇️ allow cashier to log in
+  // allow cashier to log in
   const allowed = ["admin", "superadmin", "developer", "cashier"];
 
   if (user && (await bcrypt.compare(password, user.password))) {
@@ -240,9 +250,14 @@ const updateWebUser = asyncHandler(async (req, res) => {
       throw new Error("Current password required");
     }
 
-    // ⬇️ NEED the hashed password because model has select:false
-    const freshRequester = await User.findById(requester._id).select("+password");
-    const ok = await bcrypt.compare(String(currentPassword), freshRequester.password || "");
+    // NEED the hashed password because model has select:false
+    const freshRequester = await User.findById(requester._id).select(
+      "+password"
+    );
+    const ok = await bcrypt.compare(
+      String(currentPassword),
+      freshRequester.password || ""
+    );
     if (!ok) {
       res.status(401);
       throw new Error("Invalid current password");
@@ -292,7 +307,10 @@ const updateWebUser = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error("Image purpose mismatch");
     }
-    if (imgDoc.ownerUser && imgDoc.ownerUser.toString() !== target._id.toString()) {
+    if (
+      imgDoc.ownerUser &&
+      imgDoc.ownerUser.toString() !== target._id.toString()
+    ) {
       res.status(409);
       throw new Error("Image already attached to another user");
     }
@@ -309,6 +327,60 @@ const updateWebUser = asyncHandler(async (req, res) => {
 
   const safe = await User.findById(target._id).select("-password");
   res.status(200).json({ user: safe });
+});
+
+// @desc    Update a mobile user (admin panel)
+// @route   PUT /api/web/mobile-users/:id
+// @access  Private/Admin (admin, superadmin, developer)
+const updateMobileUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const target = await User.findById(id).select("+password");
+  if (!target) {
+    res.status(404);
+    throw new Error("User not found");
+  }
+  if (target.kind !== "mobile") {
+    res.status(400);
+    throw new Error("Only mobile users can be edited here");
+  }
+
+  const { username, fullName, email, password, contactNo, verified } =
+    req.body || {};
+
+  if (username !== undefined) target.username = username;
+  if (fullName !== undefined) target.fullName = fullName;
+  if (email !== undefined) target.email = email;
+  if (contactNo !== undefined) target.contactNo = contactNo;
+  if (verified !== undefined) target.verified = verified;
+
+  if (password && String(password).trim().length >= 8) {
+    target.password = await bcrypt.hash(password, 10);
+  }
+
+  await target.save();
+  const safe = await User.findById(target._id).select("-password");
+  res.status(200).json({ user: safe });
+});
+
+// @desc    Delete a mobile user
+// @route   DELETE /api/web/mobile-users/:id
+// @access  Private/Superadmin
+const deleteMobileUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const target = await User.findById(id);
+  if (!target) {
+    res.status(404);
+    throw new Error("User not found");
+  }
+  if (target.kind !== "mobile") {
+    res.status(400);
+    throw new Error("Only mobile users can be deleted here");
+  }
+
+  await target.deleteOne();
+  res.status(200).json({ success: true });
 });
 
 // ---------------- SHARED CONTROLLERS ----------------
@@ -346,4 +418,6 @@ module.exports = {
   getUsers,
   getMe,
   logoutWebUser,
+  updateMobileUser,
+  deleteMobileUser,
 };
