@@ -20,7 +20,7 @@ const baseSchema = new mongoose.Schema({
 
   studentId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Student_Profiles',
+    ref: 'Student_Data',
     unique: true,
     sparse: true,
   },

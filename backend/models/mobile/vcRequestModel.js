@@ -26,7 +26,7 @@ const vcRequestSchema = new mongoose.Schema(
     // linked student profile
     studentId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Student_Profiles', // keep as your actual Student model collection name
+      ref: 'Student_Data', // keep as your actual Student model collection name
       required: true,
       index: true,
     },
@@ -48,7 +48,7 @@ const vcRequestSchema = new mongoose.Schema(
     studentPhotoUrl: {
       type: String,
       default: null,
-    },
+    }, 
 
     // TOR / DIPLOMA
     type: {

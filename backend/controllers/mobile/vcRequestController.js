@@ -1,16 +1,15 @@
 // backend/controllers/mobile/vcRequestController.js
-
 const asyncHandler = require('express-async-handler');
 const mongoose = require('mongoose');
 
 const VCRequest = require('../../models/mobile/vcRequestModel');
 const VcTemplate = require('../../models/web/vcTemplate');
-const StudentData = require('../../models/testing/studentDataModel');
+const StudentData = require('../../models/testing/studentDataModel'); // ⬅ same path as issueService/issueController
 const { createOneIssue } = require('../../services/issueService');
 const { toFullName } = require('../../services/gradeService');
 
 function httpError(status, message) {
-  const err = new Error(message || 'Error'); 
+  const err = new Error(message || 'Error');
   err.status = status;
   return err;
 }
@@ -25,7 +24,13 @@ function httpError(status, message) {
  *
  * Optional:
  *  - templateId: specific VC template
- *  - studentNumber: override student number (else derived from req.user)
+ *  - studentNumber: override (fallback if no account linkage)
+ *
+ * Flow:
+ * 1. Resolve Student_Data via User.studentId or Student_Data.userId.
+ * 2. Resolve templateId from type (TOR/DIPLOMA → slug "tor"/"diploma") if not provided.
+ * 3. Call createOneIssue(...) → creates/reuses VcIssue in "issued" status.
+ * 4. Create VCRequest doc for mobile tracking with paymentTxNo = issue.order_no.
  */
 exports.createVCRequest = asyncHandler(async (req, res) => {
   const user = req.user;
@@ -33,28 +38,67 @@ exports.createVCRequest = asyncHandler(async (req, res) => {
 
   let { type, purpose, anchorNow, templateId, studentNumber } = req.body || {};
 
-  type = String(type || '').toUpperCase();
-  purpose = String(purpose || '').trim().toLowerCase();
+  type = String(type || '').toUpperCase(); // "TOR" | "DIPLOMA"
+  purpose = String(purpose || '').trim().toLowerCase(); // must match PURPOSES enum
   const anchorFlag = !!anchorNow;
 
   if (!type) throw httpError(400, 'type is required');
   if (!purpose) throw httpError(400, 'purpose is required');
 
-  // ---- Resolve studentNumber ----
-  studentNumber =
-    (studentNumber && String(studentNumber).trim()) ||
-    (user.studentNumber && String(user.studentNumber).trim()) ||
-    (user.username && String(user.username).trim()) ||
-    null;
+  // ------------------------------------------------
+  // 1) Resolve the linked Student_Data record
+  // ------------------------------------------------
+  let studentDoc = null;
 
-  if (!studentNumber) {
-    throw httpError(
-      400,
-      'studentNumber is required (not found in request or user profile)'
-    );
+  // 1a. via User.studentId (set by verification)
+  if (user.studentId && mongoose.isValidObjectId(user.studentId)) {
+    studentDoc = await StudentData.findById(user.studentId).lean();
   }
 
-  // ---- Resolve templateId (TOR/DIPLOMA) ----
+  // 1b. fallback via Student_Data.userId (also set by verification)
+  if (!studentDoc) {
+    studentDoc = await StudentData.findOne({ userId: user._id }).lean();
+  }
+
+  let resolvedStudentNumber = null;
+
+  if (studentDoc) {
+    resolvedStudentNumber = studentDoc.studentNumber || null;
+  } else {
+    // 1c. FINAL fallback: explicitly by studentNumber (body or user)
+    resolvedStudentNumber =
+      (studentNumber && String(studentNumber).trim()) ||
+      (user.studentNumber && String(user.studentNumber).trim()) ||
+      (user.username && String(user.username).trim()) ||
+      null;
+
+    if (!resolvedStudentNumber) {
+      throw httpError(
+        400,
+        'No linked student record. Ask the registrar to link your account, or provide a studentNumber.'
+      );
+    }
+
+    studentDoc = await StudentData.findOne({
+      studentNumber: resolvedStudentNumber,
+    }).lean();
+
+    if (!studentDoc) {
+      throw httpError(
+        404,
+        `Student not found for studentNumber "${resolvedStudentNumber}"`
+      );
+    }
+  }
+
+  const studentId = studentDoc._id;
+  if (!resolvedStudentNumber) {
+    resolvedStudentNumber = studentDoc.studentNumber || null;
+  }
+
+  // ------------------------------------------------
+  // 2) Resolve templateId (TOR/DIPLOMA → slug)
+  // ------------------------------------------------
   let tplId = templateId;
   if (tplId) {
     if (!mongoose.isValidObjectId(tplId)) {
@@ -64,7 +108,7 @@ exports.createVCRequest = asyncHandler(async (req, res) => {
     let slug;
     if (type === 'TOR') slug = 'tor';
     else if (type === 'DIPLOMA') slug = 'diploma';
-    else slug = type.toLowerCase(); // fallback
+    else slug = type.toLowerCase(); // fallback if you ever add more types
 
     const tpl = await VcTemplate.findOne({ slug }).select('_id').lean();
     if (!tpl) {
@@ -73,67 +117,51 @@ exports.createVCRequest = asyncHandler(async (req, res) => {
     tplId = tpl._id;
   }
 
-  // ---- Use core service to create (or reuse) an Issue ----
+  // ------------------------------------------------
+  // 3) Create or reuse an Issue (VcIssue) via service
+  //    NOTE: we pass studentId so loadStudentContext will NOT fail.
+  // ------------------------------------------------
   const issueResult = await createOneIssue({
-    studentNumber: studentNumber,
+    studentId: studentId.toString(),      // ⬅ main key
+    studentNumber: resolvedStudentNumber, // extra safety
     templateId: tplId,
-    type: type,
-    purpose: purpose,
+    type: type,            // "TOR" | "DIPLOMA" → inferKind() → "tor"/"diploma"
+    purpose: purpose,      // same lowercase string used in both Issue + VCRequest
     anchorNow: anchorFlag,
   });
 
-  const status = issueResult.status; // 'created' | 'duplicate'
+  const status = issueResult.status; // "created" | "duplicate"
   const issue = issueResult.issue;
 
-  // ---- Load student document for denormalized fields ----
-  let studentDoc = null;
-
-  // If createOneIssue returned a populated student
-  if (issue && issue.student && issue.student.studentNumber) {
-    studentDoc = issue.student;
-  } else if (issue && issue.student) {
-    // Only ObjectId stored, fetch the student doc
-    studentDoc = await StudentData.findById(issue.student).lean();
-  }
-
-  if (!studentDoc) {
-    throw httpError(
-      500,
-      'Issue created but student record could not be loaded'
-    );
-  }
-
-  const studentId = studentDoc._id;
-  const finalStudentNumber = studentDoc.studentNumber || studentNumber;
+  // ------------------------------------------------
+  // 4) Denormalized fields for VCRequest document
+  // ------------------------------------------------
   const studentFullName = toFullName(studentDoc);
   const studentProgram = studentDoc.program || null;
   const studentPhotoUrl = studentDoc.photoUrl || null;
 
-  // This will be used by the student as a payment reference.
-  // Prefer order_no if your VcIssue model has it; fallback to issue _id.
+  // This is what cashier will use
   const paymentTxNo = issue.order_no || issue._id.toString();
 
-  // ---- Create VCRequest record (mobile tracking) ----
   const vcReq = await VCRequest.create({
-    student: user._id,           // mobile account (User)
-    studentId: studentId,        // linked student profile (StudentData / Student_Profiles)
-    studentNumber: finalStudentNumber,
+    student: user._id,               // mobile account (User, authConn)
+    studentId: studentId,            // linked Student_Data
+    studentNumber: resolvedStudentNumber,
     studentFullName: studentFullName,
     studentProgram: studentProgram,
     studentPhotoUrl: studentPhotoUrl,
-    type: type,                  // 'TOR' | 'DIPLOMA' (enum in model)
-    purpose: purpose,            // lowercase; matches PURPOSES enum in model
+    type: type,                      // "TOR" | "DIPLOMA" (matches VCRequest enum)
+    purpose: purpose,                // lowercase, matches PURPOSES enum
     anchorNow: anchorFlag,
-    status: 'pending',           // request is pending; Issue is already "issued"
+    status: 'pending',               // request is pending; Issue itself is already "issued"
     paymentTxNo: paymentTxNo,
   });
 
-  // status 201 if we created a brand-new Issue; 200 if we just reused an existing one
   const httpStatus = status === 'created' ? 201 : 200;
 
   res.status(httpStatus).json({
     ...vcReq.toObject(),
-    paymentTxNo, // explicitly ensure this field is at the top level for the app
+    paymentTxNo: paymentTxNo,        // make sure app sees it at top-level
   });
 });
 
@@ -154,9 +182,8 @@ exports.getMyVCRequests = asyncHandler(async (req, res) => {
 
 /**
  * (Admin) GET /api/vc-requests
- * Optional admin listing of all VC requests.
  */
-exports.getVCRequests = asyncHandler(async (req, res) => {
+exports.getVCRequests = asyncHandler(async (_req, res) => {
   const rows = await VCRequest.find().sort({ createdAt: -1 }).lean();
   res.json(rows);
 });
@@ -170,5 +197,6 @@ exports.getVCRequestById = asyncHandler(async (req, res) => {
 
   const row = await VCRequest.findById(id).lean();
   if (!row) throw httpError(404, 'Request not found');
+
   res.json(row);
 });
