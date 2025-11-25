@@ -1,0 +1,71 @@
+{
+  "basePdf": "base.pdf",
+  "schemas": [
+    [
+      {
+        "name": "fullName",
+        "type": "text",
+        "content": "fullName",
+        "position": { "x": 92.35, "y": 99.48 },
+        "width": 103.45,
+        "height": 10.05,
+        "rotate": 0,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "fontSize": 26,
+        "lineHeight": 1,
+        "characterSpacing": 0,
+        "fontColor": "#000000",
+        "backgroundColor": "",
+        "opacity": 1,
+        "strikethrough": false,
+        "underline": false,
+        "required": false,
+        "readOnly": false
+      },
+      {
+        "name": "program",
+        "type": "text",
+        "content": "program",
+        "position": { "x": 75.14, "y": 117.74 },
+        "width": 133.09,
+        "height": 11.64,
+        "rotate": 0,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "fontSize": 19,
+        "lineHeight": 1,
+        "characterSpacing": 0,
+        "fontColor": "#000000",
+        "backgroundColor": "",
+        "opacity": 1,
+        "strikethrough": false,
+        "underline": false,
+        "required": false,
+        "readOnly": false
+      },
+      {
+        "name": "major",
+        "type": "text",
+        "content": "major",
+        "position": { "x": 145.02, "y": 131.18 },
+        "width": 44.98,
+        "height": 7.14,
+        "rotate": 0,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "fontSize": 13,
+        "lineHeight": 1,
+        "characterSpacing": 0,
+        "fontColor": "#000000",
+        "backgroundColor": "",
+        "opacity": 1,
+        "strikethrough": false,
+        "underline": false,
+        "required": false,
+        "readOnly": false
+      }
+    ]
+  ],
+  "pdfmeVersion": "5.5.1"
+}

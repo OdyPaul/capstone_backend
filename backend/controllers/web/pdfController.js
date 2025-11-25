@@ -31,8 +31,10 @@ async function fileExists(p) {
 }
 async function loadTemplate(kind) {
   const base = kind === 'tor' ? TOR_DIR : DIP_DIR;
-  return readJSON(path.join(base, 'template.json'));
+  const filename = kind === 'tor' ? 'template.json' : 'template_diploma.json';
+  return readJSON(path.join(base, filename));
 }
+
 async function loadSample(kind) {
   const base = kind === 'tor' ? TOR_DIR : DIP_DIR;
   const fp = path.join(base, 'data.sample.json');
