@@ -193,8 +193,10 @@ async function createBatchIssue(params) {
         fullName: r.fullName || undefined,
         program: r.program || undefined,
         dateGraduated: r.dateGraduated || undefined,
+        dateOfBirth: r.dateOfBirth || undefined,
       },
     };
+
 
     // clean overrides so we don't send undefined keys
     const cleanOverrides = {};
