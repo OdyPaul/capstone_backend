@@ -1,3 +1,5 @@
+// services/issueService.js
+
 const mongoose = require('mongoose');
 const VcIssue = require('../models/testing/issueModel');
 const VcTemplate = require('../models/web/vcTemplate');
@@ -26,7 +28,6 @@ function inferKind(typeParam, templateVc) {
   if (t.indexOf('tor') !== -1) return 'tor';
   if (t.indexOf('diploma') !== -1) return 'diploma';
 
-  // avoid optional chaining
   const rawTypes = templateVc && templateVc.type;
   const arr = Array.isArray(rawTypes)
     ? rawTypes.map(function (s) {
@@ -110,6 +111,7 @@ async function createOneIssue(params) {
     ? Number(template.price)
     : 250;
 
+  // 1) Create bare Issue
   let issue = await VcIssue.create({
     template: template._id,
     student: student._id,
@@ -123,8 +125,8 @@ async function createOneIssue(params) {
     status: 'issued',
   });
 
-  // Populate minimal fields for response (to match original behavior)
-  issue = await issue
+  // 2) Reload via query + populate (NO doc.populate chaining)
+  issue = await VcIssue.findById(issue._id)
     .populate({
       path: 'student',
       model: StudentData,
@@ -160,7 +162,6 @@ async function createBatchIssue(params) {
     throw err;
   }
 
-  // TEMP: always seed if we have rows, regardless of seedDb flag
   if (seedDb || studentDataRows.length || gradeRows.length) {
     await seedStudentsAndGrades({
       studentDataRows: studentDataRows,
@@ -170,7 +171,6 @@ async function createBatchIssue(params) {
 
   const results = [];
 
-  // avoid nullish coalescing
   let effectiveAnchorNow = false;
   if (typeof anchorNow === 'boolean') {
     effectiveAnchorNow = anchorNow;
@@ -197,8 +197,6 @@ async function createBatchIssue(params) {
       },
     };
 
-
-    // clean overrides so we don't send undefined keys
     const cleanOverrides = {};
     if (item.overrides.fullName) cleanOverrides.fullName = item.overrides.fullName;
     if (item.overrides.program) cleanOverrides.program = item.overrides.program;
