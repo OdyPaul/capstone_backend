@@ -94,6 +94,7 @@ const updateSchema = {
 
       address: z.string().trim().max(500).optional(),
       placeOfBirth: z.string().trim().max(200).optional(),
+      dateOfBirth: z.any().optional(),
       highSchool: z.string().trim().max(200).optional(),
       entranceCredentials: z.string().trim().max(200).optional(),
       program: z.string().trim().max(200).optional(),

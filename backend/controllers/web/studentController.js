@@ -46,6 +46,7 @@ function normalizeStudentForList(s) {
     major: s.major || '',
     dateAdmission: s.dateAdmission || s.dateAdmitted || null,
     dateGraduated: s.dateGraduated || null,
+    dateOfBirth: s.dateOfBirth || null, // 👈 add this
     gwa:
       s.gwa !== undefined && s.gwa !== null
         ? s.gwa
@@ -58,6 +59,7 @@ function normalizeStudentForList(s) {
     college: s.college || null,
   };
 }
+
 
 function normalizeStudentForDetail(s) {
   if (!s) return null;
@@ -73,6 +75,7 @@ function normalizeStudentForDetail(s) {
     placeOfBirth: s.placeOfBirth || '',
     highSchool: s.highSchool || s.shsSchool || s.jhsSchool || '',
     entranceCredentials: s.entranceCredentials || '',
+    dateOfBirth: s.dateOfBirth || null, // 👈 add this
     collegeGwa:
       s.collegeGwa !== undefined && s.collegeGwa !== null
         ? s.collegeGwa
@@ -84,6 +87,7 @@ function normalizeStudentForDetail(s) {
     shsSchool: s.shsSchool || '',
   };
 }
+
 
 // ---------- GET /student/passing ----------
 // Uses Student_Data
@@ -335,6 +339,7 @@ const updateStudent = asyncHandler(async (req, res) => {
     gender,
     address,
     placeOfBirth,
+    dateOfBirth, 
     highSchool,
     entranceCredentials,
     program,
@@ -385,7 +390,10 @@ const updateStudent = asyncHandler(async (req, res) => {
     const a = new Date(dateAdmission);
     if (!isNaN(a)) $set.dateAdmitted = a;
   }
-
+if (dateOfBirth !== undefined && dateOfBirth !== null) {   // 👈 add this block
+    const dob = new Date(dateOfBirth);
+    if (!isNaN(dob)) $set.dateOfBirth = dob;
+  }
   // photo
   if (typeof photoDataUrl === 'string' && /^data:image\//i.test(photoDataUrl)) {
     const url = await uploadDataUriToCloudinary(photoDataUrl, 'students_data');
