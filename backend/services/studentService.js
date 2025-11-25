@@ -219,6 +219,31 @@ function safeDateFromY(year, month = 0, day = 1) {
   return d;
 }
 
+/**
+ * Auto-generate a unique studentNumber of the form:
+ *   C{baseYear}{5-digit-seq}
+ * where baseYear ≈ graduationYear - 4 (or near current year if unknown).
+ */
+async function generateUniqueStudentNumber(graduationYear) {
+  const now = new Date();
+  const gradYearNum =
+    graduationYear && !Number.isNaN(Number(graduationYear))
+      ? Number(graduationYear)
+      : now.getFullYear() + 4; // if grad year unknown, pretend 4 years ahead
+
+  const baseYear = gradYearNum - 4;
+
+  // Try multiple times to find a free ID
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const index = Math.floor(Math.random() * 100000); // 0..99999
+    const candidate = `C${baseYear}${String(index).padStart(5, '0')}`;
+    const exists = await StudentData.exists({ studentNumber: candidate });
+    if (!exists) return candidate;
+  }
+
+  throw new Error('Failed to generate unique student number');
+}
+
 async function createSingleStudentWithGrades(opts = {}) {
   const {
     fullName,
@@ -271,18 +296,24 @@ async function createSingleStudentWithGrades(opts = {}) {
     curriculumDoc = await Curriculum.findById(curriculumId).lean();
   }
 
-  // ---------- 3. Build Student_Data document ----------
+  // ---------- 3. Student number (required by schema, auto-generate if blank) ----------
+  let stdNo = (studentNumber || '').trim();
+  if (!stdNo) {
+    stdNo = await generateUniqueStudentNumber(graduationYear);
+  }
+
+  // ---------- 4. Build Student_Data document ----------
   const studentDocData = {
     // required
     firstName: fName,
     lastName: lName,
+    studentNumber: stdNo,
 
     // optional name fields
     middleName: mName || undefined,
     fullName: computedFullName,
 
-    // IDs / program
-    studentNumber: studentNumber ? String(studentNumber).trim() : undefined,
+    // program
     program: program || undefined,
     major: major || undefined,
 
@@ -338,10 +369,10 @@ async function createSingleStudentWithGrades(opts = {}) {
     }
   }
 
-  // ---------- 4. Save student ----------
+  // ---------- 5. Save student ----------
   const student = await StudentData.create(studentDocData);
 
-  // ---------- 5. Generate synthetic grades for this curriculum ----------
+  // ---------- 6. Generate synthetic grades for this curriculum ----------
   let grades = [];
   if (curriculumDoc && curriculumDoc.structure) {
     const structure = curriculumDoc.structure;
