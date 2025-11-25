@@ -42,6 +42,8 @@ function inferKind(typeParam, templateVc) {
 
 // ---------- core: create one issue ----------
 
+// ---------- core: create one issue ----------
+
 async function createOneIssue(params) {
   params = params || {};
 
@@ -111,21 +113,35 @@ async function createOneIssue(params) {
     ? Number(template.price)
     : 250;
 
-  // 1) Create bare Issue
+  // ---------- DEFAULT EXPIRATION: 12 months from today ----------
+  let effectiveExpiration = expiration;
+  if (
+    effectiveExpiration === undefined ||
+    effectiveExpiration === null ||
+    effectiveExpiration === ''
+  ) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);      // normalize to midnight
+    d.setFullYear(d.getFullYear() + 1); // +12 months
+    effectiveExpiration = d;
+  }
+  // If someone passes "N/A" explicitly, we still respect parseExpiration logic
+  // (it will return null and remove expiration)
+
   let issue = await VcIssue.create({
     template: template._id,
     student: student._id,
     type: kind,
     purpose: purpose,
     data: data,
-    expiration: parseExpiration(expiration),
+    expiration: parseExpiration(effectiveExpiration),
     amount: amount != null ? Number(amount) : price,
     currency: 'PHP',
     anchorNow: !!anchorNow,
     status: 'issued',
   });
 
-  // 2) Reload via query + populate (NO doc.populate chaining)
+  // Re-load with populate instead of chaining populate() on the document
   issue = await VcIssue.findById(issue._id)
     .populate({
       path: 'student',
@@ -137,6 +153,7 @@ async function createOneIssue(params) {
 
   return { status: 'created', issue: issue };
 }
+
 
 // ---------- batch issue creation (with optional seeding) ----------
 
