@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const asyncHandler = require("express-async-handler");
 const User = require("../../models/common/userModel");
 const UserImage = require("../../models/common/userImageModel");
+const StudentData = require("../../models/testing/studentDataModel"); // adjust path if needed
 
 // ---------------- HELPERS ----------------
 const generateToken = (id) => {
@@ -409,6 +410,37 @@ const logoutWebUser = asyncHandler(async (_req, res) => {
   res.status(204).end();
 });
 
+
+// @desc    Get linked student profile for logged-in mobile user
+// @route   GET /api/mobile/students/me
+// @access  Private (mobile)
+const getMyStudentProfile = asyncHandler(async (req, res) => {
+  const user = req.user;
+  if (!user) {
+    res.status(401);
+    throw new Error("Unauthorized");
+  }
+
+  let student = null;
+
+  // Prefer explicit linkage via user.studentId (if registrar set it)
+  if (user.studentId) {
+    student = await StudentData.findById(user.studentId).lean();
+  }
+
+  // Fallback via Student_Data.userId (set in verification flow)
+  if (!student) {
+    student = await StudentData.findOne({ userId: user._id }).lean();
+  }
+
+  if (!student) {
+    res.status(404);
+    throw new Error("No linked student record");
+  }
+
+  res.json(student);
+});
+
 module.exports = {
   registerMobileUser,
   loginMobileUser,
@@ -420,4 +452,5 @@ module.exports = {
   logoutWebUser,
   updateMobileUser,
   deleteMobileUser,
+  getMyStudentProfile 
 };

@@ -13,6 +13,7 @@ const {
   updateWebUser,
   updateMobileUser,
   deleteMobileUser,
+  getMyStudentProfile,
 } = require("../../controllers/common/userController");
 
 const {
@@ -254,6 +255,14 @@ mobile.get(
   protect,
   requestLogger("mobile.me", { db: "auth" }),
   getMe
+);
+
+// ⬇️ NEW: Get logged-in student's linked Student_Data record
+mobile.get(
+  "/students/me",
+  protect,
+  requestLogger("mobile.student.me", { db: "students" }),
+  getMyStudentProfile
 );
 
 // Mount subrouters
