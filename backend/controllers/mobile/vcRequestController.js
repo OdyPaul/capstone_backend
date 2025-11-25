@@ -10,7 +10,7 @@ const { createOneIssue } = require('../../services/issueService');
 const { toFullName } = require('../../services/gradeService');
 
 function httpError(status, message) {
-  const err = new Error(message || 'Error');
+  const err = new Error(message || 'Error'); 
   err.status = status;
   return err;
 }
