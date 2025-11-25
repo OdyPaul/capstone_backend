@@ -56,6 +56,7 @@ async function seedStudentsAndGrades({ studentDataRows = [], gradeRows = [] }) {
       dateAdmitted: row.dateAdmitted || row.DateAdmitted || null,
       dateGraduated: row.dateGraduated || row.DateGraduated || null,
       placeOfBirth: row.placeOfBirth || row.PlaceOfBirth || '',
+      dateOfBirth: row.dateOfBirth || row.DateOfBirth || null,
       collegeAwardHonor:
         row.collegeAwardHonor || row.College_AwardHonor || '',
       entranceCredentials:

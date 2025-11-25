@@ -104,8 +104,9 @@ exports.preview = asyncHandler(async (req, res) => {
     path: 'student',
     model: StudentData,
     select:
-      'studentNumber program dateGraduated firstName lastName middleName extName',
+      'studentNumber program dateGraduated dateOfBirth firstName lastName middleName extName',
   });
+
 
   if (!issue) {
     throw Object.assign(new Error('Issue not found'), { status: 404 });
@@ -122,9 +123,11 @@ exports.preview = asyncHandler(async (req, res) => {
       fullName: toFullName(issue.student),
       program: issue.student?.program,
       dateGraduated: issue.student?.dateGraduated,
+      dateOfBirth: issue.student?.dateOfBirth,
       ...issue.data,
     },
   });
+
 
   res.json(vcPayload);
 });
@@ -146,9 +149,10 @@ exports.payAndSign = asyncHandler(async (req, res) => {
       path: 'student',
       model: StudentData,
       select:
-        'studentNumber program dateGraduated firstName lastName middleName extName',
+        'studentNumber program dateGraduated dateOfBirth firstName lastName middleName extName',
     })
     .populate({ path: 'template', select: 'name slug version price vc' });
+
 
   if (!issue) {
     throw Object.assign(new Error('Issue not found'), { status: 404 });
@@ -205,9 +209,11 @@ exports.payAndSign = asyncHandler(async (req, res) => {
       fullName: toFullName(issue.student),
       program: issue.student?.program,
       dateGraduated: issue.student?.dateGraduated,
+      dateOfBirth: issue.student?.dateOfBirth,
       ...issue.data,
     },
   });
+
 
   // ---- Step 3–5: sign JWS & persist SignedVC and flip Issue → signed ----
   const signed = await signAndPersistVc({ issue, vcPayload });

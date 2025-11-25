@@ -40,6 +40,7 @@ const StudentDataSchema = new mongoose.Schema(
     dateAdmitted: { type: Date }, // DateAdmitted
     dateGraduated: { type: Date }, // DateGraduated
     placeOfBirth: { type: String }, // PlaceOfBirth
+    dateOfBirth: { type: Date }, // DateOfBirth 
 
     collegeAwardHonor: { type: String }, // College_AwardHonor
     honor: { type: String }, // convenience alias
