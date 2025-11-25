@@ -12,19 +12,15 @@ try {
 }
 
 const { toFullName } = require('./gradeService');
+
 const {
-  getRandomMagalangAddress,
-  randomAdmissionAndGraduation,
-  randomAdmissionAndGraduationForGradDate,
-  randomGwa,
-  randomHonor,
-  randomSchoolName,
-  randomEntranceCredential,
-  randomPlaceOfBirth,
-  randomDateOfBirthForAdmission,
+  fillMissingStudentFields,
+  flattenCurriculumSubjects,
+  getRandomGrade,
+  getRemarksFromGrade,
+  getTermNameFromSemester,
   getSampleSchoolYear,
-  makeGradeRowsForCurriculum,
-} = require('../utils/seed_students');
+} = require('../utils/seed_student');
 
 /**
  * Seed / upsert StudentData + Grade from spreadsheet-style payload
@@ -198,206 +194,232 @@ async function loadStudentContext({ studentId, studentNumber, needGrades }) {
   return { student, curriculumDoc, grades };
 }
 
-/**
- * Generate a unique student number of the form `CYYYYNNNNN`.
- */
-async function generateUniqueStudentNumber(baseYear) {
-  const year = String(baseYear || new Date().getFullYear());
-  const maxAttempts = 1000;
+// ---------------------------------------------------------------------------
+// Single student + synthetic grades for program (used by web create)
+// ---------------------------------------------------------------------------
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const suffix = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
-    const candidate = `C${year}${suffix}`;
-    // eslint-disable-next-line no-await-in-loop
-    const exists = await StudentData.exists({ studentNumber: candidate });
-    if (!exists) return candidate;
+async function generateStudentNumberForYear(year) {
+  const y = Number(year) || new Date().getFullYear();
+  const prefix = `C${y}`;
+
+  const last = await StudentData.findOne({
+    studentNumber: { $regex: `^${prefix}` },
+  })
+    .sort({ studentNumber: -1 })
+    .lean();
+
+  let next = 1;
+  if (
+    last &&
+    last.studentNumber &&
+    String(last.studentNumber).startsWith(prefix)
+  ) {
+    const suffix = Number(String(last.studentNumber).slice(prefix.length)) || 0;
+    next = suffix + 1;
   }
 
-  throw new Error('Failed to generate unique student number');
+  return `${prefix}${String(next).padStart(5, '0')}`;
 }
 
 /**
- * Create a single StudentData document + synthetic Grade documents
- * based on program/curriculum and optional randomization.
- *
- * This is used by the web POST /api/web/students endpoint.
+ * Create a single StudentData row + synthetic Grade rows for its Curriculum.
  */
-async function createSingleStudentWithGrades(options = {}) {
+async function createSingleStudentWithGrades(opts) {
   const {
     fullName,
-    studentNumber: rawStudentNumber,
-    program: rawProgram,
-    major: rawMajor,
-    curriculumId,
-    gender: rawGender,
-    address: rawAddress,
-    placeOfBirth: rawPlaceOfBirth,
-    highSchool: rawHighSchool,
-    honor: rawHonor,
-    dateGraduated: rawDateGraduated,
-    dateOfBirth: rawDateOfBirth,
-    randomizeMissing = false,
-    photoUrl,
-  } = options;
-
-  if (!fullName || !fullName.trim()) {
-    throw Object.assign(new Error('fullName is required'), { status: 400 });
-  }
-
-  let program = rawProgram ? String(rawProgram).trim() : '';
-  let major = rawMajor ? String(rawMajor).trim() : '';
-  let gender = rawGender ? String(rawGender).toLowerCase().trim() : '';
-  let address = rawAddress ? String(rawAddress).trim() : '';
-  let placeOfBirth = rawPlaceOfBirth
-    ? String(rawPlaceOfBirth).trim()
-    : '';
-  let highSchool = rawHighSchool ? String(rawHighSchool).trim() : '';
-  let honor = rawHonor ? String(rawHonor).trim() : '';
-
-  let dateGraduated = rawDateGraduated
-    ? new Date(rawDateGraduated)
-    : null;
-  if (dateGraduated && Number.isNaN(dateGraduated.getTime())) {
-    dateGraduated = null;
-  }
-
-  let dateOfBirth = rawDateOfBirth ? new Date(rawDateOfBirth) : null;
-  if (dateOfBirth && Number.isNaN(dateOfBirth.getTime())) {
-    dateOfBirth = null;
-  }
-
-  // Curriculum selection
-  let curriculumDoc = null;
-  if (Curriculum) {
-    if (curriculumId && mongoose.isValidObjectId(curriculumId)) {
-      curriculumDoc = await Curriculum.findById(curriculumId).lean();
-    } else if (program) {
-      curriculumDoc = await Curriculum.findOne({
-        program: String(program),
-      })
-        .sort({ curriculumYear: -1 })
-        .lean();
-    }
-  }
-
-  // Admission + Graduation dates
-  let dateAdmitted = null;
-
-  if (dateGraduated && randomizeMissing) {
-    const pair = randomAdmissionAndGraduationForGradDate(dateGraduated);
-    dateAdmitted = pair.dateAdmitted;
-    dateGraduated = pair.dateGraduated;
-  } else if (!dateGraduated && randomizeMissing) {
-    const pair = randomAdmissionAndGraduation();
-    dateAdmitted = pair.dateAdmitted;
-    dateGraduated = pair.dateGraduated;
-  } else if (dateGraduated && !randomizeMissing) {
-    const ad = new Date(dateGraduated);
-    ad.setFullYear(ad.getFullYear() - 4);
-    dateAdmitted = ad;
-  }
-
-  // Randomize other fields if requested
-  if (!gender && randomizeMissing) {
-    gender = getRandomGender();
-  }
-
-  if (!address && randomizeMissing) {
-    address = getRandomMagalangAddress();
-  }
-
-  if (!placeOfBirth && randomizeMissing) {
-    placeOfBirth = randomPlaceOfBirth();
-  }
-
-  if (!highSchool && randomizeMissing) {
-    highSchool = randomSchoolName('SHS');
-  }
-
-  let collegeGwa = null;
-  if (randomizeMissing) {
-    collegeGwa = randomGwa();
-    if (!honor) honor = randomHonor(collegeGwa);
-  }
-
-  if (!dateOfBirth && randomizeMissing) {
-    const baseAdmission =
-      dateAdmitted ||
-      (dateGraduated
-        ? new Date(dateGraduated.getFullYear() - 4, 0, 1)
-        : new Date());
-    dateOfBirth = randomDateOfBirthForAdmission(baseAdmission);
-  }
-
-  // Generate studentNumber if missing
-  let studentNumber = rawStudentNumber
-    ? String(rawStudentNumber).trim()
-    : '';
-  const baseYear =
-    (dateAdmitted && dateAdmitted.getFullYear()) ||
-    (dateGraduated && dateGraduated.getFullYear()) ||
-    new Date().getFullYear();
-
-  if (!studentNumber) {
-    studentNumber = await generateUniqueStudentNumber(baseYear);
-  }
-
-  // Fallback program from curriculum if needed
-  if (!program && curriculumDoc && curriculumDoc.program) {
-    program = curriculumDoc.program;
-  }
-
-  // Create StudentData document
-  const studentDoc = await StudentData.create({
+    firstName,
+    middleName,
+    lastName,
     studentNumber,
-    fullName: fullName.trim(),
     program,
     major,
+    curriculumId,
     gender,
-    permanentAddress: address,
+    address,
     placeOfBirth,
     highSchool,
-    shsSchool: highSchool || undefined,
-    jhsSchool: undefined,
-    collegeAwardHonor: honor || undefined,
-    honor: honor || undefined,
-    collegeGwa,
-    gwa: collegeGwa,
-    entranceCredentials: randomizeMissing
-      ? randomEntranceCredential()
-      : undefined,
-    dateAdmitted: dateAdmitted || undefined,
-    dateGraduated: dateGraduated || undefined,
-    dateOfBirth: dateOfBirth || undefined,
-    curriculum: curriculumDoc ? curriculumDoc._id : undefined,
-    photoUrl: photoUrl || undefined,
-  });
+    dateOfBirth,
+    dateGraduated,
+    graduationYear,
+    randomizeMissing,
+    photoUrl,
+  } = opts || {};
 
-  // Generate Grade documents based on curriculum
-  let gradeDocs = [];
-  if (curriculumDoc) {
-    const sy = getSampleSchoolYear();
-    const gradeRows = makeGradeRowsForCurriculum({
-      studentId: studentDoc._id,
-      curriculum: curriculumDoc,
-      program,
-      schoolYear: sy,
-    });
+  // Resolve curriculum (optional)
+  let curriculumDoc = null;
 
-    if (gradeRows.length) {
-      gradeDocs = await Grade.insertMany(gradeRows);
+  if (Curriculum && curriculumId) {
+    if (!mongoose.isValidObjectId(curriculumId)) {
+      const err = new Error('Invalid curriculumId');
+      err.status = 400;
+      throw err;
+    }
+    curriculumDoc = await Curriculum.findById(curriculumId).lean();
+    if (!curriculumDoc) {
+      const err = new Error('Curriculum not found');
+      err.status = 404;
+      throw err;
+    }
+  } else if (Curriculum && program) {
+    curriculumDoc = await Curriculum.findOne({ program })
+      .sort({ curriculumYear: -1 })
+      .lean();
+  }
+
+  // ---------- Names ----------
+  let fName = (firstName || '').trim();
+  let lName = (lastName || '').trim();
+  let mName = (middleName || '').trim();
+
+  if ((!fName || !lName) && fullName) {
+    const parts = String(fullName).trim().split(/\s+/);
+    if (!fName && parts.length) fName = parts[0];
+    if (!lName && parts.length > 1) lName = parts[parts.length - 1];
+    if (!mName && parts.length > 2) {
+      mName = parts.slice(1, -1).join(' ');
     }
   }
 
-  const studentPlain =
-    typeof studentDoc.toObject === 'function'
-      ? studentDoc.toObject()
-      : studentDoc;
-  const gradesPlain = gradeDocs.map((g) =>
-    typeof g.toObject === 'function' ? g.toObject() : g,
-  );
+  if (!fName || !lName) {
+    const err = new Error('firstName and lastName are required');
+    err.status = 400;
+    throw err;
+  }
 
-  return { student: studentPlain, grades: gradesPlain };
+  const studentDocData = {};
+
+  studentDocData.firstName = fName;
+  studentDocData.lastName = lName;
+  if (mName) studentDocData.middleName = mName;
+
+  // fullName display
+  const computedFullName = `${lName.toUpperCase()}, ${fName}${
+    mName ? ` ${mName}` : ''
+  }`;
+  studentDocData.fullName =
+    (fullName && fullName.trim()) || computedFullName;
+
+  // ---------- Student number ----------
+  let finalStudentNo = (studentNumber || '').trim();
+  const inferredGradYear =
+    Number(graduationYear) ||
+    (dateGraduated ? new Date(dateGraduated).getFullYear() : undefined);
+
+  if (!finalStudentNo) {
+    finalStudentNo = await generateStudentNumberForYear(
+      inferredGradYear || new Date().getFullYear(),
+    );
+  }
+  studentDocData.studentNumber = finalStudentNo;
+
+  // ---------- Program / Curriculum ----------
+  if (program) studentDocData.program = program;
+  if (major) studentDocData.major = major;
+  if (curriculumDoc && curriculumDoc._id) {
+    studentDocData.curriculum = curriculumDoc._id;
+    if (!studentDocData.program) {
+      studentDocData.program =
+        curriculumDoc.program ||
+        curriculumDoc.name ||
+        curriculumDoc.title ||
+        undefined;
+    }
+  }
+
+  // ---------- Demographics ----------
+  if (gender) studentDocData.gender = String(gender).toLowerCase();
+  if (address) studentDocData.permanentAddress = address;
+  if (placeOfBirth) studentDocData.placeOfBirth = placeOfBirth;
+
+  if (highSchool) {
+    studentDocData.highSchool = highSchool;
+    studentDocData.shsSchool = highSchool;
+  }
+
+  if (dateOfBirth) {
+    const dob = new Date(dateOfBirth);
+    if (!Number.isNaN(dob.getTime())) {
+      studentDocData.dateOfBirth = dob;
+    }
+  }
+
+  // ---------- Graduation & Admission ----------
+  let gradYearNum = null;
+
+  if (graduationYear != null && graduationYear !== '') {
+    const n = Number(graduationYear);
+    if (!Number.isNaN(n) && n >= 1900 && n <= 2100) {
+      gradYearNum = n;
+    }
+  }
+
+  if (dateGraduated) {
+    const g = new Date(dateGraduated);
+    if (!Number.isNaN(g.getTime())) {
+      studentDocData.dateGraduated = g;
+      if (!studentDocData.dateAdmitted) {
+        const admit = new Date(g);
+        admit.setFullYear(admit.getFullYear() - 4);
+        studentDocData.dateAdmitted = admit;
+      }
+      if (!gradYearNum) gradYearNum = g.getFullYear();
+    }
+  } else if (gradYearNum) {
+    const g = new Date(gradYearNum, 3, 1); // April 1 of the grad year
+    studentDocData.dateGraduated = g;
+    const admit = new Date(gradYearNum - 4, 5, 1); // June 1 four years earlier
+    studentDocData.dateAdmitted = admit;
+  }
+
+  // ---------- Photo ----------
+  if (photoUrl) {
+    studentDocData.photoUrl = photoUrl;
+  }
+
+  // ---------- Randomize missing fields (testing) ----------
+  const finalStudentDocData = randomizeMissing
+    ? fillMissingStudentFields(studentDocData, {
+        graduationYear: gradYearNum,
+      })
+    : studentDocData;
+
+  // Persist student
+  const studentDoc = await StudentData.create(finalStudentDocData);
+
+  // ---------- Synthetic Grades from Curriculum ----------
+  let grades = [];
+  if (curriculumDoc) {
+    const subjects = flattenCurriculumSubjects(curriculumDoc);
+    if (subjects && subjects.length) {
+      const schoolYear = getSampleSchoolYear();
+      const gradeDocs = subjects.map((s) => {
+        const finalGrade = getRandomGrade();
+        const remarks = getRemarksFromGrade(finalGrade);
+        const termName = getTermNameFromSemester(s.semester);
+
+        return {
+          student: studentDoc._id,
+          curriculum: curriculumDoc._id,
+          yearLevel: s.yearLevel,
+          semester: s.semester,
+          subjectCode: s.subjectCode,
+          subjectTitle: s.subjectTitle,
+          units: s.units,
+          schoolYear,
+          termName,
+          finalGrade,
+          remarks,
+        };
+      });
+
+      grades = await Grade.insertMany(gradeDocs);
+    }
+  }
+
+  return {
+    student: studentDoc.toObject ? studentDoc.toObject() : studentDoc,
+    grades,
+  };
 }
 
 module.exports = {

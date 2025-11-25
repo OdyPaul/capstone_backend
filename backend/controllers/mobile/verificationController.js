@@ -4,7 +4,9 @@ const { isValidObjectId } = require("mongoose");
 const VerificationRequest = require("../../models/mobile/verificationRequestModel");
 const Image = require("../../models/mobile/imageModel");
 const User = require("../../models/common/userModel");
-const Student = require("../../models/students/studentModel");
+const Student = require("../../models/students/studentModel"); // still here if other code needs it
+const StudentData = require("../../models/students/studentDataModel");
+const Grade = require("../../models/students/gradeModel");
 const { enqueueVerify, enqueueReject } = require("../../queues/verification.queue");
 
 /* ---------- Audit Helpers ---------- */
@@ -69,7 +71,9 @@ async function emitVerificationAudit({
     };
 
     await AuditLog.create(doc);
-  } catch {}
+  } catch {
+    // ignore audit errors
+  }
 }
 
 /* ---------- Helpers ---------- */
@@ -78,17 +82,6 @@ function toBool(v) {
   if (typeof v === "string")
     return ["1", "true", "yes", "y"].includes(v.toLowerCase());
   return false;
-}
-
-function parseJsonMaybe(val, label) {
-  if (typeof val !== "string") return val;
-  try {
-    return JSON.parse(val);
-  } catch {
-    const err = new Error(`${label} must be a JSON object`);
-    err.statusCode = 400;
-    throw err;
-  }
 }
 
 function escapeRegex(s) {
@@ -134,10 +127,256 @@ function buildPopulateList({ withImages = false } = {}) {
   return pops;
 }
 
+function dayRange(d) {
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  const start = new Date(
+    dt.getFullYear(),
+    dt.getMonth(),
+    dt.getDate(),
+    0,
+    0,
+    0,
+    0
+  );
+  const end = new Date(
+    dt.getFullYear(),
+    dt.getMonth(),
+    dt.getDate(),
+    23,
+    59,
+    59,
+    999
+  );
+  return { start, end };
+}
+
 /* ============================================================
-   STUDENT: CREATE VERIFICATION REQUEST
-   (DID REMOVED COMPLETELY)
+   NEW FLOW: AUTO-MATCH Student_Data + Grades
+   - No admin approval
+   - Admission / graduation: matched by YEAR ONLY
+   - extName is accepted but NOT used for matching
    ============================================================ */
+exports.autoMatchStudent = async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const userId = req.user._id;
+
+    const {
+      firstName,
+      middleInitial,
+      lastName,
+      extName, // optional, NOT used as filter
+      gender,
+      birthDate,
+      admissionYear,
+      graduationYear,
+      program,
+    } = req.body || {};
+
+    // Basic safety; zod already validated in routes
+    if (
+      !firstName ||
+      !lastName ||
+      !birthDate ||
+      !admissionYear ||
+      !graduationYear ||
+      !program
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Missing required verification fields" });
+    }
+
+    const filter = {};
+
+    // Names (case-insensitive exact-ish)
+    if (firstName) {
+      filter.firstName = {
+        $regex: new RegExp(
+          "^" + escapeRegex(String(firstName).trim()) + "$",
+          "i"
+        ),
+      };
+    }
+    if (lastName) {
+      filter.lastName = {
+        $regex: new RegExp(
+          "^" + escapeRegex(String(lastName).trim()) + "$",
+          "i"
+        ),
+      };
+    }
+
+    // middleInitial → match beginning of middleName (e.g. "M" matches "Marie")
+    if (middleInitial) {
+      const mi = String(middleInitial).trim().charAt(0);
+      if (mi) {
+        filter.middleName = {
+          $regex: new RegExp("^" + escapeRegex(mi), "i"),
+        };
+      }
+    }
+
+    // ❗ extName is OPTIONAL and NOT used for matching to avoid mismatches
+    // if (extName) { ... } // ← intentionally not used
+
+    // Gender (simple case-insensitive match)
+    if (gender) {
+      filter.gender = {
+        $regex: new RegExp(
+          "^" + escapeRegex(String(gender).trim()),
+          "i"
+        ),
+      };
+    }
+
+    // Program (exact from Curriculum/program search)
+    if (program) {
+      filter.program = String(program).trim();
+    }
+
+    // Date of birth: exact calendar day (00:00–23:59 of that date)
+    const dobRange = dayRange(birthDate);
+    if (dobRange) {
+      filter.dateOfBirth = { $gte: dobRange.start, $lte: dobRange.end };
+    }
+
+    // Admission / graduation year ⇒ YEAR-ONLY match using $year
+    const exprs = [];
+    const admYear = parseInt(admissionYear, 10);
+    const gradYear = parseInt(graduationYear, 10);
+
+    if (admYear) {
+      exprs.push({
+        $eq: [{ $year: "$dateAdmitted" }, admYear],
+      });
+    }
+
+    if (gradYear) {
+      exprs.push({
+        $eq: [{ $year: "$dateGraduated" }, gradYear],
+      });
+    }
+
+    if (exprs.length === 1) {
+      filter.$expr = exprs[0];
+    } else if (exprs.length > 1) {
+      filter.$expr = { $and: exprs };
+    }
+
+    // Find matching student(s) from Student_Data
+    const candidates = await StudentData.find(filter).limit(3).lean();
+
+    if (!candidates.length) {
+      return res
+        .status(404)
+        .json({ message: "No matching student record found" });
+    }
+
+    if (candidates.length > 1) {
+      return res.status(409).json({
+        message:
+          "Multiple student records match these details. Please contact the registrar for assistance.",
+      });
+    }
+
+    const student = candidates[0];
+
+    // Check if this student record is already linked to another user
+    if (student.userId && String(student.userId) !== String(userId)) {
+      return res.status(409).json({
+        message: "This student record is already linked to another account.",
+      });
+    }
+
+    // Check if this user already linked to a different student record
+    const existing = await StudentData.findOne({ userId }).lean();
+    if (existing && String(existing._id) !== String(student._id)) {
+      return res.status(409).json({
+        message:
+          "Your account is already linked to a different student record.",
+      });
+    }
+
+    // Link Student_Data to user
+    const updated = await StudentData.findByIdAndUpdate(
+      student._id,
+      { userId },
+      { new: true }
+    ).lean();
+
+    // Load grades referencing this Student_Data (reference only)
+    let grades = [];
+    try {
+      grades = await Grade.find({ student: updated._id })
+        .select(
+          "curriculum yearLevel semester subjectCode subjectTitle units schoolYear termName finalGrade remarks"
+        )
+        .lean();
+    } catch (e) {
+      console.error(
+        "autoMatchStudent: failed to load grades:",
+        e?.message
+      );
+      // don't block linking if grades lookup fails
+    }
+
+    // Optionally sync user's fullName
+    try {
+      const fullName =
+        updated.fullName ||
+        `${updated.lastName}, ${updated.firstName}${
+          updated.middleName ? " " + updated.middleName.charAt(0) + "." : ""
+        }`;
+
+      await User.findByIdAndUpdate(userId, { fullName }).catch(() => {});
+    } catch {
+      // ignore user update errors
+    }
+
+    // Audit log for auto-verify
+    emitVerificationAudit({
+      actorId: userId,
+      actorRole: req.user.role || null,
+      event: "verification.auto_matched",
+      recipients: [String(userId)],
+      targetId: updated._id,
+      title: "Student record linked automatically",
+      body: "Your account was automatically matched to your student record.",
+      extra: { studentNumber: updated.studentNumber },
+    });
+
+    return res.json({
+      success: true,
+      student: {
+        _id: updated._id,
+        studentNumber: updated.studentNumber,
+        fullName: updated.fullName,
+        program: updated.program,
+        dateAdmitted: updated.dateAdmitted,
+        dateGraduated: updated.dateGraduated,
+      },
+      grades,
+    });
+  } catch (err) {
+    console.error("autoMatchStudent error:", err?.message, err?.stack);
+    return res.status(500).json({
+      message: err.message || "Failed to auto-match student record",
+    });
+  }
+};
+
+/* ============================================================
+   LEGACY FLOW (selfie + ID + VerificationRequest)
+   - Commented out so only autoMatch is used now
+   - Keep here for reference / possible future use
+   ============================================================ */
+
+/*
 exports.createVerificationRequest = async (req, res) => {
   try {
     let { personal, education, selfieImageId, idImageId } = req.body || {};
@@ -201,233 +440,13 @@ exports.createVerificationRequest = async (req, res) => {
   }
 };
 
-/* ============================================================
-   ADMIN: QUEUE VERIFY
-   ============================================================ */
-exports.verifyRequest = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { studentId } = req.body || {};
+exports.verifyRequest = async (req, res) => { ... };
 
-    if (!isValidObjectId(id))
-      return res.status(400).json({ message: "Invalid id" });
-    if (studentId && !isValidObjectId(studentId))
-      return res.status(400).json({ message: "Invalid studentId" });
+exports.rejectRequest = async (req, res) => { ... };
 
-    const vr = await VerificationRequest.findById(id).select(
-      "_id status user"
-    );
+exports.getMyVerificationRequests = async (req, res) => { ... };
 
-    if (!vr)
-      return res.status(404).json({ message: "Request not found" });
+exports.getVerificationRequests = async (req, res) => { ... };
 
-    if (vr.status !== "pending") {
-      return res
-        .status(409)
-        .json({ message: `Request is ${vr.status}, not pending` });
-    }
-
-    await enqueueVerify({
-      requestId: id,
-      studentId: studentId || null,
-      actorId: req.user?._id || null,
-      actorRole: req.user?.role || null,
-    });
-
-    emitVerificationAudit({
-      actorId: req.user?._id || null,
-      actorRole: req.user?.role || null,
-      event: "verification.queued",
-      recipients: [String(vr.user)],
-      targetId: vr._id,
-      title: "Verification in progress",
-      body: "An admin has started reviewing your request.",
-      extra: { status: "in_review" },
-    });
-
-    return res
-      .status(202)
-      .json({ queued: true, action: "verify", requestId: id });
-  } catch (err) {
-    console.error("verifyRequest error:", err?.message, err?.stack);
-    return res
-      .status(500)
-      .json({ message: err.message || "Failed to queue verify" });
-  }
-};
-
-/* ============================================================
-   ADMIN: QUEUE REJECTION
-   ============================================================ */
-exports.rejectRequest = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body || {};
-
-    if (!isValidObjectId(id))
-      return res.status(400).json({ message: "Invalid id" });
-
-    const vr = await VerificationRequest.findById(id).select(
-      "_id status user"
-    );
-    if (!vr)
-      return res.status(404).json({ message: "Request not found" });
-
-    if (vr.status !== "pending") {
-      return res
-        .status(409)
-        .json({ message: `Request is ${vr.status}, not pending` });
-    }
-
-    await enqueueReject({
-      requestId: id,
-      reason: String(reason || "").slice(0, 240),
-      actorId: req.user?._id || null,
-      actorRole: req.user?.role || null,
-    });
-
-    emitVerificationAudit({
-      actorId: req.user?._id || null,
-      actorRole: req.user?.role || null,
-      event: "verification.rejection_queued",
-      recipients: [String(vr.user)],
-      targetId: vr._id,
-      title: "Verification update",
-      body: "Your verification is being reviewed for rejection.",
-      extra: { status: "pending_rejection", reason },
-    });
-
-    return res
-      .status(202)
-      .json({ queued: true, action: "reject", requestId: id });
-  } catch (err) {
-    console.error("rejectRequest error:", err?.message, err?.stack);
-    return res
-      .status(500)
-      .json({ message: err.message || "Failed to queue reject" });
-  }
-};
-
-/* ============================================================
-   STUDENT: GET OWN REQUESTS
-   ============================================================ */
-exports.getMyVerificationRequests = async (req, res) => {
-  try {
-    const pops = buildPopulateList({ withImages: true });
-
-    let q = VerificationRequest.find({
-      user: req.user._id,
-    }).sort({ createdAt: -1 });
-
-    pops.forEach((p) => (q = q.populate(p)));
-
-    const requests = await q.lean();
-    res.json(requests);
-  } catch (err) {
-    console.error(
-      "getMyVerificationRequests error:",
-      err?.message,
-      err?.stack
-    );
-    res
-      .status(500)
-      .json({ message: "Failed to fetch your verification requests" });
-  }
-};
-
-/* ============================================================
-   ADMIN: LIST REQUESTS
-   ============================================================ */
-exports.getVerificationRequests = async (req, res) => {
-  try {
-    const {
-      page = 1,
-      limit = 20,
-      status = "all",
-      q = "",
-      from = "",
-      to = "",
-      includeImages = "0",
-    } = req.query;
-
-    const pg = Math.max(1, parseInt(page, 10) || 1);
-    const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 20));
-
-    const filter = {};
-    if (status && status !== "all") filter.status = status;
-
-    if (q) {
-      const safe = escapeRegex(q);
-      filter.$or = [
-        { "personal.fullName": { $regex: safe, $options: "i" } },
-      ]; // DID removed
-    }
-
-    const fromDate = from ? safeDate(from) : null;
-    const toDate = to ? safeDate(to) : null;
-
-    if (from && !fromDate)
-      return res.status(400).json({ message: "Invalid 'from' date" });
-    if (to && !toDate)
-      return res.status(400).json({ message: "Invalid 'to' date" });
-
-    if (fromDate)
-      filter.createdAt = { ...(filter.createdAt || {}), $gte: fromDate };
-    if (toDate)
-      filter.createdAt = { ...(filter.createdAt || {}), $lte: toDate };
-
-    const pops = buildPopulateList({
-      withImages: toBool(includeImages),
-    });
-
-    let qDoc = VerificationRequest.find(filter)
-      .sort({ createdAt: -1 })
-      .skip((pg - 1) * lim)
-      .limit(lim);
-
-    pops.forEach((p) => (qDoc = qDoc.populate(p)));
-
-    const [items, total] = await Promise.all([
-      qDoc.lean(),
-      VerificationRequest.countDocuments(filter),
-    ]);
-
-    res.json({ items, total, page: pg, limit: lim });
-  } catch (err) {
-    console.error("getVerificationRequests error:", err?.message, err?.stack);
-    res
-      .status(500)
-      .json({ message: "Failed to fetch verification requests" });
-  }
-};
-
-/* ============================================================
-   ADMIN: GET SINGLE REQUEST
-   ============================================================ */
-exports.getVerificationRequestById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!isValidObjectId(id))
-      return res.status(400).json({ message: "Invalid id" });
-
-    const pops = buildPopulateList({ withImages: true });
-
-    let q = VerificationRequest.findById(id);
-    pops.forEach((p) => (q = q.populate(p)));
-
-    const request = await q.lean();
-
-    if (!request)
-      return res.status(404).json({ message: "Request not found" });
-
-    res.json(request);
-  } catch (err) {
-    console.error(
-      "getVerificationRequestById error:",
-      err?.message,
-      err?.stack
-    );
-    res.status(500).json({ message: "Failed to fetch request" });
-  }
-};
+exports.getVerificationRequestById = async (req, res) => { ... };
+*/

@@ -1,16 +1,5 @@
 // backend/utils/seed_student.js
-// Helper utilities for generating synthetic StudentData + Grade data.
-// Used by web student creation and testing scripts.
-
-function generateStudentNumber(year, index) {
-  const y = String(year || new Date().getFullYear());
-  const i = String(index || 1).padStart(5, '0');
-  return `C${y}${i}`;
-}
-
-function getRandomGender() {
-  return Math.random() < 0.5 ? 'male' : 'female';
-}
+// Helpers for synthetic student + grades generation (testing only).
 
 function getRandomMagalangAddress() {
   const barangays = [
@@ -56,48 +45,9 @@ function randomDateBetween(yearStart, yearEnd) {
   return new Date(ts);
 }
 
-// Admission + graduation pair, fully random (2015–2023 admit, +3–5 yrs for grad)
-function randomAdmissionAndGraduation() {
-  const admitted = randomDateBetween(2015, 2023);
-  const gradYear =
-    admitted.getFullYear() + (3 + Math.floor(Math.random() * 3));
-  const graduated = randomDateBetween(gradYear, gradYear);
-
-  return { dateAdmitted: admitted, dateGraduated: graduated };
-}
-
-// Admission date randomized given a fixed graduation date
-function randomAdmissionAndGraduationForGradDate(gradDate) {
-  if (!(gradDate instanceof Date) || Number.isNaN(gradDate.getTime())) {
-    return randomAdmissionAndGraduation();
-  }
-
-  const gradYear = gradDate.getFullYear();
-  const minYears = 3;
-  const maxYears = 5;
-  const yearsBack =
-    minYears + Math.floor(Math.random() * (maxYears - minYears + 1));
-
-  const admitYear = gradYear - yearsBack;
-  const admitted = randomDateBetween(admitYear, admitYear);
-
-  return {
-    dateAdmitted: admitted,
-    dateGraduated: gradDate,
-  };
-}
-
 function randomGwa() {
   const value = 1 + Math.random() * 2; // 1.00–3.00
   return Number(value.toFixed(2));
-}
-
-function randomHonor(gwa) {
-  if (gwa == null) return '';
-  if (gwa <= 1.25) return 'Summa Cum Laude';
-  if (gwa <= 1.50) return 'Magna Cum Laude';
-  if (gwa <= 1.75) return 'Cum Laude';
-  return '';
 }
 
 function randomSchoolName(prefix) {
@@ -132,16 +82,15 @@ function randomPlaceOfBirth() {
 
 // Random date of birth based on admission date (age 17–21 at admission)
 function randomDateOfBirthForAdmission(admittedDate) {
-  const base =
-    admittedDate instanceof Date && !Number.isNaN(admittedDate.getTime())
-      ? admittedDate
-      : new Date();
+  if (!(admittedDate instanceof Date) || isNaN(admittedDate)) {
+    return null;
+  }
 
   const minAge = 17;
   const maxAge = 21;
 
   const age = minAge + Math.floor(Math.random() * (maxAge - minAge + 1));
-  const year = base.getFullYear() - age;
+  const year = admittedDate.getFullYear() - age;
 
   const start = new Date(year, 0, 1).getTime();
   const end = new Date(year, 11, 31).getTime();
@@ -150,13 +99,10 @@ function randomDateOfBirthForAdmission(admittedDate) {
   return new Date(ts);
 }
 
-// ----- Grade helpers (same logic as generateStudentData.js) -----
-
+// Curriculum → flat subjects list
 function flattenCurriculumSubjects(curriculum) {
   const out = [];
-  if (!curriculum) return out;
-
-  const structure = curriculum.structure || {};
+  const structure = (curriculum && curriculum.structure) || {};
 
   for (const yearLevel of Object.keys(structure)) {
     const yearBlock = structure[yearLevel] || {};
@@ -202,53 +148,65 @@ function getSampleSchoolYear() {
   return `${startYear}-${startYear + 1}`;
 }
 
-// Build Grade documents (plain objects) for a given student + curriculum
-function makeGradeRowsForCurriculum({
-  studentId,
-  curriculum,
-  program,
-  schoolYear,
-}) {
-  if (!studentId || !curriculum) return [];
+// Fill missing synthetic fields on StudentData doc shape
+function fillMissingStudentFields(base, { graduationYear } = {}) {
+  const out = { ...base };
 
-  const subjects = flattenCurriculumSubjects(curriculum);
-  if (!subjects.length) return [];
+  if (!out.gender) {
+    out.gender = Math.random() < 0.5 ? 'male' : 'female';
+  }
 
-  const sy = schoolYear || getSampleSchoolYear();
+  if (!out.permanentAddress && !out.address) {
+    out.permanentAddress = getRandomMagalangAddress();
+  }
 
-  const rows = subjects.map((subj) => {
-    const finalGrade = getRandomGrade();
-    const remarks = getRemarksFromGrade(finalGrade);
-    const termName = getTermNameFromSemester(subj.semester);
+  // Admission + Graduation
+  if (!out.dateAdmitted || !out.dateGraduated) {
+    const gradYear =
+      graduationYear ||
+      (out.dateGraduated instanceof Date
+        ? out.dateGraduated.getFullYear()
+        : new Date().getFullYear());
 
-    return {
-      student: studentId,
-      program: program || curriculum.program || '',
-      curriculum: curriculum._id,
-      yearLevel: subj.yearLevel,
-      semester: subj.semester,
-      subjectCode: subj.subjectCode,
-      subjectTitle: subj.subjectTitle,
-      units: subj.units,
-      schoolYear: sy,
-      termName,
-      finalGrade,
-      remarks,
-    };
-  });
+    const admittedYear = gradYear - (3 + Math.floor(Math.random() * 3)); // 3–5 years
+    if (!out.dateAdmitted) {
+      out.dateAdmitted = randomDateBetween(admittedYear, admittedYear);
+    }
+    if (!out.dateGraduated) {
+      out.dateGraduated = randomDateBetween(gradYear, gradYear);
+    }
+  }
 
-  return rows;
+  // Date of birth based on admission
+  if (!out.dateOfBirth && out.dateAdmitted instanceof Date) {
+    out.dateOfBirth = randomDateOfBirthForAdmission(out.dateAdmitted);
+  }
+
+  if (out.collegeGwa === undefined || out.collegeGwa === null) {
+    out.collegeGwa = randomGwa();
+  }
+
+  if (!out.highSchool && !out.shsSchool) {
+    const shs = randomSchoolName('SHS');
+    out.highSchool = shs;
+    out.shsSchool = shs;
+  }
+
+  if (!out.jhsSchool) {
+    out.jhsSchool = randomSchoolName('JHS');
+  }
+
+  if (!out.entranceCredentials) {
+    out.entranceCredentials = randomEntranceCredential();
+  }
+
+  return out;
 }
 
 module.exports = {
-  generateStudentNumber,
-  getRandomGender,
   getRandomMagalangAddress,
   randomDateBetween,
-  randomAdmissionAndGraduation,
-  randomAdmissionAndGraduationForGradDate,
   randomGwa,
-  randomHonor,
   randomSchoolName,
   randomEntranceCredential,
   randomPlaceOfBirth,
@@ -258,5 +216,5 @@ module.exports = {
   getRemarksFromGrade,
   getTermNameFromSemester,
   getSampleSchoolYear,
-  makeGradeRowsForCurriculum,
+  fillMissingStudentFields,
 };

@@ -102,6 +102,9 @@ function normalizeStudentForDetail(s) {
 const createStudent = asyncHandler(async (req, res) => {
   const {
     fullName,
+    firstName,
+    middleName,
+    lastName,
     studentNumber,
     program,
     major,
@@ -110,8 +113,7 @@ const createStudent = asyncHandler(async (req, res) => {
     address,
     placeOfBirth,
     highSchool,
-    honor,
-    dateGraduated,
+    graduationYear,
     dateOfBirth,
     photoDataUrl,
     randomizeMissing,
@@ -125,6 +127,9 @@ const createStudent = asyncHandler(async (req, res) => {
 
   const { student, grades } = await createSingleStudentWithGrades({
     fullName,
+    firstName,
+    middleName,
+    lastName,
     studentNumber,
     program,
     major,
@@ -133,8 +138,7 @@ const createStudent = asyncHandler(async (req, res) => {
     address,
     placeOfBirth,
     highSchool,
-    honor,
-    dateGraduated,
+    graduationYear,
     dateOfBirth,
     randomizeMissing: Boolean(randomizeMissing),
     photoUrl,

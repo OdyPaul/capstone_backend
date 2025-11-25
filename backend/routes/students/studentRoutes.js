@@ -62,6 +62,11 @@ const createSchema = {
     .object({
       fullName: z.string().trim().min(2).max(200),
 
+      // Names (optional but recommended; controller will enforce first/last)
+      firstName: z.string().trim().max(100).optional(),
+      middleName: z.string().trim().max(100).optional(),
+      lastName: z.string().trim().max(100).optional(),
+
       studentNumber: z.string().trim().max(50).optional(),
 
       program: z.string().trim().max(200).optional(),
@@ -79,10 +84,15 @@ const createSchema = {
       address: z.string().trim().max(500).optional(),
       placeOfBirth: z.string().trim().max(200).optional(),
       highSchool: z.string().trim().max(200).optional(),
-      honor: z.string().trim().max(200).optional(),
 
       dateOfBirth: z.any().optional(),
-      dateGraduated: z.any().optional(),
+
+      graduationYear: z
+        .preprocess(
+          (v) => (v === "" || v == null ? undefined : v),
+          z.coerce.number().int().min(1900).max(2100),
+        )
+        .optional(),
 
       randomizeMissing: z.coerce.boolean().optional(),
 
