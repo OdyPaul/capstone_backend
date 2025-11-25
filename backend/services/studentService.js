@@ -246,10 +246,6 @@ async function createSingleStudentWithGrades(options = {}) {
 // BULK SEEDING (unchanged behavior)
 // ---------------------------------------------------------------------------
 
-/**
- * Seed / upsert StudentData + Grade from spreadsheet-style payload
- * (restores behavior from original seedStudentsAndGradesFromPayload).
- */
 async function seedStudentsAndGrades({ studentDataRows = [], gradeRows = [] }) {
   if (!Array.isArray(studentDataRows)) studentDataRows = [];
   if (!Array.isArray(gradeRows)) gradeRows = [];
@@ -354,7 +350,6 @@ async function seedStudentsAndGrades({ studentDataRows = [], gradeRows = [] }) {
       remarks: row.remarks || row.Remarks || '',
     };
 
-    // Avoid duplicates: upsert by (student + subjectCode + schoolYear + termName)
     await Grade.updateOne(
       {
         student: gradeDoc.student,
