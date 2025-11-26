@@ -51,6 +51,58 @@ const pickHolderName = (payloadObj) =>
   payloadObj?.subject?.name ||
   null;
 
+/* ---------- VC payload helpers (type, expiry) ---------- */
+
+// Prefer the “domain” type (e.g. "tor") over generic "VerifiableCredential"
+function inferVcTypeFromPayload(payloadObj, fallbackType = 'VC', templateId = null) {
+  if (!payloadObj && templateId) return String(templateId || fallbackType || 'VC');
+
+  let types = [];
+
+  if (Array.isArray(payloadObj?.vc?.type)) {
+    types = payloadObj.vc.type;
+  } else if (payloadObj?.vc?.type) {
+    types = [payloadObj.vc.type];
+  } else if (Array.isArray(payloadObj?.type)) {
+    types = payloadObj.type;
+  } else if (payloadObj?.type) {
+    types = [payloadObj.type];
+  }
+
+  types = types.map((t) => String(t));
+
+  if (types.length) {
+    const nonGeneric = types.find(
+      (t) =>
+        t.toLowerCase() !== 'verifiablecredential' &&
+        t.toLowerCase() !== 'verifiable_credential'
+    );
+    if (nonGeneric) return nonGeneric;
+    return types[0];
+  }
+
+  if (templateId) return String(templateId);
+  return fallbackType;
+}
+
+// Read expiration from your VC payload
+function getCredentialExpiry(payloadObj) {
+  if (!payloadObj) return null;
+
+  const cs = payloadObj.credentialSubject || payloadObj.subject || {};
+  const raw =
+    cs.expires ||
+    payloadObj.expires ||
+    payloadObj.expirationDate ||
+    payloadObj.validUntil ||
+    null;
+
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
 /* ---------- emitVerifyAudit (best-effort) ---------- */
 async function emitVerifyAudit({
   event,
@@ -219,29 +271,27 @@ async function loadSignedVCByCredentialId(credential_id) {
 
 /* ---------- inferTypeAndHolderFromSigned ---------- */
 async function inferTypeAndHolderFromSigned(signed) {
-  const p = signed?.vc_payload || (signed?.jws ? decodeJwsPayload(signed.jws) : null) || null;
-
-  const vcType =
-    (Array.isArray(p?.vc?.type) ? p.vc.type[0] : p?.vc?.type) ??
-    (Array.isArray(p?.type) ? p.type[0] : p?.type) ??
-    signed?.template_id ??
-    'VC';
-
-  let holderName =
-    p?.credentialSubject?.fullName ||
-    p?.credentialSubject?.name ||
-    p?.subject?.fullName ||
-    p?.subject?.name ||
+  const p =
+    signed?.vc_payload ||
+    (signed?.jws ? decodeJwsPayload(signed.jws) : null) ||
     null;
+
+  const vcType = inferVcTypeFromPayload(p, 'VC', signed?.template_id);
+
+  let holderName = pickHolderName(p);
 
   if (!holderName && signed?.holder_user_id) {
     try {
       const User = getVCUserModel();
       if (User) {
-        const u = await User.findById(signed.holder_user_id).lean().select('fullName username');
+        const u = await User.findById(signed.holder_user_id)
+          .lean()
+          .select('fullName username');
         if (u) holderName = u.fullName || u.username || null;
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   return { vcType, holderName };
@@ -289,11 +339,38 @@ async function verifyByCredentialId(credential_id) {
     digest: signed.digest || null,
   };
 
+  // NEW: check credential expiry from vc_payload / JWS
+  let expired = false;
+  try {
+    const p =
+      signed.vc_payload ||
+      (signed.jws ? decodeJwsPayload(signed.jws) : null) ||
+      null;
+    const expDate = getCredentialExpiry(p);
+    if (expDate) {
+      metaBase.expires_at = expDate.toISOString();
+      expired = expDate.getTime() < Date.now();
+    }
+  } catch {
+    /* ignore parse errors */
+  }
+
   if (signed.status !== 'active' || signed.status === 'revoked') {
     return { ok: false, reason: 'not_found_or_revoked', meta: metaBase };
   }
 
+  // Not yet anchored on-chain
   if (signed.anchoring?.state !== 'anchored') {
+    if (expired) {
+      return {
+        ok: true,
+        result: {
+          valid: false,
+          reason: 'expired_credential',
+          meta: metaBase,
+        },
+      };
+    }
     return {
       ok: true,
       result: {
@@ -304,6 +381,7 @@ async function verifyByCredentialId(credential_id) {
     };
   }
 
+  // Anchored: verify digest + Merkle membership
   const recomputed = digestJws(signed.jws, signed.salt);
   if (recomputed !== signed.digest) {
     return { ok: false, reason: 'digest_mismatch', meta: metaBase };
@@ -320,15 +398,28 @@ async function verifyByCredentialId(credential_id) {
     return { ok: false, reason: 'merkle_proof_invalid', meta: metaBase };
   }
 
+  const finalMeta = {
+    ...metaBase,
+    anchoring: { ...(metaBase.anchoring || {}), merkle_root: batch.merkle_root },
+  };
+
+  if (expired) {
+    return {
+      ok: true,
+      result: {
+        valid: false,
+        reason: 'expired_credential',
+        meta: finalMeta,
+      },
+    };
+  }
+
   return {
     ok: true,
     result: {
       valid: true,
       reason: 'ok',
-      meta: {
-        ...metaBase,
-        anchoring: { ...(metaBase.anchoring || {}), merkle_root: batch.merkle_root },
-      },
+      meta: finalMeta,
     },
   };
 }
@@ -338,10 +429,7 @@ async function verifyStatelessPayload(payload) {
   if (!jws || !salt || !digest) return { ok: false, reason: 'payload_incomplete' };
 
   const payloadObj = decodeJwsPayload(jws);
-  const vcType =
-    (Array.isArray(payloadObj?.vc?.type) ? payloadObj.vc.type[0] : payloadObj?.vc?.type) ||
-    (Array.isArray(payloadObj?.type) ? payloadObj.type[0] : payloadObj?.type) ||
-    'VC';
+  const vcType = inferVcTypeFromPayload(payloadObj, 'VC');
   const holderName = pickHolderName(payloadObj);
 
   const metaBase = {
@@ -351,31 +439,75 @@ async function verifyStatelessPayload(payload) {
     digest,
   };
 
-  if (alg && !['ES256'].includes(alg)) return { ok: false, reason: 'alg_not_allowed', meta: metaBase };
+  // NEW: expiry from the stateless payload
+  let expired = false;
+  const expDate = getCredentialExpiry(payloadObj);
+  if (expDate) {
+    metaBase.expires_at = expDate.toISOString();
+    expired = expDate.getTime() < Date.now();
+  }
+
+  if (alg && !['ES256'].includes(alg)) {
+    return { ok: false, reason: 'alg_not_allowed', meta: metaBase };
+  }
 
   const recomputed = digestJws(jws, salt);
-  if (recomputed !== digest) return { ok: false, reason: 'digest_mismatch', meta: metaBase };
+  if (recomputed !== digest) {
+    return { ok: false, reason: 'digest_mismatch', meta: metaBase };
+  }
 
   const sigOK = await verifyJwsSignature(jws, jwk);
-  if (!sigOK) return { ok: false, reason: 'bad_signature', meta: metaBase };
+  if (!sigOK) {
+    return { ok: false, reason: 'bad_signature', meta: metaBase };
+  }
 
+  // If payload says it's anchored, verify Merkle inclusion
   if (anchoring?.state === 'anchored') {
     const batch = await AnchorBatch.findOne({ batch_id: anchoring.batch_id }).lean();
-    if (!batch || !batch.merkle_root) return { ok: false, reason: 'batch_missing', meta: metaBase };
+    if (!batch || !batch.merkle_root) {
+      return { ok: false, reason: 'batch_missing', meta: metaBase };
+    }
 
     const leaf = keccak256(fromB64url(digest));
     const included = verifyProof(leaf, anchoring.merkle_proof || [], batch.merkle_root);
-    if (!included) return { ok: false, reason: 'merkle_proof_invalid', meta: metaBase };
+    if (!included) {
+      return { ok: false, reason: 'merkle_proof_invalid', meta: metaBase };
+    }
+
+    const finalMeta = {
+      ...metaBase,
+      anchoring: { ...(anchoring || {}), merkle_root: batch.merkle_root },
+    };
+
+    if (expired) {
+      return {
+        ok: true,
+        result: {
+          valid: false,
+          reason: 'expired_credential',
+          meta: finalMeta,
+        },
+      };
+    }
 
     return {
       ok: true,
       result: {
         valid: true,
         reason: 'ok',
-        meta: {
-          ...metaBase,
-          anchoring: { ...(anchoring || {}), merkle_root: batch.merkle_root },
-        },
+        meta: finalMeta,
+      },
+    };
+  }
+
+  // Not anchored on-chain yet
+  if (expired) {
+    return {
+      ok: true,
+      result: {
+        valid: false,
+        reason: 'expired_credential',
+        meta: metaBase,
       },
     };
   }
@@ -726,6 +858,8 @@ const submitPresentation = asyncHandler(async (req, res) => {
     body:
       outcome.result?.reason === 'not_anchored'
         ? 'Credential verified but not yet anchored.'
+        : outcome.result?.reason === 'expired_credential'
+        ? 'Credential has expired (but anchor & digest are valid).'
         : 'Credential verified successfully.',
     extra: { method: credential_id ? 'by_id' : 'stateless', valid: !!outcome.result?.valid },
     dedupeKey: `verification.present:${sessionId}:${outcome.result?.reason || 'ok'}`,
