@@ -64,21 +64,39 @@ const loginMobileUser = asyncHandler(async (req, res) => {
     kind: "mobile",
   }).select("+password");
 
-  if (user && (await bcrypt.compare(password, user.password))) {
-    return res.json({
-      _id: user._id,
-      username: user.username,
-      email: user.email,
-      role: user.role,
-      verified: user.verified ?? "unverified",
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
-      token: generateToken(user._id),
-    });
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    res.status(400);
+    throw new Error("Invalid credentials");
   }
 
-  res.status(400);
-  throw new Error("Invalid credentials");
+  // 🔹 Try to resolve linked student record (for face photo)
+  let student = null;
+
+  // Prefer explicit linkage via user.studentId
+  if (user.studentId) {
+    student = await StudentData.findById(user.studentId).lean();
+  }
+
+  // Fallback via Student_Data.userId (set during verification)
+  if (!student) {
+    student = await StudentData.findOne({ userId: user._id }).lean();
+  }
+
+  const studentId = student?._id || user.studentId || null;
+  const studentPhotoUrl = student?.photoUrl || null;
+
+  return res.json({
+    _id: user._id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    verified: user.verified ?? "unverified",
+    studentId,            // 👈 you now get this on mobile
+    studentPhotoUrl,      // 👈 Cloudinary URL from StudentData.photoUrl
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    token: generateToken(user._id),
+  });
 });
 
 // ---------------- WEB CONTROLLERS ----------------
