@@ -44,7 +44,8 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   };
 
   app.use(cors(corsOptions));
-  app.options('*', cors(corsOptions));
+  app.options('/*', cors(corsOptions));
+
 
   // =========================
   // Security Middlewares
