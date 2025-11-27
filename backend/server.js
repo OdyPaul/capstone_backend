@@ -1,3 +1,4 @@
+// backend/server.js
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -27,23 +28,22 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   }
 
   // CORS
-  const ORIGINS = (process.env.CORS_ORIGINS || 'https://www.psau-credentials.cfd') // Allow only your frontend domain here
+  const ORIGINS = (process.env.CORS_ORIGINS || '')
     .split(',').map(s => s.trim()).filter(Boolean);
-  
   const corsOptions = {
-    origin: function(origin, cb) {
+    origin(origin, cb) {
       if (!origin) return cb(null, true);
       if (ORIGINS.length === 0) return cb(null, true);
       if (ORIGINS.includes(origin)) return cb(null, true);
       return cb(new Error(`Not allowed by CORS: ${origin}`));
     },
-    credentials: true, // Allow credentials (cookies, authorization headers, etc.)
+    credentials: false,
     methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
     allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
     optionsSuccessStatus: 204,
   };
-  app.use(cors(corsOptions)); // Apply CORS globally
-  app.options(/.*/, cors(corsOptions)); // Pre-flight handling for OPTIONS requests
+  app.use(cors(corsOptions));
+  app.options(/.*/, cors(corsOptions));
 
   // Global parsers (light)
   app.use(express.json({ limit: '200kb' }));
@@ -63,13 +63,17 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
     }
   })();
 
-  // Health check route
+  // Health
   app.get('/', (_req, res) => res.send('✅ API is running...'));
 
   // ---------- Routes ----------
+  // 🔧 Ensure filename matches: colorRoute.js
   app.use('/api', require('./routes/utils/colorRoute'));
+
+  // Common users (merged web + mobile user routes)
   app.use('/api', require('./routes/common/userRoutes'));
-  app.use('/api', require('./routes/mobile/pushRoutes'));
+//push notif
+app.use('/api', require('./routes/mobile/pushRoutes'));
 
   // Web area (non-user web routes) with larger body limits
   const web = express.Router();
@@ -91,6 +95,12 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use('/api/web', web);
   app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
 
+  //testing:
+ app.use('/api/web/issuance', require('./routes/testing/issueRoute'));
+  app.use('/api', require('./routes/common/passwordResetRoutes'));
+  // ✅ Mount verification routes directly under /api so paths match the frontend
+  app.use('/api', require('./routes/web/verificationRoutes'));
+
   // Public claims
   app.use('/', require('./routes/web/claimPublicRoutes'));
 
@@ -103,7 +113,6 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.use('/api/mobile', require('./routes/mobile/students'));
   app.use('/api/mobile', require('./routes/mobile/vcStatusRoutes'));
   app.use('/api/mobile', require('./routes/mobile/activityRoutes'));
-
   // Errors
   app.use(errorHandler);
 
