@@ -20,36 +20,42 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   app.set('trust proxy', 1);
   app.set('query parser', (str) => qs.parse(str));
 
-  // Security
+  // =========================
+  // ✅ CORS MUST BE FIRST
+  // =========================
+  const ORIGINS = (
+    process.env.CORS_ORIGINS ||
+    'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,https://psau-credentials.cfd'
+  )
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const corsOptions = {
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error(`Not allowed by CORS: ${origin}`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    optionsSuccessStatus: 204,
+  };
+
+  app.use(cors(corsOptions));
+  app.options('*', cors(corsOptions));
+
+  // =========================
+  // Security Middlewares
+  // =========================
   app.use(helmet());
   app.use(helmet.crossOriginResourcePolicy({ policy: 'cross-origin' }));
   if (process.env.NODE_ENV === 'production') {
     app.use(helmet.hsts({ maxAge: 15552000 }));
   }
 
-  // CORS
-  const ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,https://www.psau-credentials.cfd')
-  .split(',').map(s => s.trim()).filter(Boolean);
-
-const corsOptions = {
-  origin(origin, cb) {
-    if (!origin) return cb(null, true); // Allow if no origin (for example, during testing)
-    if (ORIGINS.length === 0) return cb(null, true); // If no allowed origins are specified, allow all
-    if (ORIGINS.includes(origin)) return cb(null, true); // Allow the listed origins
-    return cb(new Error(`Not allowed by CORS: ${origin}`)); // Reject any other origins
-  },
-  credentials: false, // Adjust as needed depending on your auth requirements (for cookies, this must be true)
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // Allowed HTTP methods
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'], // Allowed headers
-  optionsSuccessStatus: 204, // For legacy browser support
-};
-
-app.use(cors(corsOptions));
-
-// Ensure preflight OPTIONS requests are handled properly
-app.options('*', cors(corsOptions));
-
-  // Global parsers (light)
+  // Body parsers
   app.use(express.json({ limit: '200kb' }));
   app.use(express.urlencoded({ extended: false, limit: '200kb' }));
 
@@ -60,8 +66,11 @@ app.options('*', cors(corsOptions));
   // Redis visibility
   (async () => {
     if (redis) {
-      try { console.log('🟢 Redis ping:', await redis.ping()); }
-      catch (e) { console.error('🔴 Redis ping failed:', e.message); }
+      try {
+        console.log('🟢 Redis ping:', await redis.ping());
+      } catch (e) {
+        console.error('🔴 Redis ping failed:', e.message);
+      }
     } else {
       console.warn(' REDIS_URL missing → running without Redis features');
     }
@@ -104,13 +113,12 @@ app.options('*', cors(corsOptions));
   app.use('/api/mobile', require('./routes/mobile/vcStatusRoutes'));
   app.use('/api/mobile', require('./routes/mobile/activityRoutes'));
 
-  // Error handling middleware
+  // Error handler
   app.use(errorHandler);
 
   const port = process.env.PORT || 5000;
   app.listen(port, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${port}`);
-    if (ORIGINS.length) console.log('CORS allow-list:', ORIGINS);
-    else console.log('CORS allow-list empty → allowing all origins (dev)');
+    console.log('CORS allow-list:', ORIGINS);
   });
 })();
