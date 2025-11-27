@@ -29,23 +29,25 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
 
   // CORS
   const ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,https://www.psau-credentials.cfd')
-    .split(',').map(s => s.trim()).filter(Boolean);
+  .split(',').map(s => s.trim()).filter(Boolean);
 
-  const corsOptions = {
-    origin(origin, cb) {
-      if (!origin) return cb(null, true); // Allow if no origin (for example, during testing)
-      if (ORIGINS.length === 0) return cb(null, true); // If no allowed origins are specified, allow all
-      if (ORIGINS.includes(origin)) return cb(null, true); // Allow the listed origins
-      return cb(new Error(`Not allowed by CORS: ${origin}`)); // Reject any other origins
-    },
-    credentials: false, // Adjust as needed depending on your auth requirements (for cookies, this must be true)
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // Allowed HTTP methods
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'], // Allowed headers
-    optionsSuccessStatus: 204, // For legacy browser support
-  };
+const corsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // Allow if no origin (for example, during testing)
+    if (ORIGINS.length === 0) return cb(null, true); // If no allowed origins are specified, allow all
+    if (ORIGINS.includes(origin)) return cb(null, true); // Allow the listed origins
+    return cb(new Error(`Not allowed by CORS: ${origin}`)); // Reject any other origins
+  },
+  credentials: false, // Adjust as needed depending on your auth requirements (for cookies, this must be true)
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // Allowed HTTP methods
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'], // Allowed headers
+  optionsSuccessStatus: 204, // For legacy browser support
+};
 
-  app.use(cors(corsOptions));  // Apply CORS configuration globally
-  app.options(/.*/, cors(corsOptions)); // Handle preflight OPTIONS requests
+pp.use(cors(corsOptions));
+
+// Ensure preflight OPTIONS requests are handled properly
+app.options('*', cors(corsOptions));
 
   // Global parsers (light)
   app.use(express.json({ limit: '200kb' }));
