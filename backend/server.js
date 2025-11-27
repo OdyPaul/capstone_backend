@@ -28,22 +28,24 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
   }
 
   // CORS
-  const ORIGINS = (process.env.CORS_ORIGINS || '')
+  const ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,https://www.psau-credentials.cfd')
     .split(',').map(s => s.trim()).filter(Boolean);
+
   const corsOptions = {
     origin(origin, cb) {
-      if (!origin) return cb(null, true);
-      if (ORIGINS.length === 0) return cb(null, true);
-      if (ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error(`Not allowed by CORS: ${origin}`));
+      if (!origin) return cb(null, true); // Allow if no origin (for example, during testing)
+      if (ORIGINS.length === 0) return cb(null, true); // If no allowed origins are specified, allow all
+      if (ORIGINS.includes(origin)) return cb(null, true); // Allow the listed origins
+      return cb(new Error(`Not allowed by CORS: ${origin}`)); // Reject any other origins
     },
-    credentials: false,
-    methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-    allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
-    optionsSuccessStatus: 204,
+    credentials: false, // Adjust as needed depending on your auth requirements (for cookies, this must be true)
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], // Allowed HTTP methods
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'], // Allowed headers
+    optionsSuccessStatus: 204, // For legacy browser support
   };
-  app.use(cors(corsOptions));
-  app.options(/.*/, cors(corsOptions));
+
+  app.use(cors(corsOptions));  // Apply CORS configuration globally
+  app.options(/.*/, cors(corsOptions)); // Handle preflight OPTIONS requests
 
   // Global parsers (light)
   app.use(express.json({ limit: '200kb' }));
@@ -63,19 +65,14 @@ const paramPollutionGuard = require('./middleware/paramPollutionGuard');
     }
   })();
 
-  // Health
+  // Health check
   app.get('/', (_req, res) => res.send('✅ API is running...'));
 
   // ---------- Routes ----------
-  // 🔧 Ensure filename matches: colorRoute.js
   app.use('/api', require('./routes/utils/colorRoute'));
-
-  // Common users (merged web + mobile user routes)
   app.use('/api', require('./routes/common/userRoutes'));
-//push notif
-app.use('/api', require('./routes/mobile/pushRoutes'));
+  app.use('/api', require('./routes/mobile/pushRoutes'));
 
-  // Web area (non-user web routes) with larger body limits
   const web = express.Router();
   web.use(express.json({ limit: '2mb' }));
   web.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -94,26 +91,18 @@ app.use('/api', require('./routes/mobile/pushRoutes'));
 
   app.use('/api/web', web);
   app.use('/api/verification-request', require('./routes/mobile/verificationRoutes'));
-
-  //testing:
- app.use('/api/web/issuance', require('./routes/testing/issueRoute'));
+  app.use('/api/web/issuance', require('./routes/testing/issueRoute'));
   app.use('/api', require('./routes/common/passwordResetRoutes'));
-  // ✅ Mount verification routes directly under /api so paths match the frontend
   app.use('/api', require('./routes/web/verificationRoutes'));
-
-  // Public claims
   app.use('/', require('./routes/web/claimPublicRoutes'));
-
-  // Shared images (user profile images, etc.)
   app.use('/api/images', require('./routes/common/userImageRoutes'));
-
-  // Mobile features (non-user mobile routes)
   app.use('/api/uploads', require('./routes/mobile/uploadRoutes'));
   app.use('/api/vc-requests', require('./routes/mobile/vcRoutes'));
   app.use('/api/mobile', require('./routes/mobile/students'));
   app.use('/api/mobile', require('./routes/mobile/vcStatusRoutes'));
   app.use('/api/mobile', require('./routes/mobile/activityRoutes'));
-  // Errors
+
+  // Error handling middleware
   app.use(errorHandler);
 
   const port = process.env.PORT || 5000;
