@@ -44,7 +44,7 @@ const corsOptions = {
   optionsSuccessStatus: 204, // For legacy browser support
 };
 
-pp.use(cors(corsOptions));
+app.use(cors(corsOptions));
 
 // Ensure preflight OPTIONS requests are handled properly
 app.options('*', cors(corsOptions));
